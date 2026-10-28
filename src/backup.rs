@@ -281,7 +281,7 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
     for job in jobs {
         // adb pull into a folder keeps the phone's file name, so renamed files go one by one.
         let same_name = job.local.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
-        match (same_name, job.local.parent()) {
+        match (same_name && !too_long(&job.local), job.local.parent()) {
             (true, Some(dir)) => by_dir.entry(dir.to_path_buf()).or_default().push(job),
             _ => single.push(job),
         }
@@ -315,17 +315,32 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
         done += jobs.len();
     }
 
+    let tmp = root.join(".pulling");
     for job in &single {
         report(Msg::Progress { done, total, now: job.remote.clone() });
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
         }
-        let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local).output();
+        if too_long(&job.local) {
+            // adb.exe cannot write past 260 characters; Rust's fs can, so pull short and move.
+            let short = tmp.join("file");
+            let _ = fs::create_dir_all(&tmp);
+            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&short).output();
+            let _ = fs::rename(&short, &job.local);
+        } else {
+            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local).output();
+        }
         done += 1;
     }
+    let _ = fs::remove_dir_all(&tmp);
     record_failures(&single, &mut errors);
     report(Msg::Progress { done, total, now: String::new() });
     errors
+}
+
+/// Paths near Windows' 260-character limit, which adb.exe cannot write to.
+fn too_long(path: &Path) -> bool {
+    path.as_os_str().len() > 240
 }
 
 fn record_failures(jobs: &[Job], errors: &mut Vec<String>) {
