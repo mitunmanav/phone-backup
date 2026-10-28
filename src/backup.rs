@@ -4,8 +4,19 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, UNIX_EPOCH};
+
+/// Set by the Stop button; the running adb command is killed and the backup ends.
+pub static STOP: AtomicBool = AtomicBool::new(false);
+
+fn stopped() -> bool {
+    STOP.load(Ordering::Relaxed)
+}
+
+const STOPPED: &str = "You stopped the backup. Files copied so far are kept; press Back up again to continue.";
 
 /// What the backup reports back to the window while it runs.
 pub enum Msg {
@@ -123,11 +134,34 @@ fn is_junk(path: &str) -> bool {
 /// Runs a shell command on the phone and returns its stdout. Stderr (e.g. "Permission denied"
 /// for unreadable folders) is ignored on purpose: we keep whatever could be read.
 fn shell(serial: &str, cmd: &str) -> String {
-    adb()
-        .args(["-s", serial, "shell", cmd])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+    let mut c = adb();
+    c.args(["-s", serial, "shell", cmd]);
+    String::from_utf8_lossy(&run(c)).into_owned()
+}
+
+/// Runs a command and returns its stdout, or what it printed so far if Stop is pressed.
+/// Unlike `output()`, this kills the command on Stop: a long `find` or `adb pull` would
+/// otherwise keep running after the window closes.
+fn run(mut c: Command) -> Vec<u8> {
+    let Ok(mut child) = c.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Vec::new() };
+    // Read in a thread so a big listing cannot fill the pipe and stall the command.
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(s) = stdout.as_mut() {
+            let _ = s.read_to_end(&mut out);
+        }
+        out
+    });
+    while let Ok(None) = child.try_wait() {
+        if stopped() {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    reader.join().unwrap_or_default()
 }
 
 /// True while adb still sees the phone. Listing commands just return nothing when it is gone.
@@ -204,6 +238,9 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
         jobs.push(Job { remote: path.to_string(), size, mtime, local });
     }
 
+    if stopped() {
+        return Err(STOPPED.into());
+    }
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -211,7 +248,21 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     let files = jobs.len();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
+    let needed: u64 = jobs.iter().map(|j| j.size).sum();
+    if let Some(free) = free_space(dest) {
+        // 200 MB spare so Windows itself is not left with a full disk.
+        if needed + 200_000_000 > free {
+            return Err(format!(
+                "Not enough space on this computer: the backup needs {} more, but only {} is free. Free up space or choose another folder.",
+                size(needed),
+                size(free)
+            ));
+        }
+    }
     let errors = pull(serial, jobs, &root, report);
+    if stopped() {
+        return Err(STOPPED.into());
+    }
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -236,6 +287,31 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
     Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true })
+}
+
+/// Bytes the current user may still write on the drive holding `path`.
+#[cfg(windows)]
+fn free_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut free = 0u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call; null pointers skip the other outputs.
+    let ok = unsafe { windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(free)
+}
+
+#[cfg(not(windows))]
+fn free_space(_: &Path) -> Option<u64> {
+    None
+}
+
+/// 1_500_000_000 -> "1.5 GB", 350_000_000 -> "350 MB"
+fn size(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1e9)
+    } else {
+        format!("{} MB", bytes.div_ceil(1_000_000))
+    }
 }
 
 /// Windows ignores letter case, and safe_name can turn two names into one, so IMG.jpg and
@@ -289,26 +365,28 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
 
     for (dir, jobs) in by_dir {
         let now = dir.strip_prefix(root).unwrap_or(&dir).display().to_string();
-        report(Msg::Progress { done, total, now });
         if let Err(e) = fs::create_dir_all(&dir) {
             errors.extend(jobs.iter().map(|j| format!("{}: {e}", j.remote)));
             done += jobs.len();
             continue;
         }
-        // Keep each command line well under Windows' 32,767-character limit.
+        // Keep each command line well under Windows' 32,767-character limit, and batches small
+        // enough that progress moves inside a big Camera folder.
         let mut start = 0;
         while start < jobs.len() {
+            report(Msg::Progress { done: done + start, total, now: now.clone() });
             let mut end = start;
             let mut len = 0;
-            while end < jobs.len() && (end == start || len + jobs[end].remote.len() < 20_000) {
+            while end < jobs.len() && end - start < 200 && (end == start || len + jobs[end].remote.len() < 20_000) {
                 len += jobs[end].remote.len() + 3;
                 end += 1;
             }
-            let _ = adb()
-                .args(["-s", serial, "pull", "-a"])
-                .args(jobs[start..end].iter().map(|j| &j.remote))
-                .arg(&dir)
-                .output();
+            if stopped() {
+                return errors;
+            }
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a"]).args(jobs[start..end].iter().map(|j| &j.remote)).arg(&dir);
+            run(c);
             start = end;
         }
         record_failures(&jobs, &mut errors);
@@ -317,6 +395,9 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
 
     let tmp = root.join(".pulling");
     for job in &single {
+        if stopped() {
+            break;
+        }
         report(Msg::Progress { done, total, now: job.remote.clone() });
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
@@ -325,10 +406,14 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
             // adb.exe cannot write past 260 characters; Rust's fs can, so pull short and move.
             let short = tmp.join("file");
             let _ = fs::create_dir_all(&tmp);
-            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&short).output();
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a", &job.remote]).arg(&short);
+            run(c);
             let _ = fs::rename(&short, &job.local);
         } else {
-            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local).output();
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local);
+            run(c);
         }
         done += 1;
     }
@@ -382,6 +467,9 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
         let base = if n == 0 { root.join("files") } else { root.join(format!("storage_{}", safe_name(desc))) };
         let mut stack = vec![(None, base)];
         while let Some((parent, dir)) = stack.pop() {
+            if stopped() {
+                return Err(STOPPED.into());
+            }
             let now = dir.strip_prefix(&root).unwrap_or(&dir).display().to_string();
             // Total is unknown until the walk ends, so progress reports 0 for it.
             report(Msg::Progress { done: copied, total: 0, now });
@@ -411,6 +499,9 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
                     let mut out = fs::File::create(&part).map_err(|e| e.to_string())?;
                     let mut dl = storage.download(obj.handle, ByteRange::Full).await.map_err(|e| e.to_string())?;
                     while let Some(chunk) = dl.next_chunk().await {
+                        if stopped() {
+                            return Err(STOPPED.to_string());
+                        }
                         out.write_all(&chunk.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
                     }
                     drop(out);
@@ -478,6 +569,15 @@ mod tests {
         assert!(is_junk("/sdcard/Android/data/com.x/cache/a"));
         assert!(!is_junk("/sdcard/Documents/cache/notes.txt"));
         assert!(!is_junk("/sdcard/DCIM/Camera/IMG_1.jpg"));
+    }
+
+    #[test]
+    fn formats_sizes_and_reads_free_space() {
+        assert_eq!(size(1_500_000_000), "1.5 GB");
+        assert_eq!(size(350_000_000), "350 MB");
+        assert_eq!(size(1), "1 MB");
+        #[cfg(windows)]
+        assert!(free_space(Path::new(".")).is_some_and(|f| f > 0));
     }
 
     #[test]
