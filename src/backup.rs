@@ -44,6 +44,16 @@ pub struct Summary {
     /// (what, saved?) for contacts, call history and messages. Empty for MTP.
     pub data: Vec<(&'static str, bool)>,
     pub full: bool,
+    /// What was asked for.
+    pub pick: Pick,
+}
+
+/// What the user chose to back up.
+#[derive(Clone, Copy)]
+pub struct Pick {
+    pub files: bool,
+    pub apps: bool,
+    pub data: bool,
 }
 
 /// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
@@ -193,7 +203,7 @@ fn parse_stat(line: &str) -> Option<(u64, i64, &str)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?))
 }
 
-pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, String> {
+pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &dyn Fn(Msg)) -> Result<Summary, String> {
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -204,8 +214,11 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     let mut jobs = Vec::new();
 
     // Shared storage (photos, videos, downloads, documents, app media) plus any SD cards.
-    let mut storages = vec![("/sdcard".to_string(), root.join("files"))];
-    for vol in shell(serial, "ls /storage").split_whitespace() {
+    let mut storages = Vec::new();
+    if pick.files {
+        storages.push(("/sdcard".to_string(), root.join("files")));
+    }
+    for vol in shell(serial, "ls /storage").split_whitespace().filter(|_| pick.files) {
         if !["emulated", "self"].contains(&vol) {
             storages.push((format!("/storage/{vol}"), root.join(format!("sdcard_{}", safe_name(vol)))));
         }
@@ -227,10 +240,14 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     // Installers of apps the user installed (base + split APKs). App private data is not
     // readable without root on Android 12+, so this restores the apps, not their logins/settings.
     status("Reading the list of installed apps".into());
-    let apps = shell(
-        serial,
-        r#"for p in $(pm list packages -3 | cut -d: -f2); do for a in $(pm path $p | cut -d: -f2); do stat -c "%s %Y $p %n" $a; done; done"#,
-    );
+    let apps = if pick.apps {
+        shell(
+            serial,
+            r#"for p in $(pm list packages -3 | cut -d: -f2); do for a in $(pm path $p | cut -d: -f2); do stat -c "%s %Y $p %n" $a; done; done"#,
+        )
+    } else {
+        String::new()
+    };
     for (size, mtime, rest) in apps.lines().filter_map(parse_stat) {
         let Some((pkg, path)) = rest.trim().split_once(' ') else { continue };
         let name = path.rsplit('/').next().unwrap_or(path);
@@ -270,13 +287,16 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
     status("Saving contacts, call history and messages".into());
     let data_dir = root.join("data");
-    let _ = fs::create_dir_all(&data_dir);
+    let _ = fs::create_dir_all(if pick.data { &data_dir } else { &root });
     let mut data = Vec::new();
     for (label, file, query) in [
         ("Contacts", "contacts.txt", "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1"),
         ("Call history", "call_log.txt", "content query --uri content://call_log/calls --projection number:name:date:duration:type"),
         ("Messages", "sms.txt", "content query --uri content://sms --projection address:date:type:body"),
-    ] {
+    ]
+    .into_iter()
+    .filter(|_| pick.data)
+    {
         let out = shell(serial, query);
         let ok = out.starts_with("Row:") || out.starts_with("No result");
         if ok {
@@ -289,7 +309,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     }
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true })
+    Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true, pick })
 }
 
 /// Bytes the current user may still write on the drive holding `path`.
@@ -566,7 +586,7 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
     }
     let _ = fs::create_dir_all(&root);
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Ok(Summary { name, root, files, copied, errors, data: Vec::new(), full: false })
+    Ok(Summary { name, root, files, copied, errors, data: Vec::new(), full: false, pick: Pick { files: true, apps: false, data: false } })
 }
 
 #[cfg(test)]
