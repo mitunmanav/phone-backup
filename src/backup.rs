@@ -273,13 +273,16 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     let _ = fs::create_dir_all(&data_dir);
     let mut data = Vec::new();
     for (label, file, query) in [
-        ("Contacts", "contacts.txt", "content query --uri content://com.android.contacts/data --projection display_name:mimetype:data1"),
+        ("Contacts", "contacts.txt", "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1"),
         ("Call history", "call_log.txt", "content query --uri content://call_log/calls --projection number:name:date:duration:type"),
         ("Messages", "sms.txt", "content query --uri content://sms --projection address:date:type:body"),
     ] {
         let out = shell(serial, query);
         let ok = out.starts_with("Row:") || out.starts_with("No result");
         if ok {
+            if file == "contacts.txt" {
+                let _ = fs::write(data_dir.join("contacts.vcf"), vcard(&out));
+            }
             let _ = fs::write(data_dir.join(file), out);
         }
         data.push((label, ok));
@@ -332,6 +335,48 @@ fn unclash(jobs: &mut [Job]) {
             job.local = original.with_file_name(name);
         }
     }
+}
+
+/// Turns `content query` rows of contact_id, mimetype, display_name, data1 into a vCard 3.0
+/// file that Google Contacts and phones can import. Only names, phone numbers and emails.
+fn vcard(rows: &str) -> String {
+    let mut contacts: BTreeMap<u64, (String, Vec<String>)> = BTreeMap::new();
+    for line in rows.lines() {
+        // Row: 3 contact_id=12, mimetype=vnd.android.cursor.item/phone_v2, display_name=Ann, data1=+1 555
+        let Some(rest) = line.strip_prefix("Row: ").and_then(|r| r.split_once(" contact_id=")).map(|r| r.1) else { continue };
+        let Some((id, rest)) = rest.split_once(", mimetype=") else { continue };
+        let Some((mime, rest)) = rest.split_once(", display_name=") else { continue };
+        let Some((name, value)) = rest.split_once(", data1=") else { continue };
+        let Ok(id) = id.parse() else { continue };
+        let field = match mime {
+            "vnd.android.cursor.item/phone_v2" => "TEL",
+            "vnd.android.cursor.item/email_v2" => "EMAIL",
+            _ => continue,
+        };
+        if value == "NULL" || value.is_empty() {
+            continue;
+        }
+        let entry = contacts.entry(id).or_insert_with(|| (if name == "NULL" { String::new() } else { name.to_string() }, Vec::new()));
+        let line = format!("{field}:{}", vcard_escape(value));
+        if !entry.1.contains(&line) {
+            entry.1.push(line);
+        }
+    }
+    let mut out = String::new();
+    for (name, lines) in contacts.values() {
+        let name = vcard_escape(name);
+        out += &format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:{name}\r\nN:;{name};;;\r\n");
+        for l in lines {
+            out += l;
+            out += "\r\n";
+        }
+        out += "END:VCARD\r\n";
+    }
+    out
+}
+
+fn vcard_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace(',', "\\,").replace(';', "\\;")
 }
 
 /// True when the local copy is missing or differs in size or time.
@@ -578,6 +623,22 @@ mod tests {
         assert_eq!(size(1), "1 MB");
         #[cfg(windows)]
         assert!(free_space(Path::new(".")).is_some_and(|f| f > 0));
+    }
+
+    #[test]
+    fn writes_vcards() {
+        let rows = "Row: 0 contact_id=7, mimetype=vnd.android.cursor.item/phone_v2, display_name=Ann; Lee, data1=+1 555\n\
+            Row: 1 contact_id=7, mimetype=vnd.android.cursor.item/phone_v2, display_name=Ann; Lee, data1=+1 555\n\
+            Row: 2 contact_id=7, mimetype=vnd.android.cursor.item/email_v2, display_name=Ann; Lee, data1=ann@x.com\n\
+            Row: 3 contact_id=7, mimetype=vnd.android.cursor.item/name, display_name=Ann; Lee, data1=Ann\n\
+            Row: 4 contact_id=9, mimetype=vnd.android.cursor.item/phone_v2, display_name=NULL, data1=112\n\
+            Row: 5 contact_id=10, mimetype=vnd.android.cursor.item/note, display_name=Bo, data1=line one\n\
+            line two";
+        assert_eq!(
+            vcard(rows),
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ann\\; Lee\r\nN:;Ann\\; Lee;;;\r\nTEL:+1 555\r\nEMAIL:ann@x.com\r\nEND:VCARD\r\n\
+             BEGIN:VCARD\r\nVERSION:3.0\r\nFN:\r\nN:;;;;\r\nTEL:112\r\nEND:VCARD\r\n"
+        );
     }
 
     #[test]

@@ -434,6 +434,9 @@ impl App {
                         let refused: Vec<_> = s.data.iter().filter(|d| !d.1).map(|d| d.0.to_lowercase()).collect();
                         if !saved.is_empty() {
                             ui.label(format!("Also saved: installed apps, {}.", saved.join(", ")));
+                            if saved.iter().any(|d| d == "contacts") {
+                                ui.label(muted("Contacts are in data\\contacts.vcf, which Google Contacts or any phone can import."));
+                            }
                         }
                         if !refused.is_empty() {
                             ui.label(format!("Your phone did not allow reading {}.", refused.join(", ")));
