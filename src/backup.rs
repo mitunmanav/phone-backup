@@ -35,9 +35,28 @@ pub struct Summary {
     pub full: bool,
 }
 
+/// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
+/// Most people never install the SDK, so shipping adb.exe beside the app is the normal case.
+fn adb_path() -> Option<PathBuf> {
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+    let on_path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
+    let sdk = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Android\Sdk\platform-tools"));
+    beside
+        .iter()
+        .flat_map(|d| [d.clone(), d.join("platform-tools")])
+        .chain(on_path)
+        .chain(sdk)
+        .map(|d| d.join(if cfg!(windows) { "adb.exe" } else { "adb" }))
+        .find(|p| p.is_file())
+}
+
+pub fn adb_installed() -> bool {
+    adb_path().is_some()
+}
+
 /// adb without a console window flashing up on every call.
 fn adb() -> Command {
-    let mut c = Command::new("adb");
+    let mut c = Command::new(adb_path().unwrap_or_else(|| "adb".into()));
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
     c
@@ -46,7 +65,16 @@ fn adb() -> Command {
 /// Phones on ADB; if none, phones in "File transfer" (MTP) mode.
 pub fn detect() -> Vec<Phone> {
     let out = adb().args(["devices", "-l"]).output();
-    let phones = out.map(|o| parse_adb_devices(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default();
+    let mut phones = out.map(|o| parse_adb_devices(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default();
+    // One phone on both USB and Wi-Fi is listed twice; keep the faster USB entry.
+    if phones.iter().filter(|p| matches!(p, Phone::Adb { .. })).count() > 1 {
+        phones.sort_by_key(|p| matches!(p, Phone::Adb { wifi: true, .. }));
+        let mut seen = std::collections::HashSet::new();
+        phones.retain(|p| match p {
+            Phone::Adb { serial, .. } => seen.insert(phone_id(serial)),
+            _ => true,
+        });
+    }
     if !phones.is_empty() {
         return phones;
     }
@@ -68,7 +96,8 @@ fn parse_adb_devices(text: &str) -> Vec<Phone> {
                 let wifi = serial.contains(':') || serial.contains("._adb-tls-connect");
                 phones.push(Phone::Adb { serial: serial.into(), model, wifi });
             }
-            "unauthorized" => phones.push(Phone::Unauthorized),
+            // "authorizing" is the moment the Allow prompt is on screen.
+            "unauthorized" | "authorizing" => phones.push(Phone::Unauthorized),
             _ => {}
         }
     }
@@ -101,6 +130,21 @@ fn shell(serial: &str, cmd: &str) -> String {
         .unwrap_or_default()
 }
 
+/// True while adb still sees the phone. Listing commands just return nothing when it is gone.
+fn connected(serial: &str) -> bool {
+    adb().args(["-s", serial, "get-state"]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "device")
+}
+
+const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Back up again to continue.";
+
+/// ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
+fn phone_id(serial: &str) -> String {
+    match shell(serial, "getprop ro.serialno").trim() {
+        "" => serial.to_string(),
+        s => s.to_string(),
+    }
+}
+
 /// One file to copy: remote path, its size and mtime (Unix seconds), and where it goes locally.
 struct Job {
     remote: String,
@@ -115,13 +159,12 @@ fn parse_stat(line: &str) -> Option<(u64, i64, &str)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?))
 }
 
-pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) -> Summary {
+pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, String> {
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
     let status = |s: String| report(Msg::Status(s));
-    // ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
-    let id = match shell(serial, "getprop ro.serialno").trim() {
-        "" => serial.to_string(),
-        s => s.to_string(),
-    };
+    let id = phone_id(serial);
     let root = dest.join(safe_name(&format!("{model}_{id}")));
 
     let mut jobs = Vec::new();
@@ -161,10 +204,17 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
         jobs.push(Job { remote: path.to_string(), size, mtime, local });
     }
 
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
+    unclash(&mut jobs);
     let files = jobs.len();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
     let errors = pull(serial, jobs, &root, report);
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
 
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
     status("Saving contacts, call history and messages".into());
@@ -185,7 +235,27 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     }
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true }
+    Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true })
+}
+
+/// Windows ignores letter case, and safe_name can turn two names into one, so IMG.jpg and
+/// img.jpg would overwrite each other on every run. Later ones get " (2)", " (3)"...
+fn unclash(jobs: &mut [Job]) {
+    jobs.sort_by(|a, b| a.remote.cmp(&b.remote));
+    let mut seen = std::collections::HashSet::new();
+    for job in jobs {
+        let original = job.local.clone();
+        let mut n = 1;
+        while !seen.insert(job.local.to_string_lossy().to_lowercase()) {
+            n += 1;
+            let stem = original.file_stem().unwrap_or_default().to_string_lossy();
+            let name = match original.extension() {
+                Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
+                None => format!("{stem} ({n})"),
+            };
+            job.local = original.with_file_name(name);
+        }
+    }
 }
 
 /// True when the local copy is missing or differs in size or time.
@@ -211,7 +281,7 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
     for job in jobs {
         // adb pull into a folder keeps the phone's file name, so renamed files go one by one.
         let same_name = job.local.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
-        match (same_name, job.local.parent()) {
+        match (same_name && !too_long(&job.local), job.local.parent()) {
             (true, Some(dir)) => by_dir.entry(dir.to_path_buf()).or_default().push(job),
             _ => single.push(job),
         }
@@ -245,17 +315,32 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
         done += jobs.len();
     }
 
+    let tmp = root.join(".pulling");
     for job in &single {
         report(Msg::Progress { done, total, now: job.remote.clone() });
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
         }
-        let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local).output();
+        if too_long(&job.local) {
+            // adb.exe cannot write past 260 characters; Rust's fs can, so pull short and move.
+            let short = tmp.join("file");
+            let _ = fs::create_dir_all(&tmp);
+            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&short).output();
+            let _ = fs::rename(&short, &job.local);
+        } else {
+            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local).output();
+        }
         done += 1;
     }
+    let _ = fs::remove_dir_all(&tmp);
     record_failures(&single, &mut errors);
     report(Msg::Progress { done, total, now: String::new() });
     errors
+}
+
+/// Paths near Windows' 260-character limit, which adb.exe cannot write to.
+fn too_long(path: &Path) -> bool {
+    path.as_os_str().len() > 240
 }
 
 fn record_failures(jobs: &[Job], errors: &mut Vec<String>) {
@@ -263,7 +348,6 @@ fn record_failures(jobs: &[Job], errors: &mut Vec<String>) {
 }
 
 /// Makes a phone file name legal on Windows (no <>:"/\|?*, no trailing dot/space, no CON/NUL...).
-// shortcut: two names that only differ in case or in replaced characters land on one file; rare.
 fn safe_name(name: &str) -> String {
     let mut s: String = name
         .chars()
@@ -366,12 +450,14 @@ mod tests {
             emulator-5554  device product:sdk model:Pixel_8 device:emu transport_id:1\n\
             adb-R58M-x._adb-tls-connect._tcp device product:p model:SM_G991B transport_id:2\n\
             R58M  unauthorized usb:1-1 transport_id:3\n\
-            ZX1  offline\n";
+            ZX1  offline\n\
+            ZX2  authorizing transport_id:4\n";
         let phones = parse_adb_devices(text);
         assert!(phones[0] == Phone::Adb { serial: "emulator-5554".into(), model: "Pixel 8".into(), wifi: false });
         assert!(matches!(&phones[1], Phone::Adb { wifi: true, model, .. } if model == "SM G991B"));
         assert!(phones[2] == Phone::Unauthorized);
-        assert_eq!(phones.len(), 3);
+        assert!(phones[3] == Phone::Unauthorized);
+        assert_eq!(phones.len(), 4);
     }
 
     #[test]
@@ -392,6 +478,15 @@ mod tests {
         assert!(is_junk("/sdcard/Android/data/com.x/cache/a"));
         assert!(!is_junk("/sdcard/Documents/cache/notes.txt"));
         assert!(!is_junk("/sdcard/DCIM/Camera/IMG_1.jpg"));
+    }
+
+    #[test]
+    fn renames_clashing_names() {
+        let job = |remote: &str, local: &str| Job { remote: remote.into(), size: 0, mtime: 0, local: PathBuf::from(local) };
+        let mut jobs = vec![job("/sdcard/b", "x/IMG.jpg"), job("/sdcard/a", "x/img.jpg"), job("/sdcard/c", "x/img.JPG"), job("/sdcard/d", "x/notes")];
+        unclash(&mut jobs);
+        let locals: Vec<_> = jobs.iter().map(|j| j.local.to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(locals, ["x/img.jpg", "x/IMG (2).jpg", "x/img (3).JPG", "x/notes"]);
     }
 
     #[test]
