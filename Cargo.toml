@@ -1,0 +1,10 @@
+[package]
+name = "phone-backup"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.37.0", features = ["persistence"] }
+mtp-rs = "0.35"
+rfd = "0.17.2"
+tokio = { version = "1", features = ["rt", "macros"] }
