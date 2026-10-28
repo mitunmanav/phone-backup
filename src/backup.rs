@@ -65,7 +65,16 @@ fn adb() -> Command {
 /// Phones on ADB; if none, phones in "File transfer" (MTP) mode.
 pub fn detect() -> Vec<Phone> {
     let out = adb().args(["devices", "-l"]).output();
-    let phones = out.map(|o| parse_adb_devices(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default();
+    let mut phones = out.map(|o| parse_adb_devices(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default();
+    // One phone on both USB and Wi-Fi is listed twice; keep the faster USB entry.
+    if phones.iter().filter(|p| matches!(p, Phone::Adb { .. })).count() > 1 {
+        phones.sort_by_key(|p| matches!(p, Phone::Adb { wifi: true, .. }));
+        let mut seen = std::collections::HashSet::new();
+        phones.retain(|p| match p {
+            Phone::Adb { serial, .. } => seen.insert(phone_id(serial)),
+            _ => true,
+        });
+    }
     if !phones.is_empty() {
         return phones;
     }
@@ -128,6 +137,14 @@ fn connected(serial: &str) -> bool {
 
 const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Back up again to continue.";
 
+/// ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
+fn phone_id(serial: &str) -> String {
+    match shell(serial, "getprop ro.serialno").trim() {
+        "" => serial.to_string(),
+        s => s.to_string(),
+    }
+}
+
 /// One file to copy: remote path, its size and mtime (Unix seconds), and where it goes locally.
 struct Job {
     remote: String,
@@ -147,11 +164,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
         return Err(DISCONNECTED.into());
     }
     let status = |s: String| report(Msg::Status(s));
-    // ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
-    let id = match shell(serial, "getprop ro.serialno").trim() {
-        "" => serial.to_string(),
-        s => s.to_string(),
-    };
+    let id = phone_id(serial);
     let root = dest.join(safe_name(&format!("{model}_{id}")));
 
     let mut jobs = Vec::new();
