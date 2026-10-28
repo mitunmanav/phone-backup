@@ -3,7 +3,7 @@
 
 mod backup;
 
-use backup::{Msg, Phone, Summary};
+use backup::{Msg, Phone, Pick, Summary};
 use eframe::egui::{self, vec2, Align, Color32, FontFamily, FontId, Layout, RichText, Stroke, TextStyle};
 use std::path::PathBuf;
 use std::process::Command;
@@ -123,6 +123,7 @@ struct App {
     phones: Option<Vec<Phone>>,
     adb_ok: bool,
     dest: PathBuf,
+    pick: Pick,
     status: String,
     now: String,
     fraction: Option<f32>,
@@ -135,6 +136,9 @@ struct App {
     confirm_close: bool,
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
+    /// The busy job is an app restore, not a backup.
+    restoring: bool,
+    restore_msg: Option<Result<String, String>>,
 }
 
 impl App {
@@ -190,6 +194,10 @@ impl App {
         // Home folder, not Documents: Documents is often synced to OneDrive, and this stays offline.
         let default_dest = PathBuf::from(env::var("USERPROFILE").unwrap_or_else(|_| ".".into())).join("Phone backups");
         let dest = cc.storage.and_then(|s| s.get_string("dest")).map(PathBuf::from).unwrap_or(default_dest);
+        // Stored as three 0/1 digits: files, apps, data. Everything is on by default.
+        let bits: Vec<bool> = cc.storage.and_then(|s| s.get_string("pick")).unwrap_or_default().chars().map(|c| c != '0').collect();
+        let on = |i: usize| bits.get(i).copied().unwrap_or(true);
+        let pick = Pick { files: on(0), apps: on(1), data: on(2) };
 
         Self {
             tx,
@@ -198,6 +206,7 @@ impl App {
             phones: None,
             adb_ok: true,
             dest,
+            pick,
             status: String::new(),
             now: String::new(),
             fraction: None,
@@ -208,14 +217,17 @@ impl App {
             wifi_msg: String::new(),
             confirm_close: false,
             closing: false,
+            restoring: false,
+            restore_msg: None,
         }
     }
 
     fn start(&mut self, ctx: &egui::Context) {
         let phones = self.phones.clone().unwrap_or_default();
-        let (dest, tx, ctx, busy) = (self.dest.clone(), self.tx.clone(), ctx.clone(), self.busy.clone());
+        let (dest, pick, tx, ctx, busy) = (self.dest.clone(), self.pick, self.tx.clone(), ctx.clone(), self.busy.clone());
         busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
+        self.restoring = false;
         self.result = None;
         self.status = "Starting".into();
         self.now.clear();
@@ -237,10 +249,30 @@ impl App {
             } else if adb.is_empty() {
                 backup::mtp_backup(&dest, &report).map(|s| vec![s])
             } else {
-                adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, &report)).collect()
+                adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, pick, &report)).collect()
             };
             busy.store(false, Ordering::Relaxed);
             report(Msg::Done(result));
+        });
+    }
+
+    fn restore(&mut self, ctx: &egui::Context, serial: String, folder: PathBuf) {
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
+        busy.store(true, Ordering::Relaxed);
+        backup::STOP.store(false, Ordering::Relaxed);
+        self.restoring = true;
+        self.restore_msg = None;
+        self.status = "Starting".into();
+        self.now.clear();
+        self.fraction = None;
+        thread::spawn(move || {
+            let report = |m: Msg| {
+                let _ = tx.send(m);
+                ctx.request_repaint();
+            };
+            let result = backup::restore_apps(&serial, &folder, &report);
+            busy.store(false, Ordering::Relaxed);
+            report(Msg::Restored(result));
         });
     }
 
@@ -281,7 +313,6 @@ impl App {
             (Some(_), [(model, wifi)], _) => {
                 ui.heading(model);
                 ui.label(if *wifi { "Connected over Wi-Fi." } else { "Connected by USB cable." });
-                ui.label(muted("Photos, files, apps, contacts and messages will be backed up."));
             }
             (Some(_), [_, ..], _) => {
                 ui.heading(format!("{} phones connected", adb_models.len()));
@@ -336,8 +367,23 @@ impl App {
             }
         }
 
-        // Where the backup goes.
+        // What to back up. File transfer mode can only reach files.
+        let mtp_only = adb_models.is_empty() && mtp_name.is_some();
         ui.add_space(20.0);
+        ui.label(muted("What to back up"));
+        ui.add_enabled_ui(!busy, |ui| {
+            // Checkbox rows, not buttons: a 44 px row height leaves large gaps between them.
+            ui.spacing_mut().interact_size.y = 28.0;
+            ui.checkbox(&mut self.pick.files, "Photos, videos and files");
+            ui.add_enabled_ui(!mtp_only, |ui| {
+                ui.checkbox(&mut self.pick.apps, "Apps");
+                ui.checkbox(&mut self.pick.data, "Contacts, call history and messages");
+            });
+        });
+        let picked = self.pick.files || (!mtp_only && (self.pick.apps || self.pick.data));
+
+        // Where the backup goes.
+        ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.label(muted("Save backup in"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -352,7 +398,9 @@ impl App {
 
         // The one main action.
         ui.add_space(16.0);
-        let label = if busy {
+        let label = if busy && self.restoring {
+            "Restoring apps"
+        } else if busy {
             "Backing up"
         } else if self.result.is_some() {
             "Back up again"
@@ -360,7 +408,7 @@ impl App {
             "Back up now"
         };
         // Unavailable: a quiet grey button with readable text, not a faded plum one.
-        let enabled = ready && !busy;
+        let enabled = ready && !busy && picked;
         let (fill, text) = if enabled { (t.accent, t.on_accent) } else { (t.line, t.ink) };
         let button = egui::Button::new(RichText::new(label).font(semibold(17.0)).color(text)).fill(fill).corner_radius(10);
         ui.scope(|ui| {
@@ -413,13 +461,15 @@ impl App {
                     };
                     ui.label(RichText::new(title).font(semibold(20.0)));
                     let in_backup = files(s.files - s.errors.len().min(s.files));
-                    ui.label(if s.files == 0 {
-                        "No files were found on the phone.".to_string()
-                    } else if s.copied == 0 {
-                        format!("Nothing new to copy. All {in_backup} were already backed up.")
-                    } else {
-                        format!("Copied {} that were new or changed. The backup now holds {in_backup}.", files(s.copied))
-                    });
+                    if s.pick.files || s.pick.apps {
+                        ui.label(if s.files == 0 {
+                            "No files were found on the phone.".to_string()
+                        } else if s.copied == 0 {
+                            format!("Nothing new to copy. All {in_backup} were already backed up.")
+                        } else {
+                            format!("Copied {} that were new or changed. The backup now holds {in_backup}.", files(s.copied))
+                        });
+                    }
                     if !s.errors.is_empty() {
                         ui.label(
                             RichText::new(format!(
@@ -430,10 +480,14 @@ impl App {
                         );
                     }
                     if s.full {
-                        let saved: Vec<_> = s.data.iter().filter(|d| d.1).map(|d| d.0.to_lowercase()).collect();
+                        let mut saved: Vec<_> = s.pick.apps.then(|| "installed apps".to_string()).into_iter().collect();
+                        saved.extend(s.data.iter().filter(|d| d.1).map(|d| d.0.to_lowercase()));
                         let refused: Vec<_> = s.data.iter().filter(|d| !d.1).map(|d| d.0.to_lowercase()).collect();
                         if !saved.is_empty() {
-                            ui.label(format!("Also saved: installed apps, {}.", saved.join(", ")));
+                            ui.label(format!("Also saved: {}.", saved.join(", ")));
+                            if saved.iter().any(|d| d == "contacts") {
+                                ui.label(muted("Contacts are in data\\contacts.vcf, which Google Contacts or any phone can import."));
+                            }
                         }
                         if !refused.is_empty() {
                             ui.label(format!("Your phone did not allow reading {}.", refused.join(", ")));
@@ -449,6 +503,35 @@ impl App {
             }
             None => {}
         }
+
+        // Restoring is rare next to backing up, so it stays folded away too.
+        ui.add_space(24.0);
+        egui::CollapsingHeader::new(RichText::new("Restore apps to a phone").font(semibold(15.0))).show(ui, |ui| {
+            ui.label(muted(
+                "Reinstalls the apps saved in a backup that are missing from the connected phone. Their data and logins are not restored.",
+            ));
+            let serial = phones.iter().flatten().find_map(|p| match p {
+                Phone::Adb { serial, .. } => Some(serial.clone()),
+                _ => None,
+            });
+            if serial.is_none() {
+                ui.label(muted("Connect a phone with USB debugging turned on first."));
+            }
+            if ui.add_enabled(serial.is_some() && !busy, egui::Button::new("Choose backup and restore")).clicked() {
+                if let (Some(serial), Some(folder)) = (serial, rfd::FileDialog::new().set_directory(&self.dest).pick_folder()) {
+                    self.restore(ui.ctx(), serial, folder);
+                }
+            }
+            match &self.restore_msg {
+                Some(Ok(m)) => {
+                    ui.label(m);
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(e).color(t.error));
+                }
+                None => {}
+            }
+        });
 
         // Wi-Fi is a one-time setup, so it stays folded away.
         ui.add_space(24.0);
@@ -525,6 +608,7 @@ impl eframe::App for App {
                     }
                 }
                 Msg::Wifi(s) => self.wifi_msg = s,
+                Msg::Restored(r) => self.restore_msg = Some(r),
                 Msg::Done(r) => {
                     self.result = Some(r);
                     // Flash the taskbar button if the window is in the background.
@@ -547,8 +631,13 @@ impl eframe::App for App {
         if self.confirm_close {
             egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
                 ui.set_max_width(320.0);
-                ui.label(RichText::new("Stop the backup?").font(semibold(18.0)));
-                ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
+                if self.restoring {
+                    ui.label(RichText::new("Stop restoring apps?").font(semibold(18.0)));
+                    ui.label("Apps installed so far stay on the phone.");
+                } else {
+                    ui.label(RichText::new("Stop the backup?").font(semibold(18.0)));
+                    ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Stop and close").clicked() {
                         backup::STOP.store(true, Ordering::Relaxed);
@@ -580,6 +669,8 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("dest", self.dest.display().to_string());
+        let bit = |b: bool| if b { '1' } else { '0' };
+        storage.set_string("pick", [bit(self.pick.files), bit(self.pick.apps), bit(self.pick.data)].iter().collect());
     }
 }
 
