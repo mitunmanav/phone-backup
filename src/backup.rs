@@ -211,6 +211,17 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     let files = jobs.len();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
+    let needed: u64 = jobs.iter().map(|j| j.size).sum();
+    if let Some(free) = free_space(dest) {
+        // 200 MB spare so Windows itself is not left with a full disk.
+        if needed + 200_000_000 > free {
+            return Err(format!(
+                "Not enough space on this computer: the backup needs {} more, but only {} is free. Free up space or choose another folder.",
+                size(needed),
+                size(free)
+            ));
+        }
+    }
     let errors = pull(serial, jobs, &root, report);
     if !connected(serial) {
         return Err(DISCONNECTED.into());
@@ -236,6 +247,31 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
     Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true })
+}
+
+/// Bytes the current user may still write on the drive holding `path`.
+#[cfg(windows)]
+fn free_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut free = 0u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call; null pointers skip the other outputs.
+    let ok = unsafe { windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(free)
+}
+
+#[cfg(not(windows))]
+fn free_space(_: &Path) -> Option<u64> {
+    None
+}
+
+/// 1_500_000_000 -> "1.5 GB", 350_000_000 -> "350 MB"
+fn size(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1e9)
+    } else {
+        format!("{} MB", bytes.div_ceil(1_000_000))
+    }
 }
 
 /// Windows ignores letter case, and safe_name can turn two names into one, so IMG.jpg and
@@ -479,6 +515,15 @@ mod tests {
         assert!(is_junk("/sdcard/Android/data/com.x/cache/a"));
         assert!(!is_junk("/sdcard/Documents/cache/notes.txt"));
         assert!(!is_junk("/sdcard/DCIM/Camera/IMG_1.jpg"));
+    }
+
+    #[test]
+    fn formats_sizes_and_reads_free_space() {
+        assert_eq!(size(1_500_000_000), "1.5 GB");
+        assert_eq!(size(350_000_000), "350 MB");
+        assert_eq!(size(1), "1 MB");
+        #[cfg(windows)]
+        assert!(free_space(Path::new(".")).is_some_and(|f| f > 0));
     }
 
     #[test]

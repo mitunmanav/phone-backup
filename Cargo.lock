@@ -2573,6 +2573,7 @@ dependencies = [
  "mtp-rs",
  "rfd",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
