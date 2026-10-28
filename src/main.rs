@@ -3,7 +3,7 @@
 
 mod backup;
 
-use backup::{Msg, Phone, Summary};
+use backup::{Msg, Phone, Pick, Summary};
 use eframe::egui::{self, vec2, Align, Color32, FontFamily, FontId, Layout, RichText, Stroke, TextStyle};
 use std::path::PathBuf;
 use std::process::Command;
@@ -123,6 +123,7 @@ struct App {
     phones: Option<Vec<Phone>>,
     adb_ok: bool,
     dest: PathBuf,
+    pick: Pick,
     status: String,
     now: String,
     fraction: Option<f32>,
@@ -190,6 +191,10 @@ impl App {
         // Home folder, not Documents: Documents is often synced to OneDrive, and this stays offline.
         let default_dest = PathBuf::from(env::var("USERPROFILE").unwrap_or_else(|_| ".".into())).join("Phone backups");
         let dest = cc.storage.and_then(|s| s.get_string("dest")).map(PathBuf::from).unwrap_or(default_dest);
+        // Stored as three 0/1 digits: files, apps, data. Everything is on by default.
+        let bits: Vec<bool> = cc.storage.and_then(|s| s.get_string("pick")).unwrap_or_default().chars().map(|c| c != '0').collect();
+        let on = |i: usize| bits.get(i).copied().unwrap_or(true);
+        let pick = Pick { files: on(0), apps: on(1), data: on(2) };
 
         Self {
             tx,
@@ -198,6 +203,7 @@ impl App {
             phones: None,
             adb_ok: true,
             dest,
+            pick,
             status: String::new(),
             now: String::new(),
             fraction: None,
@@ -213,7 +219,7 @@ impl App {
 
     fn start(&mut self, ctx: &egui::Context) {
         let phones = self.phones.clone().unwrap_or_default();
-        let (dest, tx, ctx, busy) = (self.dest.clone(), self.tx.clone(), ctx.clone(), self.busy.clone());
+        let (dest, pick, tx, ctx, busy) = (self.dest.clone(), self.pick, self.tx.clone(), ctx.clone(), self.busy.clone());
         busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
         self.result = None;
@@ -237,7 +243,7 @@ impl App {
             } else if adb.is_empty() {
                 backup::mtp_backup(&dest, &report).map(|s| vec![s])
             } else {
-                adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, &report)).collect()
+                adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, pick, &report)).collect()
             };
             busy.store(false, Ordering::Relaxed);
             report(Msg::Done(result));
@@ -281,7 +287,6 @@ impl App {
             (Some(_), [(model, wifi)], _) => {
                 ui.heading(model);
                 ui.label(if *wifi { "Connected over Wi-Fi." } else { "Connected by USB cable." });
-                ui.label(muted("Photos, files, apps, contacts and messages will be backed up."));
             }
             (Some(_), [_, ..], _) => {
                 ui.heading(format!("{} phones connected", adb_models.len()));
@@ -336,8 +341,21 @@ impl App {
             }
         }
 
-        // Where the backup goes.
+        // What to back up. File transfer mode can only reach files.
+        let mtp_only = adb_models.is_empty() && mtp_name.is_some();
         ui.add_space(20.0);
+        ui.label(muted("What to back up"));
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.checkbox(&mut self.pick.files, "Photos, videos and files");
+            ui.add_enabled_ui(!mtp_only, |ui| {
+                ui.checkbox(&mut self.pick.apps, "Apps");
+                ui.checkbox(&mut self.pick.data, "Contacts, call history and messages");
+            });
+        });
+        let picked = self.pick.files || (!mtp_only && (self.pick.apps || self.pick.data));
+
+        // Where the backup goes.
+        ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.label(muted("Save backup in"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -360,7 +378,7 @@ impl App {
             "Back up now"
         };
         // Unavailable: a quiet grey button with readable text, not a faded plum one.
-        let enabled = ready && !busy;
+        let enabled = ready && !busy && picked;
         let (fill, text) = if enabled { (t.accent, t.on_accent) } else { (t.line, t.ink) };
         let button = egui::Button::new(RichText::new(label).font(semibold(17.0)).color(text)).fill(fill).corner_radius(10);
         ui.scope(|ui| {
@@ -413,13 +431,15 @@ impl App {
                     };
                     ui.label(RichText::new(title).font(semibold(20.0)));
                     let in_backup = files(s.files - s.errors.len().min(s.files));
-                    ui.label(if s.files == 0 {
-                        "No files were found on the phone.".to_string()
-                    } else if s.copied == 0 {
-                        format!("Nothing new to copy. All {in_backup} were already backed up.")
-                    } else {
-                        format!("Copied {} that were new or changed. The backup now holds {in_backup}.", files(s.copied))
-                    });
+                    if s.pick.files || s.pick.apps {
+                        ui.label(if s.files == 0 {
+                            "No files were found on the phone.".to_string()
+                        } else if s.copied == 0 {
+                            format!("Nothing new to copy. All {in_backup} were already backed up.")
+                        } else {
+                            format!("Copied {} that were new or changed. The backup now holds {in_backup}.", files(s.copied))
+                        });
+                    }
                     if !s.errors.is_empty() {
                         ui.label(
                             RichText::new(format!(
@@ -430,10 +450,11 @@ impl App {
                         );
                     }
                     if s.full {
-                        let saved: Vec<_> = s.data.iter().filter(|d| d.1).map(|d| d.0.to_lowercase()).collect();
+                        let mut saved: Vec<_> = s.pick.apps.then(|| "installed apps".to_string()).into_iter().collect();
+                        saved.extend(s.data.iter().filter(|d| d.1).map(|d| d.0.to_lowercase()));
                         let refused: Vec<_> = s.data.iter().filter(|d| !d.1).map(|d| d.0.to_lowercase()).collect();
                         if !saved.is_empty() {
-                            ui.label(format!("Also saved: installed apps, {}.", saved.join(", ")));
+                            ui.label(format!("Also saved: {}.", saved.join(", ")));
                             if saved.iter().any(|d| d == "contacts") {
                                 ui.label(muted("Contacts are in data\\contacts.vcf, which Google Contacts or any phone can import."));
                             }
@@ -583,6 +604,8 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("dest", self.dest.display().to_string());
+        let bit = |b: bool| if b { '1' } else { '0' };
+        storage.set_string("pick", [bit(self.pick.files), bit(self.pick.apps), bit(self.pick.data)].iter().collect());
     }
 }
 
