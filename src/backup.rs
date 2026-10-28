@@ -207,6 +207,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
+    unclash(&mut jobs);
     let files = jobs.len();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
@@ -235,6 +236,26 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
     Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true })
+}
+
+/// Windows ignores letter case, and safe_name can turn two names into one, so IMG.jpg and
+/// img.jpg would overwrite each other on every run. Later ones get " (2)", " (3)"...
+fn unclash(jobs: &mut [Job]) {
+    jobs.sort_by(|a, b| a.remote.cmp(&b.remote));
+    let mut seen = std::collections::HashSet::new();
+    for job in jobs {
+        let original = job.local.clone();
+        let mut n = 1;
+        while !seen.insert(job.local.to_string_lossy().to_lowercase()) {
+            n += 1;
+            let stem = original.file_stem().unwrap_or_default().to_string_lossy();
+            let name = match original.extension() {
+                Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
+                None => format!("{stem} ({n})"),
+            };
+            job.local = original.with_file_name(name);
+        }
+    }
 }
 
 /// True when the local copy is missing or differs in size or time.
@@ -312,7 +333,6 @@ fn record_failures(jobs: &[Job], errors: &mut Vec<String>) {
 }
 
 /// Makes a phone file name legal on Windows (no <>:"/\|?*, no trailing dot/space, no CON/NUL...).
-// shortcut: two names that only differ in case or in replaced characters land on one file; rare.
 fn safe_name(name: &str) -> String {
     let mut s: String = name
         .chars()
@@ -443,6 +463,15 @@ mod tests {
         assert!(is_junk("/sdcard/Android/data/com.x/cache/a"));
         assert!(!is_junk("/sdcard/Documents/cache/notes.txt"));
         assert!(!is_junk("/sdcard/DCIM/Camera/IMG_1.jpg"));
+    }
+
+    #[test]
+    fn renames_clashing_names() {
+        let job = |remote: &str, local: &str| Job { remote: remote.into(), size: 0, mtime: 0, local: PathBuf::from(local) };
+        let mut jobs = vec![job("/sdcard/b", "x/IMG.jpg"), job("/sdcard/a", "x/img.jpg"), job("/sdcard/c", "x/img.JPG"), job("/sdcard/d", "x/notes")];
+        unclash(&mut jobs);
+        let locals: Vec<_> = jobs.iter().map(|j| j.local.to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(locals, ["x/img.jpg", "x/IMG (2).jpg", "x/img (3).JPG", "x/notes"]);
     }
 
     #[test]
