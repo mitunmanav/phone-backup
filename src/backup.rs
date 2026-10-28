@@ -289,18 +289,19 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
 
     for (dir, jobs) in by_dir {
         let now = dir.strip_prefix(root).unwrap_or(&dir).display().to_string();
-        report(Msg::Progress { done, total, now });
         if let Err(e) = fs::create_dir_all(&dir) {
             errors.extend(jobs.iter().map(|j| format!("{}: {e}", j.remote)));
             done += jobs.len();
             continue;
         }
-        // Keep each command line well under Windows' 32,767-character limit.
+        // Keep each command line well under Windows' 32,767-character limit, and batches small
+        // enough that progress moves inside a big Camera folder.
         let mut start = 0;
         while start < jobs.len() {
+            report(Msg::Progress { done: done + start, total, now: now.clone() });
             let mut end = start;
             let mut len = 0;
-            while end < jobs.len() && (end == start || len + jobs[end].remote.len() < 20_000) {
+            while end < jobs.len() && end - start < 200 && (end == start || len + jobs[end].remote.len() < 20_000) {
                 len += jobs[end].remote.len() + 3;
                 end += 1;
             }
