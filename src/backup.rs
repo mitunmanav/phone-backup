@@ -25,6 +25,7 @@ pub enum Msg {
     Phones(Vec<Phone>),
     Wifi(String),
     Done(Result<Vec<Summary>, String>),
+    Restored(Result<String, String>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -399,6 +400,55 @@ fn vcard_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace(',', "\\,").replace(';', "\\;")
 }
 
+/// (package, its APK files) for each app saved under the backup folder or its `apps` folder.
+fn saved_apps(folder: &Path) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
+    let apps = if folder.join("apps").is_dir() { folder.join("apps") } else { folder.to_path_buf() };
+    let mut packages: Vec<(String, Vec<PathBuf>)> = fs::read_dir(&apps)
+        .map_err(|e| format!("Cannot open {}: {e}", apps.display()))?
+        .flatten()
+        .filter_map(|d| {
+            let apks: Vec<PathBuf> = fs::read_dir(d.path()).ok()?.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("apk"))).collect();
+            (!apks.is_empty()).then(|| (d.file_name().to_string_lossy().into_owned(), apks))
+        })
+        .collect();
+    if packages.is_empty() {
+        return Err("This folder has no saved apps. Choose the phone's backup folder, the one that holds the apps folder.".into());
+    }
+    packages.sort();
+    Ok(packages)
+}
+
+/// Reinstalls the apps saved in a backup's `apps` folder (one folder of APKs per app) that are
+/// not on the phone yet. Only the apps come back, not their data or logins.
+pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
+    let mut packages = saved_apps(folder)?;
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
+    let installed = shell(serial, "pm list packages");
+    let total = packages.len();
+    packages.retain(|(pkg, _)| !installed.lines().any(|l| l.trim() == format!("package:{pkg}")));
+    let (mut done, mut failed) = (0, Vec::new());
+    for (n, (pkg, apks)) in packages.iter().enumerate() {
+        if stopped() {
+            return Err("You stopped the restore. Apps installed so far stay on the phone.".into());
+        }
+        report(Msg::Status(format!("Installing app {} of {}: {pkg}", n + 1, packages.len())));
+        let mut c = adb();
+        c.args(["-s", serial, "install-multiple", "-r"]).args(apks);
+        if String::from_utf8_lossy(&run(c)).contains("Success") {
+            done += 1;
+        } else {
+            failed.push(pkg.clone());
+        }
+    }
+    let mut msg = format!("Installed {done} of {total} apps. {} were already on the phone.", total - packages.len());
+    if !failed.is_empty() {
+        msg += &format!(" Could not install: {}. The phone may block apps from unknown sources or need a newer Android.", failed.join(", "));
+    }
+    Ok(msg)
+}
+
 /// True when the local copy is missing or differs in size or time.
 fn needs_copy(job: &Job) -> bool {
     let Ok(meta) = fs::metadata(&job.local) else { return true };
@@ -659,6 +709,25 @@ mod tests {
             "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ann\\; Lee\r\nN:;Ann\\; Lee;;;\r\nTEL:+1 555\r\nEMAIL:ann@x.com\r\nEND:VCARD\r\n\
              BEGIN:VCARD\r\nVERSION:3.0\r\nFN:\r\nN:;;;;\r\nTEL:112\r\nEND:VCARD\r\n"
         );
+    }
+
+    #[test]
+    fn finds_saved_apps() {
+        let root = std::env::temp_dir().join(format!("phone-backup-test-{}", std::process::id()));
+        let app = root.join("apps").join("com.example");
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("base.apk"), "").unwrap();
+        fs::write(app.join("split_config.en.APK"), "").unwrap();
+        fs::write(app.join("notes.txt"), "").unwrap();
+        fs::create_dir_all(root.join("apps").join("empty")).unwrap();
+        let found = saved_apps(&root).unwrap();
+        // The apps folder itself works as well as the phone's folder.
+        assert_eq!(saved_apps(&root.join("apps")).unwrap().len(), 1);
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "com.example");
+        assert_eq!(found[0].1.len(), 2);
+        assert!(saved_apps(&root).is_err());
     }
 
     #[test]

@@ -136,6 +136,9 @@ struct App {
     confirm_close: bool,
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
+    /// The busy job is an app restore, not a backup.
+    restoring: bool,
+    restore_msg: Option<Result<String, String>>,
 }
 
 impl App {
@@ -214,6 +217,8 @@ impl App {
             wifi_msg: String::new(),
             confirm_close: false,
             closing: false,
+            restoring: false,
+            restore_msg: None,
         }
     }
 
@@ -222,6 +227,7 @@ impl App {
         let (dest, pick, tx, ctx, busy) = (self.dest.clone(), self.pick, self.tx.clone(), ctx.clone(), self.busy.clone());
         busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
+        self.restoring = false;
         self.result = None;
         self.status = "Starting".into();
         self.now.clear();
@@ -247,6 +253,26 @@ impl App {
             };
             busy.store(false, Ordering::Relaxed);
             report(Msg::Done(result));
+        });
+    }
+
+    fn restore(&mut self, ctx: &egui::Context, serial: String, folder: PathBuf) {
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
+        busy.store(true, Ordering::Relaxed);
+        backup::STOP.store(false, Ordering::Relaxed);
+        self.restoring = true;
+        self.restore_msg = None;
+        self.status = "Starting".into();
+        self.now.clear();
+        self.fraction = None;
+        thread::spawn(move || {
+            let report = |m: Msg| {
+                let _ = tx.send(m);
+                ctx.request_repaint();
+            };
+            let result = backup::restore_apps(&serial, &folder, &report);
+            busy.store(false, Ordering::Relaxed);
+            report(Msg::Restored(result));
         });
     }
 
@@ -370,7 +396,9 @@ impl App {
 
         // The one main action.
         ui.add_space(16.0);
-        let label = if busy {
+        let label = if busy && self.restoring {
+            "Restoring apps"
+        } else if busy {
             "Backing up"
         } else if self.result.is_some() {
             "Back up again"
@@ -474,6 +502,35 @@ impl App {
             None => {}
         }
 
+        // Restoring is rare next to backing up, so it stays folded away too.
+        ui.add_space(24.0);
+        egui::CollapsingHeader::new(RichText::new("Restore apps to a phone").font(semibold(15.0))).show(ui, |ui| {
+            ui.label(muted(
+                "Reinstalls the apps saved in a backup that are missing from the connected phone. Their data and logins are not restored.",
+            ));
+            let serial = phones.iter().flatten().find_map(|p| match p {
+                Phone::Adb { serial, .. } => Some(serial.clone()),
+                _ => None,
+            });
+            if serial.is_none() {
+                ui.label(muted("Connect a phone with USB debugging turned on first."));
+            }
+            if ui.add_enabled(serial.is_some() && !busy, egui::Button::new("Choose backup and restore")).clicked() {
+                if let (Some(serial), Some(folder)) = (serial, rfd::FileDialog::new().set_directory(&self.dest).pick_folder()) {
+                    self.restore(ui.ctx(), serial, folder);
+                }
+            }
+            match &self.restore_msg {
+                Some(Ok(m)) => {
+                    ui.label(m);
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(e).color(t.error));
+                }
+                None => {}
+            }
+        });
+
         // Wi-Fi is a one-time setup, so it stays folded away.
         ui.add_space(24.0);
         egui::CollapsingHeader::new(RichText::new("Connect over Wi-Fi").font(semibold(15.0))).show(ui, |ui| {
@@ -549,6 +606,7 @@ impl eframe::App for App {
                     }
                 }
                 Msg::Wifi(s) => self.wifi_msg = s,
+                Msg::Restored(r) => self.restore_msg = Some(r),
                 Msg::Done(r) => {
                     self.result = Some(r);
                     // Flash the taskbar button if the window is in the background.
@@ -571,8 +629,13 @@ impl eframe::App for App {
         if self.confirm_close {
             egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
                 ui.set_max_width(320.0);
-                ui.label(RichText::new("Stop the backup?").font(semibold(18.0)));
-                ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
+                if self.restoring {
+                    ui.label(RichText::new("Stop restoring apps?").font(semibold(18.0)));
+                    ui.label("Apps installed so far stay on the phone.");
+                } else {
+                    ui.label(RichText::new("Stop the backup?").font(semibold(18.0)));
+                    ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Stop and close").clicked() {
                         backup::STOP.store(true, Ordering::Relaxed);
