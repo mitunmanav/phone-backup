@@ -131,6 +131,10 @@ struct App {
     pair_code: String,
     connect_addr: String,
     wifi_msg: String,
+    /// Asking whether to stop a running backup before closing.
+    confirm_close: bool,
+    /// Close as soon as the stopped backup has finished cleaning up.
+    closing: bool,
 }
 
 impl App {
@@ -202,6 +206,8 @@ impl App {
             pair_code: String::new(),
             connect_addr: String::new(),
             wifi_msg: String::new(),
+            confirm_close: false,
+            closing: false,
         }
     }
 
@@ -209,6 +215,7 @@ impl App {
         let phones = self.phones.clone().unwrap_or_default();
         let (dest, tx, ctx, busy) = (self.dest.clone(), self.tx.clone(), ctx.clone(), self.busy.clone());
         busy.store(true, Ordering::Relaxed);
+        backup::STOP.store(false, Ordering::Relaxed);
         self.result = None;
         self.status = "Starting".into();
         self.now.clear();
@@ -380,7 +387,11 @@ impl App {
             if !self.now.is_empty() {
                 ui.add(egui::Label::new(muted(&self.now)).truncate());
             }
-            ui.label(muted("Keep the phone plugged in and unlocked. Closing this window stops the backup."));
+            ui.label(muted("Keep the phone plugged in and unlocked."));
+            let stopping = backup::STOP.load(Ordering::Relaxed);
+            if ui.add_enabled(!stopping, egui::Button::new(if stopping { "Stopping" } else { "Stop" })).clicked() {
+                backup::STOP.store(true, Ordering::Relaxed);
+            }
         }
 
         // What happened.
@@ -514,8 +525,41 @@ impl eframe::App for App {
                     }
                 }
                 Msg::Wifi(s) => self.wifi_msg = s,
-                Msg::Done(r) => self.result = Some(r),
+                Msg::Done(r) => {
+                    self.result = Some(r);
+                    // Flash the taskbar button if the window is in the background.
+                    if !ui.ctx().input(|i| i.focused) {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+                    }
+                }
             }
+        }
+
+        // Closing mid-backup asks first, then stops adb cleanly instead of leaving it running.
+        let busy = self.busy.load(Ordering::Relaxed);
+        if ui.ctx().input(|i| i.viewport().close_requested()) && busy {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_close = true;
+        }
+        if self.closing && !busy {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if self.confirm_close {
+            egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
+                ui.set_max_width(320.0);
+                ui.label(RichText::new("Stop the backup?").font(semibold(18.0)));
+                ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
+                ui.horizontal(|ui| {
+                    if ui.button("Stop and close").clicked() {
+                        backup::STOP.store(true, Ordering::Relaxed);
+                        self.closing = true;
+                        self.confirm_close = false;
+                    }
+                    if ui.button("Keep backing up").clicked() {
+                        self.confirm_close = false;
+                    }
+                });
+            });
         }
         let t = tokens(ui.visuals().dark_mode);
         egui::Frame::central_panel(ui.style()).fill(t.bg).inner_margin(28).show(ui, |ui| {
