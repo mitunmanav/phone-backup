@@ -4,8 +4,19 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, UNIX_EPOCH};
+
+/// Set by the Stop button; the running adb command is killed and the backup ends.
+pub static STOP: AtomicBool = AtomicBool::new(false);
+
+fn stopped() -> bool {
+    STOP.load(Ordering::Relaxed)
+}
+
+const STOPPED: &str = "You stopped the backup. Files copied so far are kept; press Back up again to continue.";
 
 /// What the backup reports back to the window while it runs.
 pub enum Msg {
@@ -123,11 +134,34 @@ fn is_junk(path: &str) -> bool {
 /// Runs a shell command on the phone and returns its stdout. Stderr (e.g. "Permission denied"
 /// for unreadable folders) is ignored on purpose: we keep whatever could be read.
 fn shell(serial: &str, cmd: &str) -> String {
-    adb()
-        .args(["-s", serial, "shell", cmd])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+    let mut c = adb();
+    c.args(["-s", serial, "shell", cmd]);
+    String::from_utf8_lossy(&run(c)).into_owned()
+}
+
+/// Runs a command and returns its stdout, or what it printed so far if Stop is pressed.
+/// Unlike `output()`, this kills the command on Stop: a long `find` or `adb pull` would
+/// otherwise keep running after the window closes.
+fn run(mut c: Command) -> Vec<u8> {
+    let Ok(mut child) = c.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Vec::new() };
+    // Read in a thread so a big listing cannot fill the pipe and stall the command.
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(s) = stdout.as_mut() {
+            let _ = s.read_to_end(&mut out);
+        }
+        out
+    });
+    while let Ok(None) = child.try_wait() {
+        if stopped() {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    reader.join().unwrap_or_default()
 }
 
 /// True while adb still sees the phone. Listing commands just return nothing when it is gone.
@@ -204,6 +238,9 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
         jobs.push(Job { remote: path.to_string(), size, mtime, local });
     }
 
+    if stopped() {
+        return Err(STOPPED.into());
+    }
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -223,6 +260,9 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
         }
     }
     let errors = pull(serial, jobs, &root, report);
+    if stopped() {
+        return Err(STOPPED.into());
+    }
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -341,11 +381,12 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
                 len += jobs[end].remote.len() + 3;
                 end += 1;
             }
-            let _ = adb()
-                .args(["-s", serial, "pull", "-a"])
-                .args(jobs[start..end].iter().map(|j| &j.remote))
-                .arg(&dir)
-                .output();
+            if stopped() {
+                return errors;
+            }
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a"]).args(jobs[start..end].iter().map(|j| &j.remote)).arg(&dir);
+            run(c);
             start = end;
         }
         record_failures(&jobs, &mut errors);
@@ -354,6 +395,9 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
 
     let tmp = root.join(".pulling");
     for job in &single {
+        if stopped() {
+            break;
+        }
         report(Msg::Progress { done, total, now: job.remote.clone() });
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
@@ -362,10 +406,14 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
             // adb.exe cannot write past 260 characters; Rust's fs can, so pull short and move.
             let short = tmp.join("file");
             let _ = fs::create_dir_all(&tmp);
-            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&short).output();
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a", &job.remote]).arg(&short);
+            run(c);
             let _ = fs::rename(&short, &job.local);
         } else {
-            let _ = adb().args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local).output();
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local);
+            run(c);
         }
         done += 1;
     }
@@ -419,6 +467,9 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
         let base = if n == 0 { root.join("files") } else { root.join(format!("storage_{}", safe_name(desc))) };
         let mut stack = vec![(None, base)];
         while let Some((parent, dir)) = stack.pop() {
+            if stopped() {
+                return Err(STOPPED.into());
+            }
             let now = dir.strip_prefix(&root).unwrap_or(&dir).display().to_string();
             // Total is unknown until the walk ends, so progress reports 0 for it.
             report(Msg::Progress { done: copied, total: 0, now });
@@ -448,6 +499,9 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
                     let mut out = fs::File::create(&part).map_err(|e| e.to_string())?;
                     let mut dl = storage.download(obj.handle, ByteRange::Full).await.map_err(|e| e.to_string())?;
                     while let Some(chunk) = dl.next_chunk().await {
+                        if stopped() {
+                            return Err(STOPPED.to_string());
+                        }
                         out.write_all(&chunk.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
                     }
                     drop(out);
