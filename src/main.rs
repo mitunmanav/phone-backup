@@ -91,6 +91,13 @@ fn files(n: usize) -> String {
     format!("{} {}", count(n), if n == 1 { "file" } else { "files" })
 }
 
+const WORKING: &str = "Working";
+
+/// "192.168.1.5:37145" or "phone.local:5555": a host, a colon and a port number.
+fn valid_addr(addr: &str) -> bool {
+    addr.rsplit_once(':').is_some_and(|(host, port)| !host.is_empty() && !host.contains(' ') && port.parse::<u16>().is_ok_and(|p| p > 0))
+}
+
 /// USB debugging only helps once adb is on this computer.
 fn adb_missing(ui: &mut egui::Ui, t: &Tokens) {
     ui.label(RichText::new("USB debugging also needs Google's free Platform Tools on this laptop. Unzip them and put adb.exe next to this app.").color(t.muted));
@@ -231,7 +238,7 @@ impl App {
     }
 
     fn run_wifi(&mut self, ctx: &egui::Context, args: Vec<String>) {
-        self.wifi_msg = "Working".into();
+        self.wifi_msg = WORKING.into();
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         thread::spawn(move || {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -451,10 +458,11 @@ impl App {
                     ui.add(egui::TextEdit::singleline(&mut self.pair_code).hint_text("123456").desired_width(110.0));
                 });
             });
-            if ui.button("Pair").clicked() {
+            let working = self.wifi_msg == WORKING;
+            if ui.add_enabled(!working, egui::Button::new("Pair")).clicked() {
                 let addr = self.pair_addr.trim().to_string();
                 let code = self.pair_code.trim().to_string();
-                if addr.contains(':') && code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
+                if valid_addr(&addr) && code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
                     self.run_wifi(ui.ctx(), vec!["pair".into(), addr, code]);
                 } else {
                     self.wifi_msg = "Type the address with its port, like 192.168.1.5:37145, and the 6-digit code.".into();
@@ -465,9 +473,9 @@ impl App {
             ui.label(muted("Type the IP address and port shown at the top of the Wireless debugging screen."));
             ui.label(muted("IP address and port"));
             ui.add(egui::TextEdit::singleline(&mut self.connect_addr).hint_text("192.168.1.5:41235").desired_width(190.0));
-            if ui.button("Connect").clicked() {
+            if ui.add_enabled(!working, egui::Button::new("Connect")).clicked() {
                 let addr = self.connect_addr.trim().to_string();
-                if addr.contains(':') {
+                if valid_addr(&addr) {
                     self.run_wifi(ui.ctx(), vec!["connect".into(), addr]);
                 } else {
                     self.wifi_msg = "Type the address with its port, like 192.168.1.5:41235.".into();
@@ -541,5 +549,16 @@ mod tests {
         assert_eq!(super::count(1234567), "1,234,567");
         assert_eq!(super::files(1), "1 file");
         assert_eq!(super::files(1280), "1,280 files");
+    }
+
+    #[test]
+    fn checks_wifi_addresses() {
+        assert!(super::valid_addr("192.168.1.5:37145"));
+        assert!(super::valid_addr("phone.local:5555"));
+        assert!(!super::valid_addr("192.168.1.5:"));
+        assert!(!super::valid_addr(":5555"));
+        assert!(!super::valid_addr("192.168.1.5"));
+        assert!(!super::valid_addr("192.168.1.5:99999"));
+        assert!(!super::valid_addr("192.168.1.5:0"));
     }
 }
