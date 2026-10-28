@@ -372,6 +372,8 @@ impl App {
         ui.add_space(20.0);
         ui.label(muted("What to back up"));
         ui.add_enabled_ui(!busy, |ui| {
+            // Checkbox rows, not buttons: a 44 px row height leaves large gaps between them.
+            ui.spacing_mut().interact_size.y = 28.0;
             ui.checkbox(&mut self.pick.files, "Photos, videos and files");
             ui.add_enabled_ui(!mtp_only, |ui| {
                 ui.checkbox(&mut self.pick.apps, "Apps");
