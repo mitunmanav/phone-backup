@@ -91,6 +91,12 @@ fn files(n: usize) -> String {
     format!("{} {}", count(n), if n == 1 { "file" } else { "files" })
 }
 
+/// USB debugging only helps once adb is on this computer.
+fn adb_missing(ui: &mut egui::Ui, t: &Tokens) {
+    ui.label(RichText::new("USB debugging also needs Google's free Platform Tools on this laptop. Unzip them and put adb.exe next to this app.").color(t.muted));
+    ui.hyperlink_to("Download Platform Tools", "https://developer.android.com/tools/releases/platform-tools");
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -108,6 +114,7 @@ struct App {
     busy: Arc<AtomicBool>,
     /// None until the first check has finished.
     phones: Option<Vec<Phone>>,
+    adb_ok: bool,
     dest: PathBuf,
     status: String,
     now: String,
@@ -178,6 +185,7 @@ impl App {
             rx,
             busy,
             phones: None,
+            adb_ok: true,
             dest,
             status: String::new(),
             now: String::new(),
@@ -271,7 +279,11 @@ impl App {
             (Some(_), [], Some(name)) => {
                 ui.heading(name);
                 ui.label("Connected in File transfer mode. Photos and files will be backed up.");
-                ui.label(muted("To also save apps, contacts and messages, turn on USB debugging on the phone."));
+                if self.adb_ok {
+                    ui.label(muted("To also save apps, contacts and messages, turn on USB debugging on the phone."));
+                } else {
+                    adb_missing(ui, t);
+                }
             }
             (Some(list), [], None) if list.contains(&Phone::Unauthorized) => {
                 ui.heading("Tap Allow on your phone");
@@ -299,6 +311,9 @@ impl App {
                 ui.label(muted(
                     "USB debugging: Settings, About phone, tap Build number 7 times, then Developer options, USB debugging.",
                 ));
+                if !self.adb_ok {
+                    adb_missing(ui, t);
+                }
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(16.0));
                     ui.label(muted("This screen updates when a phone is found."));
@@ -471,7 +486,10 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Phones(p) => self.phones = Some(p),
+                Msg::Phones(p) => {
+                    self.phones = Some(p);
+                    self.adb_ok = backup::adb_installed();
+                }
                 Msg::Status(s) => {
                     self.status = s;
                     self.now.clear();

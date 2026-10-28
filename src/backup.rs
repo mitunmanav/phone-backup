@@ -35,9 +35,28 @@ pub struct Summary {
     pub full: bool,
 }
 
+/// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
+/// Most people never install the SDK, so shipping adb.exe beside the app is the normal case.
+fn adb_path() -> Option<PathBuf> {
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+    let on_path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
+    let sdk = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Android\Sdk\platform-tools"));
+    beside
+        .iter()
+        .flat_map(|d| [d.clone(), d.join("platform-tools")])
+        .chain(on_path)
+        .chain(sdk)
+        .map(|d| d.join(if cfg!(windows) { "adb.exe" } else { "adb" }))
+        .find(|p| p.is_file())
+}
+
+pub fn adb_installed() -> bool {
+    adb_path().is_some()
+}
+
 /// adb without a console window flashing up on every call.
 fn adb() -> Command {
-    let mut c = Command::new("adb");
+    let mut c = Command::new(adb_path().unwrap_or_else(|| "adb".into()));
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
     c
@@ -68,7 +87,8 @@ fn parse_adb_devices(text: &str) -> Vec<Phone> {
                 let wifi = serial.contains(':') || serial.contains("._adb-tls-connect");
                 phones.push(Phone::Adb { serial: serial.into(), model, wifi });
             }
-            "unauthorized" => phones.push(Phone::Unauthorized),
+            // "authorizing" is the moment the Allow prompt is on screen.
+            "unauthorized" | "authorizing" => phones.push(Phone::Unauthorized),
             _ => {}
         }
     }
@@ -382,12 +402,14 @@ mod tests {
             emulator-5554  device product:sdk model:Pixel_8 device:emu transport_id:1\n\
             adb-R58M-x._adb-tls-connect._tcp device product:p model:SM_G991B transport_id:2\n\
             R58M  unauthorized usb:1-1 transport_id:3\n\
-            ZX1  offline\n";
+            ZX1  offline\n\
+            ZX2  authorizing transport_id:4\n";
         let phones = parse_adb_devices(text);
         assert!(phones[0] == Phone::Adb { serial: "emulator-5554".into(), model: "Pixel 8".into(), wifi: false });
         assert!(matches!(&phones[1], Phone::Adb { wifi: true, model, .. } if model == "SM G991B"));
         assert!(phones[2] == Phone::Unauthorized);
-        assert_eq!(phones.len(), 3);
+        assert!(phones[3] == Phone::Unauthorized);
+        assert_eq!(phones.len(), 4);
     }
 
     #[test]
