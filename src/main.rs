@@ -215,7 +215,7 @@ impl App {
             } else if adb.is_empty() {
                 backup::mtp_backup(&dest, &report).map(|s| vec![s])
             } else {
-                Ok(adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, &report)).collect())
+                adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, &report)).collect()
             };
             busy.store(false, Ordering::Relaxed);
             report(Msg::Done(result));
@@ -380,7 +380,9 @@ impl App {
                     };
                     ui.label(RichText::new(title).font(semibold(20.0)));
                     let in_backup = files(s.files - s.errors.len().min(s.files));
-                    ui.label(if s.copied == 0 {
+                    ui.label(if s.files == 0 {
+                        "No files were found on the phone.".to_string()
+                    } else if s.copied == 0 {
                         format!("Nothing new to copy. All {in_backup} were already backed up.")
                     } else {
                         format!("Copied {} that were new or changed. The backup now holds {in_backup}.", files(s.copied))

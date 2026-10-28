@@ -101,6 +101,13 @@ fn shell(serial: &str, cmd: &str) -> String {
         .unwrap_or_default()
 }
 
+/// True while adb still sees the phone. Listing commands just return nothing when it is gone.
+fn connected(serial: &str) -> bool {
+    adb().args(["-s", serial, "get-state"]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "device")
+}
+
+const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Back up again to continue.";
+
 /// One file to copy: remote path, its size and mtime (Unix seconds), and where it goes locally.
 struct Job {
     remote: String,
@@ -115,7 +122,10 @@ fn parse_stat(line: &str) -> Option<(u64, i64, &str)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?))
 }
 
-pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) -> Summary {
+pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, String> {
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
     let status = |s: String| report(Msg::Status(s));
     // ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
     let id = match shell(serial, "getprop ro.serialno").trim() {
@@ -161,10 +171,16 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
         jobs.push(Job { remote: path.to_string(), size, mtime, local });
     }
 
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
     let files = jobs.len();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
     let errors = pull(serial, jobs, &root, report);
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
 
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
     status("Saving contacts, call history and messages".into());
@@ -185,7 +201,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, report: &dyn Fn(Msg)) 
     }
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true }
+    Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true })
 }
 
 /// True when the local copy is missing or differs in size or time.
