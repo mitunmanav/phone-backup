@@ -39,7 +39,9 @@
   header .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--ink); text-decoration: none; min-height: 44px; }
   .brand svg { color: var(--accent); }
-  .nav-link { color: var(--ink); min-height: 44px; display: inline-flex; align-items: center; padding: 0 4px; }
+  .nav-link { color: var(--ink); min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 4px; }
+  .nav-link svg { flex-shrink: 0; }
+  .brand, .nav-link { white-space: nowrap; }
 
   .hero { display: grid; gap: 40px; align-items: center; padding-block: 48px 80px; }
   @media (min-width: 900px) { .hero { grid-template-columns: 1fr 1fr; gap: 64px; padding-block: 96px 120px; } }
@@ -114,7 +116,10 @@
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M12 7v7m-3-3 3 3 3-3"/></svg>
       Phone Backup
     </a>
-    <a class="nav-link" href="https://github.com/mitunmanav/phone-backup">Source on GitHub</a>
+    <a class="nav-link" href="https://github.com/mitunmanav/phone-backup">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.1 0 4.7-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
+      GitHub
+    </a>
   </div>
 </header>
 
