@@ -1,7 +1,7 @@
 //! Copies an Android phone to this computer over ADB (USB or Wi-Fi) or MTP.
 //! Everything runs locally; nothing is sent to any server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -484,9 +484,11 @@ fn free_space(_: &Path) -> Option<u64> {
     None
 }
 
-/// 1_500_000_000 -> "1.5 GB", 350_000_000 -> "350 MB"
-fn size(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
+/// 1_500_000_000 -> "1.5 GB", 350_000_000 -> "350 MB", 1_500 -> "2 KB"
+pub fn size(bytes: u64) -> String {
+    if bytes <= 999_000 {
+        format!("{} KB", bytes.div_ceil(1_000))
+    } else if bytes >= 1_000_000_000 {
         format!("{:.1} GB", bytes as f64 / 1e9)
     } else {
         format!("{} MB", bytes.div_ceil(1_000_000))
@@ -734,7 +736,8 @@ fn saved(path: &Path) -> Option<Saved> {
 /// Files saved in a backup folder and the phone path each goes back to: `files` goes to
 /// /sdcard, `sdcard_<card>` to that SD card when the phone has it. Also returns the cards the
 /// phone lacks. App folders (Android/data, Android/obb) are left out: the apps own those.
-fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), String> {
+/// `volumes` lists the phone's cards (`ls /storage`); None keeps every card.
+fn saved_files(folder: &Path, volumes: Option<&str>) -> Result<(Vec<Job>, Vec<String>), String> {
     // The `files` folder itself works as well as the phone's folder.
     let folder = if folder.file_name().is_some_and(|n| n == "files") {
         folder.parent().unwrap_or(folder)
@@ -751,7 +754,7 @@ fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), 
         if name == "files" {
             roots.push((entry.path(), "/sdcard".to_string()));
         } else if let Some(card) = name.strip_prefix("sdcard_") {
-            if volumes.split_whitespace().any(|v| v == card) {
+            if volumes.is_none_or(|v| v.split_whitespace().any(|v| v == card)) {
                 roots.push((entry.path(), format!("/storage/{card}")));
             } else {
                 missing.push(card.to_string());
@@ -802,6 +805,15 @@ fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), 
     }
     jobs.sort_by(|a, b| a.remote.cmp(&b.remote));
     Ok((jobs, missing))
+}
+
+/// Every file a backup could restore, with its size, in phone-path order.
+pub fn backup_files(folder: &Path) -> Result<Vec<(PathBuf, u64)>, String> {
+    Ok(saved_files(folder, None)?
+        .0
+        .into_iter()
+        .map(|j| (j.local, j.size))
+        .collect())
 }
 
 /// Wraps a path in single quotes for the phone's shell.
@@ -859,17 +871,20 @@ pub fn or_list(items: &[String]) -> String {
 
 /// Copies the photos and files of a backup back to the phone, skipping any file the phone
 /// already has, so restoring twice copies nothing twice and nothing on the phone is replaced.
-/// With `check`, copies nothing and says what a restore would do.
+/// With `check`, copies nothing and says what a restore would do. `only` limits it to those
+/// files of the backup.
 pub fn restore_files(
     serial: &str,
     folder: &Path,
+    only: Option<&HashSet<PathBuf>>,
     check: bool,
     report: &dyn Fn(Msg),
 ) -> Result<String, String> {
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
-    let (mut jobs, missing) = saved_files(folder, &shell(serial, "ls /storage"))?;
+    let (mut jobs, missing) = saved_files(folder, Some(&shell(serial, "ls /storage")))?;
+    jobs.retain(|j| only.is_none_or(|o| o.contains(&j.local)));
     let total = jobs.len();
 
     report(Msg::Status("Checking what is already on the phone…".into()));
@@ -888,7 +903,7 @@ pub fn restore_files(
             }
         })
         .collect();
-    let mut on_phone = std::collections::HashSet::new();
+    let mut on_phone = HashSet::new();
     for root in &roots {
         // Android's shared storage ignores letter case, so compare names in lower case.
         on_phone.extend(
@@ -1425,7 +1440,8 @@ mod tests {
     fn formats_sizes_and_reads_free_space() {
         assert_eq!(size(1_500_000_000), "1.5 GB");
         assert_eq!(size(350_000_000), "350 MB");
-        assert_eq!(size(1), "1 MB");
+        assert_eq!(size(1), "1 KB");
+        assert_eq!(size(999_001), "1 MB");
         #[cfg(windows)]
         assert!(free_space(Path::new(".")).is_some_and(|f| f > 0));
     }
@@ -1481,9 +1497,11 @@ mod tests {
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, "abc").unwrap();
         }
-        let (jobs, missing) = saved_files(&root, "emulated self 1234-AB").unwrap();
+        let (jobs, missing) = saved_files(&root, Some("emulated self 1234-AB")).unwrap();
         // Picking the files folder itself works too.
-        let (again, _) = saved_files(&root.join("files"), "").unwrap();
+        let (again, _) = saved_files(&root.join("files"), Some("")).unwrap();
+        // Listing for the picker keeps every card, even one this phone lacks.
+        let all = backup_files(&root).unwrap();
         fs::remove_dir_all(&root).unwrap();
         let remotes: Vec<_> = jobs.iter().map(|j| j.remote.as_str()).collect();
         assert_eq!(
@@ -1497,7 +1515,8 @@ mod tests {
         assert_eq!(jobs[0].size, 3);
         assert_eq!(missing, ["9999-ZZ"]);
         assert_eq!(again.len(), 2);
-        assert!(saved_files(&root, "").is_err());
+        assert_eq!(all.len(), 4);
+        assert!(saved_files(&root, None).is_err());
     }
 
     #[test]
@@ -1635,12 +1654,16 @@ mod tests {
         shell_each(&serial, "rm -f", &gone);
         // adb shell on Windows turns LF into CRLF.
         let sh = |cmd: &str| shell(&serial, cmd).replace("\r\n", "\n");
-        let msg = restore_files(&serial, &first.root, true, &quiet).unwrap();
+        // Choosing files restores only those.
+        let one = HashSet::from([first.root.join("files/E2E/many/f7.txt")]);
+        let msg = restore_files(&serial, &first.root, Some(&one), true, &quiet).unwrap();
+        assert!(msg.starts_with("Files: will copy 1 file ("), "{msg}");
+        let msg = restore_files(&serial, &first.root, None, true, &quiet).unwrap();
         assert!(
             msg.starts_with(&format!("Files: will copy {} (", files(gone.len()))),
             "{msg}"
         );
-        let msg = restore_files(&serial, &first.root, false, &quiet).unwrap();
+        let msg = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
         println!("restore: {msg}");
         assert!(
             msg.starts_with(&format!("Copied {} back", files(gone.len()))),
@@ -1654,7 +1677,7 @@ mod tests {
         assert_eq!(sh(&format!("cat {}", sh_quote(&deep_remote))), "deep\n");
         // Windows-safe names stay on the computer, never copied back as extra files.
         assert_eq!(sh("ls /sdcard/E2E/Docs | grep -c -e _CON -e 'dot_'"), "0\n");
-        let msg = restore_files(&serial, &first.root, false, &quiet).unwrap();
+        let msg = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
         assert!(msg.starts_with("Copied 0 files back"), "{msg}");
         // Every saved app is still installed, so nothing is reinstalled.
         let msg = restore_apps(&serial, &first.root, true, &quiet).unwrap();

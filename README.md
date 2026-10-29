@@ -11,7 +11,7 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Back up photos, videos, and files from phone storage and SD cards.
 - Save installed apps as APK files. App logins and private app data are not included.
 - Back up contacts, call history, and messages over USB on phones that allow it. Contacts are also saved as `contacts.vcf`.
-- Restore photos and files, and reinstall apps from a backup.
+- Restore photos and files, all of them or only the ones you pick from a list with previews, and reinstall apps from a backup.
 - Keep a separate folder for each phone; later backups copy only new or changed files.
 
 ## Download
