@@ -1,0 +1,5 @@
+# Commits that only change formatting. GitHub skips them in blame; locally run:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the code with cargo fmt
+5a13ac5ca90ae5c0bf8d5f54ba377f9e25dd0e12
