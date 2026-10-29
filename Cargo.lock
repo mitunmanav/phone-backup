@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "phone-backup"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "eframe",
  "mtp-rs",
