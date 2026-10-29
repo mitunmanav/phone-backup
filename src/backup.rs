@@ -197,8 +197,10 @@ fn connected(serial: &str) -> bool {
 const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Back up again to continue.";
 
 /// ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
+/// Not stoppable like `shell`: the phone list calls it too, and Stop stays set after a job ends.
 fn phone_id(serial: &str) -> String {
-    match shell(serial, "getprop ro.serialno").trim() {
+    let out = adb().args(["-s", serial, "shell", "getprop ro.serialno"]).output().map(|o| o.stdout).unwrap_or_default();
+    match String::from_utf8_lossy(&out).trim() {
         "" => serial.to_string(),
         s => s.to_string(),
     }
@@ -254,8 +256,8 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
 
     // Installers of apps the user installed (base + split APKs). App private data is not
     // readable without root on Android 12+, so this restores the apps, not their logins/settings.
-    status("Reading the list of installed apps…".into());
     let apps = if pick.apps {
+        status("Reading the list of installed apps…".into());
         shell(
             serial,
             r#"for p in $(pm list packages -3 | cut -d: -f2); do for a in $(pm path $p | cut -d: -f2); do stat -c "%s %Y $p %n" $a; done; done"#,
@@ -277,6 +279,17 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
         return Err(DISCONNECTED.into());
     }
     unclash(&mut jobs);
+    if pick.files {
+        // Names changed for Windows go back to the phone under their real names; see saved_files.
+        let mut map = renamed(&root);
+        map.extend(jobs.iter().filter_map(|j| {
+            let (rel, local_rel) = storages.iter().find_map(|(r, l)| Some((j.remote.strip_prefix(&format!("{r}/"))?, j.local.strip_prefix(l).ok()?)))?;
+            let local = j.local.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+            (local_rel != Path::new(rel)).then(|| (local, j.remote.clone()))
+        }));
+        let _ = fs::create_dir_all(&root);
+        let _ = fs::write(root.join(RENAMED), map.iter().map(|(local, remote)| format!("{local}\t{remote}\n")).collect::<String>());
+    }
     let files = jobs.len();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
@@ -325,6 +338,19 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
     Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true, pick })
+}
+
+/// Lists files whose name was changed to be legal on Windows: "files/Docs/_CON.txt<TAB>/sdcard/Docs/CON.txt".
+const RENAMED: &str = "renamed.txt";
+
+/// The renamed files of a backup folder: path inside it (with `/`) to the phone path.
+fn renamed(root: &Path) -> BTreeMap<String, String> {
+    fs::read_to_string(root.join(RENAMED))
+        .unwrap_or_default()
+        .lines()
+        // safe_name turns tabs into `_`, so the first tab always ends the local path.
+        .filter_map(|l| l.split_once('\t').map(|(a, b)| (a.to_string(), b.to_string())))
+        .collect()
 }
 
 /// Bytes the current user may still write on the drive holding `path`.
@@ -526,6 +552,7 @@ fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), 
     if roots.is_empty() {
         return Err("This folder has no saved files. Choose the phone's backup folder, the one that holds the files folder.".into());
     }
+    let renamed = renamed(folder);
     let mut jobs = Vec::new();
     for (local_root, remote_root) in roots {
         let mut stack = vec![local_root.clone()];
@@ -541,8 +568,9 @@ fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), 
                 if meta.is_dir() {
                     stack.push(path);
                 } else {
-                    // shortcut: names that safe_name or unclash changed go back changed; the original is not stored.
-                    jobs.push(Job { remote: format!("{remote_root}/{rel}"), size: meta.len(), mtime: 0, local: path });
+                    let key = path.strip_prefix(folder).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                    let remote = renamed.get(&key).cloned().unwrap_or_else(|| format!("{remote_root}/{rel}"));
+                    jobs.push(Job { remote, size: meta.len(), mtime: 0, local: path });
                 }
             }
         }
@@ -654,25 +682,30 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
     let tmp = std::env::temp_dir().join(format!("phone-backup-push-{}", std::process::id()));
     let mut tried: Vec<&Job> = Vec::new();
     'dirs: for (dir, group) in &by_dir {
-        let (long, short): (Vec<&Job>, Vec<&Job>) = group.iter().partition(|j| too_long(&j.local));
+        // Pushing into a folder keeps the local name, so renamed files go one by one to their full path.
+        let alone = |j: &Job| too_long(&j.local) || j.local.file_name().and_then(|n| n.to_str()) != j.remote.rsplit('/').next();
+        let (single, many): (Vec<&Job>, Vec<&Job>) = group.iter().partition(|j| alone(j));
         // 100 paths of at most 240 characters stay under Windows' 32,767-character command line.
-        for batch in short.chunks(100).chain(long.chunks(1)) {
+        for batch in many.chunks(100).chain(single.chunks(1)) {
             report(Msg::Progress { done: tried.len(), total: to_copy, now: dir.to_string() });
             if stopped() {
                 break 'dirs;
             }
             let mut c = adb();
             c.args(["-s", serial, "push"]);
-            if too_long(&batch[0].local) {
-                // adb.exe cannot read past 260 characters; Rust's fs can, so copy short and push.
-                let short = tmp.join(batch[0].local.file_name().unwrap_or_default());
-                let _ = fs::create_dir_all(&tmp);
-                let _ = fs::copy(&batch[0].local, &short);
-                c.arg(short);
+            if alone(batch[0]) {
+                let mut src = batch[0].local.clone();
+                if too_long(&src) {
+                    // adb.exe cannot read past 260 characters; Rust's fs can, so copy short and push.
+                    let short = tmp.join("file");
+                    let _ = fs::create_dir_all(&tmp);
+                    let _ = fs::copy(&src, &short);
+                    src = short;
+                }
+                c.arg(src).arg(&batch[0].remote);
             } else {
-                c.args(batch.iter().map(|j| &j.local));
+                c.args(batch.iter().map(|j| &j.local)).arg(format!("{dir}/"));
             }
-            c.arg(format!("{dir}/"));
             run(c);
             tried.extend(batch);
         }
@@ -1063,6 +1096,116 @@ mod tests {
         unclash(&mut jobs);
         let locals: Vec<_> = jobs.iter().map(|j| j.local.to_string_lossy().replace('\\', "/")).collect();
         assert_eq!(locals, ["x/img.jpg", "x/IMG (2).jpg", "x/img (3).JPG", "x/notes"]);
+    }
+
+    /// Backs up and restores a real phone or emulator. Run with
+    /// `PB_E2E_SERIAL=emulator-5554 cargo test e2e -- --ignored --nocapture`.
+    /// Expects the files that docs/e2e-seed.sh puts in /sdcard/E2E.
+    #[test]
+    #[ignore]
+    fn e2e_backup_and_restore() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let dest = std::env::temp_dir().join(format!("pb-e2e-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let all = Pick { files: true, apps: true, data: true };
+        let quiet = |_: Msg| {};
+        let first = adb_backup(&serial, "E2E", &dest, all, &quiet).unwrap();
+        println!("first: files {} copied {} errors {:?} data {:?}", first.files, first.copied, first.errors, first.data);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        let e2e = first.root.join("files").join("E2E");
+        for (name, body) in [
+            // Shared storage ignores case, so img.jpg replaced IMG.jpg on the phone itself.
+            ("Camera/IMG.jpg", "two2\n"),
+            ("Docs/it's $x.txt", "q\n"),
+            ("Docs/trailing dot_", "d\n"),
+            ("Docs/_CON.txt", "e\n"),
+            ("Docs/ünïcødé 日本.txt", "u\n"),
+            ("Docs/empty.bin", ""),
+            ("Docs/ leading space.txt", "lead\n"),
+            ("Docs/-dash.txt", "dash\n"),
+            ("sp ace dir/x y.txt", "s\n"),
+            ("many/f450.txt", "450\n"),
+        ] {
+            assert_eq!(fs::read_to_string(e2e.join(name)).unwrap_or_else(|e| panic!("{name}: {e}")), body, "{name}");
+        }
+        assert!(!e2e.join(".thumbnails").exists());
+        assert_eq!(fs::metadata(e2e.join("Camera/big.bin")).unwrap().len(), 20 << 20);
+        let deep: PathBuf = (1..=12).fold(e2e.join("deep"), |p, i| p.join(format!("folder_with_a_fairly_long_name_{i}"))).join("deepfile.txt");
+        assert_eq!(fs::read_to_string(&deep).unwrap(), "deep\n");
+        assert!(first.root.join("apps").read_dir().unwrap().count() > 0);
+        let vcf = fs::read_to_string(first.root.join("data").join("contacts.vcf")).unwrap();
+        println!("{vcf}");
+        assert!(vcf.contains("TEL:+1 555 0100"));
+
+        let again = adb_backup(&serial, "E2E", &dest, all, &quiet).unwrap();
+        assert_eq!((again.copied, again.files, again.errors.len()), (0, first.files, 0));
+
+        // Restore: delete some files on the phone, then bring them back.
+        let deep_remote = (1..=12).fold("/sdcard/E2E/deep".to_string(), |p, i| format!("{p}/folder_with_a_fairly_long_name_{i}")) + "/deepfile.txt";
+        let gone = [
+            "/sdcard/E2E/Docs/it's $x.txt",
+            "/sdcard/E2E/Docs/ünïcødé 日本.txt",
+            "/sdcard/E2E/Docs/empty.bin",
+            "/sdcard/E2E/many/f7.txt",
+            "/sdcard/E2E/Docs/CON.txt",
+            "/sdcard/E2E/Docs/trailing dot.",
+            &deep_remote,
+        ];
+        shell_each(&serial, "rm -f", &gone);
+        // adb shell on Windows turns LF into CRLF.
+        let sh = |cmd: &str| shell(&serial, cmd).replace("\r\n", "\n");
+        let msg = restore_files(&serial, &first.root, &quiet).unwrap();
+        println!("restore: {msg}");
+        assert!(msg.starts_with(&format!("Copied {} back", files(gone.len()))), "{msg}");
+        assert_eq!(sh("cat '/sdcard/E2E/Docs/it'\\''s $x.txt'"), "q\n");
+        assert_eq!(sh("cat '/sdcard/E2E/Docs/CON.txt' '/sdcard/E2E/Docs/trailing dot.'"), "e\nd\n");
+        assert_eq!(sh(&format!("cat {}", sh_quote(&deep_remote))), "deep\n");
+        // Windows-safe names stay on the computer, never copied back as extra files.
+        assert_eq!(sh("ls /sdcard/E2E/Docs | grep -c -e _CON -e 'dot_'"), "0\n");
+        let msg = restore_files(&serial, &first.root, &quiet).unwrap();
+        assert!(msg.starts_with("Copied 0 files back"), "{msg}");
+        // Every saved app is still installed, so nothing is reinstalled.
+        let msg = restore_apps(&serial, &first.root, &quiet).unwrap();
+        assert!(msg.starts_with("Installed 0 of"), "{msg}");
+        fs::remove_dir_all(&dest).unwrap();
+    }
+
+    /// Needs the same emulator on USB (PB_E2E_SERIAL) and on TCP (`adb connect 127.0.0.1:5555`).
+    #[test]
+    #[ignore]
+    fn e2e_stop_disconnect_and_duplicate() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let tcp = "127.0.0.1:5555";
+        let adb_count = || detect().iter().filter(|p| matches!(p, Phone::Adb { .. })).count();
+        assert_eq!(adb_count(), 1, "one phone on USB and TCP is listed once");
+
+        let dest = std::env::temp_dir().join(format!("pb-e2e-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let pick = Pick { files: true, apps: false, data: false };
+        let quiet = |_: Msg| {};
+        let stopper = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(4));
+            STOP.store(true, Ordering::Relaxed);
+        });
+        let r = adb_backup(&serial, "E2E", &dest, pick, &quiet);
+        stopper.join().unwrap();
+        assert_eq!(r.err().as_deref(), Some(STOPPED));
+        // The phone list keeps working after a stopped job.
+        assert_eq!(adb_count(), 1, "still listed once after Stop");
+        STOP.store(false, Ordering::Relaxed);
+
+        let unplug = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(4));
+            let _ = adb().args(["disconnect", tcp]).output();
+        });
+        let _ = fs::remove_dir_all(&dest);
+        let r = adb_backup(tcp, "E2E", &dest, pick, &quiet);
+        unplug.join().unwrap();
+        assert_eq!(r.err().as_deref(), Some(DISCONNECTED));
+        // Interrupted copies are never mistaken for finished ones.
+        let again = adb_backup(&serial, "E2E", &dest, pick, &quiet).unwrap();
+        assert!(again.errors.is_empty() && again.copied > 0, "{:?}", again.errors);
+        let _ = fs::remove_dir_all(&dest);
     }
 
     #[test]

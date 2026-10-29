@@ -287,6 +287,8 @@ struct App {
     restoring: bool,
     restore_msg: Option<Result<String, String>>,
     backups: Vec<backup::Saved>,
+    /// The folder `backups` was read from.
+    scanned: PathBuf,
     chosen: Option<PathBuf>,
     restore_files: bool,
     restore_apps: bool,
@@ -395,6 +397,7 @@ impl App {
             restoring: false,
             restore_msg: None,
             backups: Vec::new(),
+            scanned: PathBuf::new(),
             chosen: None,
             restore_files: true,
             restore_apps: true,
@@ -447,7 +450,22 @@ impl App {
             } else if adb.is_empty() {
                 backup::mtp_backup(&dest, &report).map(|s| vec![s])
             } else {
-                adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, pick, &report)).collect()
+                // One phone failing (say, unplugged) must not skip the others.
+                let (mut done, mut failed) = (Vec::new(), Vec::new());
+                for (serial, model) in &adb {
+                    match backup::adb_backup(serial, model, &dest, pick, &report) {
+                        Ok(s) => done.push(s),
+                        Err(e) if adb.len() > 1 => failed.push(format!("{model}: {e}")),
+                        Err(e) => failed.push(e),
+                    }
+                }
+                if failed.is_empty() {
+                    Ok(done)
+                } else {
+                    let names: Vec<_> = done.iter().map(|s| s.name.clone()).collect();
+                    let ok = if names.is_empty() { String::new() } else { format!("\n{} backed up fine.", names.join(", ")) };
+                    Err(failed.join("\n") + &ok)
+                }
             };
             busy.store(false, Ordering::Relaxed);
             report(Msg::Done(result));
@@ -503,6 +521,7 @@ impl App {
             return;
         }
         self.backups = backup::saved_backups(folder);
+        self.scanned = folder.to_path_buf();
         if !self.backups.iter().any(|b| Some(&b.path) == self.chosen.as_ref()) {
             self.chosen = self.backups.first().map(|b| b.path.clone());
         }
@@ -898,7 +917,7 @@ impl App {
 
         section(ui, t, "Choose a backup", true);
         if self.backups.is_empty() {
-            ui.label(format!("No backups in {} yet.", self.dest.display()));
+            ui.label(format!("No backups in {} yet.", self.scanned.display()));
             ui.label(muted("Back up a phone first, or find the folder that holds your backups."));
         }
         ui.add_enabled_ui(!busy, |ui| {
@@ -1050,6 +1069,9 @@ impl App {
             }
         }
         self.chosen = self.backups.first().map(|b| b.path.clone());
+        if f != Fixture::Real {
+            self.scanned = self.dest.clone();
+        }
     }
 }
 
