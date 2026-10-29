@@ -607,7 +607,13 @@ fn saved_apps(folder: &Path) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
 
 /// Reinstalls the apps saved in a backup's `apps` folder (one folder of APKs per app) that are
 /// not on the phone yet. Only the apps come back, not their data or logins.
-pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
+/// With `check`, installs nothing and says what a restore would do.
+pub fn restore_apps(
+    serial: &str,
+    folder: &Path,
+    check: bool,
+    report: &dyn Fn(Msg),
+) -> Result<String, String> {
     let mut packages = saved_apps(folder)?;
     if !connected(serial) {
         return Err(DISCONNECTED.into());
@@ -619,6 +625,18 @@ pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result
             .lines()
             .any(|l| l.trim() == format!("package:{pkg}"))
     });
+    if check {
+        let names: Vec<&str> = packages.iter().take(3).map(|(p, _)| p.as_str()).collect();
+        return Ok(match packages.len() {
+            0 => "Apps: every saved app is already on the phone.".into(),
+            n => format!(
+                "Apps: will install {} of {}, for example {}. The rest are already on the phone.",
+                count(n),
+                count(total),
+                names.join(", ")
+            ),
+        });
+    }
     let (mut done, mut failed) = (0, Vec::new());
     for (n, (pkg, apks)) in packages.iter().enumerate() {
         if stopped() {
@@ -841,7 +859,13 @@ pub fn or_list(items: &[String]) -> String {
 
 /// Copies the photos and files of a backup back to the phone, skipping any file the phone
 /// already has, so restoring twice copies nothing twice and nothing on the phone is replaced.
-pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
+/// With `check`, copies nothing and says what a restore would do.
+pub fn restore_files(
+    serial: &str,
+    folder: &Path,
+    check: bool,
+    report: &dyn Fn(Msg),
+) -> Result<String, String> {
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -897,6 +921,22 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
                 size(free)
             ));
         }
+    }
+    let no_card = format!(
+        " This phone has no SD card named {}, so those files cannot be restored.",
+        or_list(&missing)
+    );
+    if check {
+        let mut msg = format!(
+            "Files: will copy {} ({}) to the phone. {} already on the phone will be skipped; nothing is replaced.",
+            files(to_copy),
+            size(needed),
+            files(skipped)
+        );
+        if !missing.is_empty() {
+            msg += &no_card;
+        }
+        return Ok(msg);
     }
 
     // One `adb push` per folder, like the backup. With several files adb needs the folder to exist.
@@ -1027,10 +1067,7 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
         msg += " Restart the phone so the Gallery shows the restored photos.";
     }
     if !missing.is_empty() {
-        msg += &format!(
-            " This phone has no SD card named {}, so those files were not restored.",
-            or_list(&missing)
-        );
+        msg += &no_card;
     }
     Ok(msg)
 }
@@ -1598,7 +1635,12 @@ mod tests {
         shell_each(&serial, "rm -f", &gone);
         // adb shell on Windows turns LF into CRLF.
         let sh = |cmd: &str| shell(&serial, cmd).replace("\r\n", "\n");
-        let msg = restore_files(&serial, &first.root, &quiet).unwrap();
+        let msg = restore_files(&serial, &first.root, true, &quiet).unwrap();
+        assert!(
+            msg.starts_with(&format!("Files: will copy {} (", files(gone.len()))),
+            "{msg}"
+        );
+        let msg = restore_files(&serial, &first.root, false, &quiet).unwrap();
         println!("restore: {msg}");
         assert!(
             msg.starts_with(&format!("Copied {} back", files(gone.len()))),
@@ -1612,10 +1654,12 @@ mod tests {
         assert_eq!(sh(&format!("cat {}", sh_quote(&deep_remote))), "deep\n");
         // Windows-safe names stay on the computer, never copied back as extra files.
         assert_eq!(sh("ls /sdcard/E2E/Docs | grep -c -e _CON -e 'dot_'"), "0\n");
-        let msg = restore_files(&serial, &first.root, &quiet).unwrap();
+        let msg = restore_files(&serial, &first.root, false, &quiet).unwrap();
         assert!(msg.starts_with("Copied 0 files back"), "{msg}");
         // Every saved app is still installed, so nothing is reinstalled.
-        let msg = restore_apps(&serial, &first.root, &quiet).unwrap();
+        let msg = restore_apps(&serial, &first.root, true, &quiet).unwrap();
+        assert_eq!(msg, "Apps: every saved app is already on the phone.");
+        let msg = restore_apps(&serial, &first.root, false, &quiet).unwrap();
         assert!(msg.starts_with("Installed 0 of"), "{msg}");
         fs::remove_dir_all(&dest).unwrap();
     }
