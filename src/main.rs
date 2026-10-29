@@ -14,11 +14,18 @@ use std::{env, fs, thread};
 
 struct Tokens {
     bg: Color32,
+    /// The two panes: one step lighter than `bg`.
+    surface: Color32,
     field: Color32,
     line: Color32,
+    /// Edges of fields, tick boxes and buttons: at least 3:1 against `bg` and `field`.
+    border: Color32,
     ink: Color32,
     muted: Color32,
+    /// Fill of the main button, the chosen tab and progress.
     accent: Color32,
+    /// Accent used as text or a thin line on `bg` and `surface`: at least 4.5:1.
+    accent_ink: Color32,
     on_accent: Color32,
     error: Color32,
 }
@@ -28,22 +35,29 @@ fn tokens(dark: bool) -> Tokens {
     if dark {
         Tokens {
             bg: hex(0x10161C),
-            field: hex(0x18212A),
+            surface: hex(0x161E26),
+            field: hex(0x1C2630),
             line: hex(0x2C3946),
+            border: hex(0x657482),
             ink: hex(0xE6ECF1),
             muted: hex(0x93A1AE),
-            accent: hex(0xD08BC6),
-            on_accent: hex(0x10161C),
+            // White on this plum is 5.9:1; the old pastel pink glowed as a big fill.
+            accent: hex(0x9E3F8F),
+            accent_ink: hex(0xD08BC6),
+            on_accent: hex(0xFFFFFF),
             error: hex(0xFF9D6B),
         }
     } else {
         Tokens {
             bg: hex(0xE9EDF1),
-            field: hex(0xFFFFFF),
+            surface: hex(0xFFFFFF),
+            field: hex(0xF6F8FA),
             line: hex(0xC5CDD5),
+            border: hex(0x76828D),
             ink: hex(0x16202B),
             muted: hex(0x56616D),
             accent: hex(0x7A2E6E),
+            accent_ink: hex(0x7A2E6E),
             on_accent: hex(0xFFFFFF),
             error: hex(0xA8380A),
         }
@@ -57,23 +71,46 @@ fn visuals(dark: bool) -> egui::Visuals {
     v.window_fill = t.field;
     v.extreme_bg_color = t.field;
     v.override_text_color = Some(t.ink);
-    v.hyperlink_color = t.accent;
+    v.hyperlink_color = t.accent_ink;
     v.selection.bg_fill = t.accent.gamma_multiply(0.35);
-    v.selection.stroke = Stroke::new(2.0, t.accent);
+    v.selection.stroke = Stroke::new(2.0, t.accent_ink);
     v.widgets.inactive.weak_bg_fill = t.field;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.line);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.accent);
+    v.widgets.inactive.bg_fill = t.field;
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.border);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.accent_ink);
+    // egui draws keyboard focus with the pressed style; 2 px of ink makes it visible on every fill.
+    v.widgets.active.bg_stroke = Stroke::new(2.0, t.ink);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-        w.corner_radius = 8.into();
+        // Windows 11: 4 px on controls, 8 px on dialogs and menus.
+        w.corner_radius = 4.into();
     }
+    v.window_corner_radius = 8.into();
+    v.menu_corner_radius = 8.into();
     v
+}
+
+/// One of the two panes: a raised surface with a hairline edge.
+fn pane(t: &Tokens) -> egui::Frame {
+    egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.line)).corner_radius(8).inner_margin(24)
+}
+
+/// What a finished job says, kept together in one quiet box.
+fn result_box(t: &Tokens) -> egui::Frame {
+    egui::Frame::new().fill(t.field).stroke(Stroke::new(1.0, t.line)).corner_radius(4).inner_margin(16)
+}
+
+/// Small semibold heading over a group of controls, with room above it.
+fn section(ui: &mut egui::Ui, t: &Tokens, text: &str, first: bool) {
+    if !first {
+        ui.add_space(16.0);
+    }
+    ui.label(RichText::new(text).font(semibold(13.0)).color(t.muted));
+    ui.add_space(2.0);
 }
 
 fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("semibold".into()))
 }
-
-const WORKING: &str = "Working";
 
 /// "192.168.1.5:37145" or "phone.local:5555": a host, a colon and a port number.
 fn valid_addr(addr: &str) -> bool {
@@ -121,7 +158,7 @@ fn draw_phone(ui: &mut egui::Ui, t: &Tokens, scale: f32, screen: Screen) {
     let p = ui.painter();
     let live = matches!(screen, Screen::Ready(_) | Screen::Busy(_));
     p.rect_filled(body, 26.0 * scale, t.field);
-    p.rect_stroke(body, 26.0 * scale, Stroke::new(2.0, if live { t.accent } else { t.line }), StrokeKind::Inside);
+    p.rect_stroke(body, 26.0 * scale, Stroke::new(2.0, if live { t.accent_ink } else { t.line }), StrokeKind::Inside);
     p.rect_filled(Rect::from_center_size(pos2(body.center().x, body.top() + 12.0 * scale), vec2(34.0, 4.0) * scale), 2.0, t.line);
     p.rect_filled(Rect::from_center_size(pos2(body.center().x, body.bottom() + -12.0 * scale), vec2(44.0, 4.0) * scale), 2.0, t.line);
     p.rect_filled(glass, 8.0 * scale, t.bg);
@@ -134,7 +171,7 @@ fn draw_phone(ui: &mut egui::Ui, t: &Tokens, scale: f32, screen: Screen) {
     };
     match screen {
         Screen::Empty => words("No phone", FontId::proportional(14.0 * scale.max(0.9)), t.muted),
-        Screen::Allow => words("Tap Allow", semibold(16.0 * scale.max(0.9)), t.accent),
+        Screen::Allow => words("Tap Allow", semibold(16.0 * scale.max(0.9)), t.accent_ink),
         Screen::Ready(name) => {
             p.rect_filled(glass, 8.0 * scale, t.accent.gamma_multiply(0.14));
             words(name, semibold(17.0 * scale.max(0.85)), t.ink);
@@ -143,22 +180,24 @@ fn draw_phone(ui: &mut egui::Ui, t: &Tokens, scale: f32, screen: Screen) {
             let f = fraction.unwrap_or(0.0).clamp(0.0, 1.0);
             let fill = Rect::from_min_max(pos2(glass.left(), glass.bottom() - glass.height() * f), glass.max);
             p.rect_filled(fill, 8.0 * scale, t.accent.gamma_multiply(0.45));
-            let text = fraction.map_or("Working".to_string(), |f| format!("{}%", (f * 100.0).floor()));
-            words(&text, semibold(26.0 * scale.max(0.8)), t.ink);
+            let text = fraction.map_or("Working…".to_string(), |f| format!("{}%", (f * 100.0).floor()));
+            // Regular weight: its digits are all one width, so the number does not wobble as it counts.
+            words(&text, FontId::proportional(26.0 * scale.max(0.8)), t.ink);
         }
     }
 }
 
-/// The main action of a tab: full width, plum when it can run, a quiet grey otherwise.
+/// The main action of a tab: plum when it can run, a quiet field otherwise. A fixed width, not
+/// the whole pane, so it reads as a button rather than a banner.
 fn primary(ui: &mut egui::Ui, t: &Tokens, label: &str, enabled: bool) -> bool {
-    let (fill, text) = if enabled { (t.accent, t.on_accent) } else { (t.line, t.ink) };
-    let button = egui::Button::new(RichText::new(label).font(semibold(17.0)).color(text)).fill(fill).corner_radius(10);
+    let (fill, text) = if enabled { (t.accent, t.on_accent) } else { (t.field, t.muted) };
+    let button = egui::Button::new(RichText::new(label).font(semibold(14.0)).color(text)).fill(fill).corner_radius(4);
     ui.scope(|ui| {
         if !enabled {
             ui.disable();
         }
         ui.style_mut().visuals.disabled_alpha = 1.0;
-        ui.add_sized([ui.available_width(), 52.0], button).clicked()
+        ui.add_sized([ui.available_width().min(240.0), 40.0], button).clicked()
     })
     .inner
 }
@@ -177,20 +216,20 @@ fn choice(ui: &mut egui::Ui, t: &Tokens, enabled: bool, value: &mut bool, label:
 /// and `label` and `font` its text, so a label that wraps to more lines still clears the note.
 fn note_under(ui: &mut egui::Ui, t: &Tokens, note: &str, enabled: bool, above: &egui::Response, label: &str, font: FontId) {
     let indent = ui.spacing().icon_width + ui.spacing().icon_spacing;
-    // The control is at least 44 px tall for an easy click, with its label centred in it;
+    // The control is at least 32 px tall for an easy click, with its label centred in it;
     // pull the note up into the space under the label.
     let label_h = ui.painter().layout(label.into(), font, Color32::PLACEHOLDER, ui.available_width() - indent).size().y;
     ui.add_space(-((above.rect.height() - label_h) / 2.0 + 4.0).max(0.0));
     ui.horizontal_top(|ui| {
-        // A text row, not a control: without this it would be 44 px tall.
+        // A text row, not a control: without this it would be 32 px tall.
         ui.spacing_mut().interact_size.y = 18.0;
         if !enabled {
             ui.disable();
         }
         ui.add_space(indent);
-        ui.add(egui::Label::new(RichText::new(note).color(t.muted).size(13.0)).wrap());
+        ui.add(egui::Label::new(RichText::new(note).color(t.muted).size(12.0)).wrap());
     });
-    ui.add_space(6.0);
+    ui.add_space(8.0);
 }
 
 /// A folder path that fits the width, cut in the middle so the last folders stay readable:
@@ -236,7 +275,8 @@ struct App {
     pair_addr: String,
     pair_code: String,
     connect_addr: String,
-    wifi_msg: String,
+    wifi_msg: Option<Result<String, String>>,
+    wifi_working: bool,
     wifi_open: bool,
     /// Asking whether to stop a running backup before closing.
     confirm_close: bool,
@@ -247,6 +287,8 @@ struct App {
     restoring: bool,
     restore_msg: Option<Result<String, String>>,
     backups: Vec<backup::Saved>,
+    /// The folder `backups` was read from.
+    scanned: PathBuf,
     chosen: Option<PathBuf>,
     restore_files: bool,
     restore_apps: bool,
@@ -287,20 +329,21 @@ impl App {
 
         ctx.all_styles_mut(|s| {
             s.text_styles = [
-                (TextStyle::Heading, semibold(28.0)),
-                (TextStyle::Body, FontId::proportional(15.0)),
-                (TextStyle::Button, FontId::proportional(15.0)),
-                (TextStyle::Small, FontId::proportional(13.0)),
+                // Windows 11 ramp: subtitle 20, body 14, caption 12.
+                (TextStyle::Heading, semibold(16.0)),
+                (TextStyle::Body, FontId::proportional(14.0)),
+                (TextStyle::Button, FontId::proportional(14.0)),
+                (TextStyle::Small, FontId::proportional(12.0)),
                 (TextStyle::Monospace, FontId::monospace(13.0)),
             ]
             .into();
-            s.spacing.interact_size.y = 44.0;
-            s.spacing.button_padding = vec2(16.0, 10.0);
-            s.spacing.item_spacing = vec2(10.0, 8.0);
-            // Bigger tick boxes and radio dots: easier to hit and to see.
-            s.spacing.icon_width = 20.0;
-            s.spacing.icon_width_inner = 12.0;
-            s.spacing.icon_spacing = 10.0;
+            // Desktop sizes: 32 px controls, not 44 px touch targets.
+            s.spacing.interact_size.y = 32.0;
+            s.spacing.button_padding = vec2(12.0, 5.0);
+            s.spacing.item_spacing = vec2(8.0, 8.0);
+            s.spacing.icon_width = 18.0;
+            s.spacing.icon_width_inner = 10.0;
+            s.spacing.icon_spacing = 8.0;
             // The scroll bar gets its own strip; floating, it covered the right edge of full-width buttons.
             s.spacing.scroll = egui::style::ScrollStyle::solid();
         });
@@ -342,10 +385,11 @@ impl App {
             now: String::new(),
             fraction: None,
             result: None,
-            pair_addr: String::new(),
+            pair_addr: cc.storage.and_then(|s| s.get_string("pair_addr")).unwrap_or_default(),
             pair_code: String::new(),
-            connect_addr: String::new(),
-            wifi_msg: String::new(),
+            connect_addr: cc.storage.and_then(|s| s.get_string("connect_addr")).unwrap_or_default(),
+            wifi_msg: None,
+            wifi_working: false,
             wifi_open: false,
             confirm_close: false,
             closing: false,
@@ -353,6 +397,7 @@ impl App {
             restoring: false,
             restore_msg: None,
             backups: Vec::new(),
+            scanned: PathBuf::new(),
             chosen: None,
             restore_files: true,
             restore_apps: true,
@@ -385,7 +430,7 @@ impl App {
         backup::STOP.store(false, Ordering::Relaxed);
         self.restoring = false;
         self.result = None;
-        self.status = "Starting".into();
+        self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
         thread::spawn(move || {
@@ -405,7 +450,22 @@ impl App {
             } else if adb.is_empty() {
                 backup::mtp_backup(&dest, &report).map(|s| vec![s])
             } else {
-                adb.iter().map(|(serial, model)| backup::adb_backup(serial, model, &dest, pick, &report)).collect()
+                // One phone failing (say, unplugged) must not skip the others.
+                let (mut done, mut failed) = (Vec::new(), Vec::new());
+                for (serial, model) in &adb {
+                    match backup::adb_backup(serial, model, &dest, pick, &report) {
+                        Ok(s) => done.push(s),
+                        Err(e) if adb.len() > 1 => failed.push(format!("{model}: {e}")),
+                        Err(e) => failed.push(e),
+                    }
+                }
+                if failed.is_empty() {
+                    Ok(done)
+                } else {
+                    let names: Vec<_> = done.iter().map(|s| s.name.clone()).collect();
+                    let ok = if names.is_empty() { String::new() } else { format!("\n{} backed up fine.", names.join(", ")) };
+                    Err(failed.join("\n") + &ok)
+                }
             };
             busy.store(false, Ordering::Relaxed);
             report(Msg::Done(result));
@@ -419,7 +479,7 @@ impl App {
         backup::STOP.store(false, Ordering::Relaxed);
         self.restoring = true;
         self.restore_msg = None;
-        self.status = "Starting".into();
+        self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
         thread::spawn(move || {
@@ -445,7 +505,8 @@ impl App {
     }
 
     fn run_wifi(&mut self, ctx: &egui::Context, args: Vec<String>) {
-        self.wifi_msg = WORKING.into();
+        self.wifi_working = true;
+        self.wifi_msg = None;
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         thread::spawn(move || {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -460,6 +521,7 @@ impl App {
             return;
         }
         self.backups = backup::saved_backups(folder);
+        self.scanned = folder.to_path_buf();
         if !self.backups.iter().any(|b| Some(&b.path) == self.chosen.as_ref()) {
             self.chosen = self.backups.first().map(|b| b.path.clone());
         }
@@ -469,20 +531,34 @@ impl App {
         // Side by side when there is room: the phone on the left, what to do with it on the right.
         if ui.available_width() >= 760.0 {
             ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(300.0);
-                    self.device(ui, t, 1.0);
+                ui.spacing_mut().item_spacing.x = 16.0;
+                // A frame keeps its parent's layout; inside this row it would lay its contents out sideways.
+                pane(t).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(252.0);
+                        self.device(ui, t, 0.75);
+                    });
                 });
-                ui.add_space(48.0);
-                ui.vertical(|ui| self.tasks(ui, t));
+                pane(t).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width());
+                        self.tasks(ui, t);
+                    });
+                });
             });
         } else {
             // Stacked: keep lines short enough to read.
             // set_max_width can also widen, so never past the window.
             ui.set_max_width(ui.available_width().min(560.0));
-            self.device(ui, t, 0.7);
-            ui.add_space(24.0);
-            self.tasks(ui, t);
+            pane(t).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.device(ui, t, 0.6);
+            });
+            ui.add_space(16.0);
+            pane(t).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.tasks(ui, t);
+            });
         }
     }
 
@@ -552,7 +628,7 @@ impl App {
             }
             (Some(_), [], None) => {
                 ui.heading("Connect your phone");
-                // Text rows, not controls: drop the 44 px control height here.
+                // Text rows, not controls: drop the 32 px control height here.
                 ui.spacing_mut().interact_size.y = 20.0;
                 for (n, step) in [
                     "Plug it into this computer with a USB cable.",
@@ -564,7 +640,7 @@ impl App {
                 {
                     ui.horizontal_top(|ui| {
                         // Fixed-width number column so every line of a step starts at the same x.
-                        ui.add_sized([16.0, 20.0], egui::Label::new(RichText::new(format!("{}.", n + 1)).font(semibold(15.0)).color(t.accent)));
+                        ui.add_sized([16.0, 20.0], egui::Label::new(RichText::new(format!("{}.", n + 1)).font(semibold(14.0)).color(t.accent_ink)));
                         ui.add(egui::Label::new(*step).wrap());
                     });
                 }
@@ -572,35 +648,45 @@ impl App {
                 if !self.adb_ok {
                     adb_missing(ui, t);
                 }
-                ui.spacing_mut().interact_size.y = 44.0;
+                ui.spacing_mut().interact_size.y = 32.0;
             }
         }
 
-        // Wi-Fi is a one-time setup, so it opens on request, under the phone it connects.
+        // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching this pane.
         ui.add_space(16.0);
-        let label = if self.wifi_open { "Hide Wi-Fi setup" } else { "Connect over Wi-Fi instead" };
-        if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
-            self.wifi_open = !self.wifi_open;
+        if ui.add_enabled(!busy, egui::Button::new("Connect over Wi-Fi…")).clicked() {
+            self.wifi_open = true;
         }
-        if self.wifi_open {
+    }
+
+    fn wifi_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let modal = egui::Modal::new(egui::Id::unique("wifi")).show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.label(RichText::new("Connect over Wi-Fi").font(semibold(16.0)));
+            ui.add_space(4.0);
             self.wifi(ui, t);
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| ui.button("Close").clicked()).inner
+        });
+        if modal.inner || modal.should_close() {
+            self.wifi_open = false;
         }
     }
 
     fn wifi(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let muted = |s: &str| RichText::new(s).color(t.muted);
         ui.label(muted("The phone and this computer must be on the same Wi-Fi. On the phone, open Settings, Developer options, Wireless debugging."));
-        ui.add_space(6.0);
-        ui.label(RichText::new("1. Pair (first time only)").font(semibold(15.0)));
+        ui.add_space(12.0);
+        ui.label(RichText::new("1. Pair (first time only)").font(semibold(14.0)));
         ui.label(muted("Tap Pair device with pairing code, then type what it shows."));
         let mut fields = |ui: &mut egui::Ui| {
             ui.vertical(|ui| {
-                ui.label(muted("IP address and port"));
-                ui.add(egui::TextEdit::singleline(&mut self.pair_addr).hint_text("192.168.1.5:37145").desired_width(170.0));
+                let label = ui.label(muted("IP address and port"));
+                ui.add(egui::TextEdit::singleline(&mut self.pair_addr).hint_text("192.168.1.5:37145").desired_width(170.0)).labelled_by(label.id);
             });
             ui.vertical(|ui| {
-                ui.label(muted("Pairing code"));
-                ui.add(egui::TextEdit::singleline(&mut self.pair_code).hint_text("123456").desired_width(90.0));
+                let label = ui.label(muted("Pairing code"));
+                ui.add(egui::TextEdit::singleline(&mut self.pair_code).hint_text("123456").desired_width(90.0)).labelled_by(label.id);
             });
         };
         // Side by side only when both fit; squeezed, the code's label wrapped and its box sat lower.
@@ -609,32 +695,39 @@ impl App {
         } else {
             fields(ui);
         }
-        let working = self.wifi_msg == WORKING;
+        let working = self.wifi_working;
         if ui.add_enabled(!working, egui::Button::new("Pair")).clicked() {
             let addr = self.pair_addr.trim().to_string();
             let code = self.pair_code.trim().to_string();
             if valid_addr(&addr) && code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
                 self.run_wifi(ui.ctx(), vec!["pair".into(), addr, code]);
             } else {
-                self.wifi_msg = "Type the address with its port, like 192.168.1.5:37145, and the 6-digit code.".into();
+                self.wifi_msg = Some(Err("Type the address with its port, like 192.168.1.5:37145, and the 6-digit code.".into()));
             }
         }
-        ui.add_space(6.0);
-        ui.label(RichText::new("2. Connect").font(semibold(15.0)));
+        ui.add_space(12.0);
+        ui.label(RichText::new("2. Connect").font(semibold(14.0)));
         ui.label(muted("Type the IP address and port shown at the top of the Wireless debugging screen."));
-        ui.add(egui::TextEdit::singleline(&mut self.connect_addr).hint_text("192.168.1.5:41235").desired_width(170.0));
+        ui.add(egui::TextEdit::singleline(&mut self.connect_addr).hint_text("192.168.1.5:41235").desired_width(f32::INFINITY)).accessible_name("IP address and port to connect to");
         if ui.add_enabled(!working, egui::Button::new("Connect")).clicked() {
             let addr = self.connect_addr.trim().to_string();
             if valid_addr(&addr) {
                 self.run_wifi(ui.ctx(), vec!["connect".into(), addr]);
             } else {
-                self.wifi_msg = "Type the address with its port, like 192.168.1.5:41235.".into();
+                self.wifi_msg = Some(Err("Type the address with its port, like 192.168.1.5:41235.".into()));
             }
         }
-        if !self.wifi_msg.is_empty() {
-            let lower = self.wifi_msg.to_lowercase();
-            let failed = ["fail", "error", "cannot", "unable", "type the"].iter().any(|w| lower.contains(w));
-            ui.label(RichText::new(&self.wifi_msg).color(if failed { t.error } else { t.ink }));
+        match &self.wifi_msg {
+            _ if working => {
+                ui.label("Working…");
+            }
+            Some(Ok(m)) => {
+                ui.label(m);
+            }
+            Some(Err(m)) => {
+                ui.label(RichText::new(m).color(t.error));
+            }
+            None => {}
         }
     }
 
@@ -642,24 +735,30 @@ impl App {
     fn tasks(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let busy = self.busy.load(Ordering::Relaxed);
         ui.add_enabled_ui(!busy, |ui| {
-            ui.horizontal(|ui| {
-                for (tab, label) in [(Tab::Backup, "Back up"), (Tab::Restore, "Restore")] {
-                    let on = self.tab == tab;
-                    let button = egui::Button::new(RichText::new(label).font(semibold(15.0)).color(if on { t.on_accent } else { t.ink }))
-                        .fill(if on { t.accent } else { t.field })
-                        .stroke(Stroke::new(1.0, if on { t.accent } else { t.line }))
-                        .min_size(vec2(120.0, 40.0));
-                    if ui.add(button).clicked() && !on {
-                        self.tab = tab;
-                        if tab == Tab::Restore {
-                            let dest = self.dest.clone();
-                            self.scan(&dest);
+            // One segmented strip, so the two tabs do not read as two more big buttons.
+            egui::Frame::new().fill(t.field).stroke(Stroke::new(1.0, t.line)).corner_radius(6).inner_margin(3).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (tab, label) in [(Tab::Backup, "Back up"), (Tab::Restore, "Restore")] {
+                        let on = self.tab == tab;
+                        let button = egui::Button::new(RichText::new(label).font(semibold(14.0)).color(if on { t.on_accent } else { t.ink }))
+                            .fill(if on { t.accent } else { Color32::TRANSPARENT })
+                            // No .stroke(): it would replace the hover and focus edges.
+                            .frame_when_inactive(on)
+                            .selected(on)
+                            .min_size(vec2(112.0, 30.0));
+                        if ui.add(button).clicked() && !on {
+                            self.tab = tab;
+                            if tab == Tab::Restore {
+                                let dest = self.dest.clone();
+                                self.scan(&dest);
+                            }
                         }
                     }
-                }
+                });
             });
         });
-        ui.add_space(20.0);
+        ui.add_space(8.0);
         match self.tab {
             Tab::Backup => self.backup_tab(ui, t),
             Tab::Restore => self.restore_tab(ui, t),
@@ -683,7 +782,7 @@ impl App {
         }
         ui.label(RichText::new("Keep the phone plugged in and unlocked.").color(t.muted));
         let stopping = backup::STOP.load(Ordering::Relaxed);
-        if ui.add_enabled(!stopping, egui::Button::new(if stopping { "Stopping" } else { "Stop" })).clicked() {
+        if ui.add_enabled(!stopping, egui::Button::new(if stopping { "Stopping…" } else { "Stop" })).clicked() {
             backup::STOP.store(true, Ordering::Relaxed);
         }
     }
@@ -696,7 +795,7 @@ impl App {
         // File transfer mode can only reach files.
         let mtp_only = adb.is_empty() && mtp.is_some();
 
-        ui.label(muted("What to back up"));
+        section(ui, t, "What to back up", true);
         ui.add_enabled_ui(!busy, |ui| {
             choice(ui, t, true, &mut self.pick.files, "Photos, videos and files", "Everything in the phone's storage and SD card.");
             choice(ui, t, !mtp_only, &mut self.pick.apps, "Apps", "The apps you installed, without their logins or data.");
@@ -704,27 +803,25 @@ impl App {
         });
         let picked = self.pick.files || (!mtp_only && (self.pick.apps || self.pick.data));
 
-        ui.add_space(8.0);
-        ui.label(muted("Save to"));
+        section(ui, t, "Save to", false);
         ui.horizontal(|ui| {
-            // The path starts at the left edge and is cut short before the Change button.
-            ui.scope(|ui| {
-                ui.set_max_width(ui.available_width() - 110.0);
+            // The path sits in a read-only box with Change right beside it, not across the pane.
+            let width = (ui.available_width() - 100.0).clamp(80.0, 420.0);
+            egui::Frame::new().fill(t.field).stroke(Stroke::new(1.0, t.line)).corner_radius(4).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                ui.set_width(width - 22.0);
                 let full = self.dest.display().to_string();
                 ui.add(egui::Label::new(short_path(ui, &full)).truncate()).on_hover_text(&full);
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add_enabled(!busy, egui::Button::new("Change")).clicked()
-                    && let Some(dir) = rfd::FileDialog::new().set_directory(&self.dest).pick_folder()
-                {
-                    self.dest = dir;
-                }
-            });
+            if ui.add_enabled(!busy, egui::Button::new("Change…")).clicked()
+                && let Some(dir) = rfd::FileDialog::new().set_directory(&self.dest).pick_folder()
+            {
+                self.dest = dir;
+            }
         });
 
-        ui.add_space(16.0);
+        ui.add_space(24.0);
         let label = if busy && !self.restoring {
-            "Backing up"
+            "Backing up…"
         } else if self.result.is_some() {
             "Back up again"
         } else {
@@ -748,55 +845,62 @@ impl App {
         match &self.result {
             Some(Err(e)) => {
                 ui.add_space(16.0);
-                ui.label(RichText::new("Backup stopped").font(semibold(20.0)).color(t.error));
-                ui.label(RichText::new(e).color(t.error));
-                ui.label("Check the cable and that the phone is unlocked, then press Back up again.");
+                result_box(t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Backup stopped").font(semibold(16.0)).color(t.error));
+                    ui.label(e);
+                    ui.label(RichText::new("Check the cable and that the phone is unlocked, then press Back up again.").color(t.muted));
+                });
             }
             Some(Ok(summaries)) => {
                 for s in summaries {
                     ui.add_space(16.0);
-                    let title = match (s.errors.is_empty(), summaries.len() > 1) {
-                        (true, false) => "Backup finished".to_string(),
-                        (false, false) => "Backup finished with problems".to_string(),
-                        (true, true) => format!("{}: backup finished", s.name),
-                        (false, true) => format!("{}: backup finished with problems", s.name),
-                    };
-                    ui.label(RichText::new(title).font(semibold(20.0)));
-                    let in_backup = files(s.files - s.errors.len().min(s.files));
-                    if s.pick.files || s.pick.apps {
-                        ui.label(if s.files == 0 {
-                            "No files were found on the phone.".to_string()
-                        } else if s.copied == 0 {
-                            format!("Nothing new to copy. The backup already holds {in_backup}.")
-                        } else {
-                            format!("Copied {} that {} new or changed. The backup now holds {in_backup}.", files(s.copied), backup::were(s.copied))
-                        });
-                    }
-                    if !s.errors.is_empty() {
-                        ui.label(
-                            RichText::new(format!("{} could not be copied. Press Back up again to retry. The list is in errors.log.", files(s.errors.len())))
-                                .color(t.error),
-                        );
-                    }
-                    if s.full {
-                        let mut saved: Vec<_> = s.pick.apps.then(|| "installed apps".to_string()).into_iter().collect();
-                        saved.extend(s.data.iter().filter(|d| d.1).map(|d| d.0.to_lowercase()));
-                        let refused: Vec<_> = s.data.iter().filter(|d| !d.1).map(|d| d.0.to_lowercase()).collect();
-                        if !saved.is_empty() {
-                            ui.label(format!("Also saved: {}.", saved.join(", ")));
-                            if saved.iter().any(|d| d == "contacts") {
-                                ui.label(muted("Contacts are in data\\contacts.vcf, which Google Contacts or any phone can import."));
+                    result_box(t).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let title = match (s.errors.is_empty(), summaries.len() > 1) {
+                            (true, false) => "Backup finished".to_string(),
+                            (false, false) => "Backup finished with problems".to_string(),
+                            (true, true) => format!("{}: backup finished", s.name),
+                            (false, true) => format!("{}: backup finished with problems", s.name),
+                        };
+                        ui.label(RichText::new(title).font(semibold(16.0)));
+                        let in_backup = files(s.files - s.errors.len().min(s.files));
+                        if s.pick.files || s.pick.apps {
+                            ui.label(if s.files == 0 {
+                                "No files were found on the phone.".to_string()
+                            } else if s.copied == 0 {
+                                format!("Nothing new to copy. The backup already holds {in_backup}.")
+                            } else {
+                                format!("Copied {} that {} new or changed. The backup now holds {in_backup}.", files(s.copied), backup::were(s.copied))
+                            });
+                        }
+                        if !s.errors.is_empty() {
+                            ui.label(
+                                RichText::new(format!("{} could not be copied. Press Back up again to retry. The list is in errors.log.", files(s.errors.len())))
+                                    .color(t.error),
+                            );
+                        }
+                        if s.full {
+                            let mut saved: Vec<_> = s.pick.apps.then(|| "installed apps".to_string()).into_iter().collect();
+                            saved.extend(s.data.iter().filter(|d| d.1).map(|d| d.0.to_lowercase()));
+                            let refused: Vec<_> = s.data.iter().filter(|d| !d.1).map(|d| d.0.to_lowercase()).collect();
+                            if !saved.is_empty() {
+                                ui.label(format!("Also saved: {}.", saved.join(", ")));
+                                if saved.iter().any(|d| d == "contacts") {
+                                    ui.label(muted("Contacts are in data\\contacts.vcf, which Google Contacts or any phone can import."));
+                                }
                             }
+                            if !refused.is_empty() {
+                                ui.label(format!("Your phone did not allow reading {}.", or_list(&refused)));
+                            }
+                        } else {
+                            ui.label("Apps, contacts and messages were not saved. Turn on USB debugging to include them.");
                         }
-                        if !refused.is_empty() {
-                            ui.label(format!("Your phone did not allow reading {}.", or_list(&refused)));
+                        ui.add_space(4.0);
+                        if ui.button("Open backup folder").clicked() {
+                            let _ = Command::new("explorer").arg(&s.root).spawn();
                         }
-                    } else {
-                        ui.label("Apps, contacts and messages were not saved. Turn on USB debugging to include them.");
-                    }
-                    if ui.button("Open backup folder").clicked() {
-                        let _ = Command::new("explorer").arg(&s.root).spawn();
-                    }
+                    });
                 }
             }
             None => {}
@@ -811,31 +915,35 @@ impl App {
             _ => None,
         });
 
-        ui.label(muted("Choose a backup"));
+        section(ui, t, "Choose a backup", true);
         if self.backups.is_empty() {
-            ui.label(format!("No backups in {} yet.", self.dest.display()));
+            ui.label(format!("No backups in {} yet.", self.scanned.display()));
             ui.label(muted("Back up a phone first, or find the folder that holds your backups."));
         }
         ui.add_enabled_ui(!busy, |ui| {
-            for b in &self.backups {
-                // Two phones of the same model: tell them apart by the end of the ID in "<model>_<id>".
-                let twin = self.backups.iter().filter(|o| o.name == b.name).count() > 1;
-                let id = b.path.file_name().and_then(|n| n.to_str()).and_then(|n| n.rsplit_once('_')).map(|(_, id)| id).filter(|_| twin);
-                let label = match id {
-                    Some(id) => format!("{} (ID {})", b.name, id.char_indices().rev().nth(3).map_or(id, |(i, _)| &id[i..])),
-                    None => b.name.clone(),
-                };
-                let above = ui.radio(self.chosen.as_ref() == Some(&b.path), RichText::new(&label).font(semibold(15.0)));
-                if above.clicked() {
-                    self.chosen = Some(b.path.clone());
+            // A long list scrolls in place, so Restore stays in view.
+            egui::ScrollArea::vertical().id_salt("backups").max_height(264.0).auto_shrink([false, true]).show(ui, |ui| {
+                for b in &self.backups {
+                    // Two phones of the same model: tell them apart by the end of the ID in "<model>_<id>".
+                    let twin = self.backups.iter().filter(|o| o.name == b.name).count() > 1;
+                    let id = b.path.file_name().and_then(|n| n.to_str()).and_then(|n| n.rsplit_once('_')).map(|(_, id)| id).filter(|_| twin);
+                    let label = match id {
+                        Some(id) => format!("{} (ID {})", b.name, id.char_indices().rev().nth(3).map_or(id, |(i, _)| &id[i..])),
+                        None => b.name.clone(),
+                    };
+                    let above = ui.radio(self.chosen.as_ref() == Some(&b.path), RichText::new(&label).font(semibold(14.0)));
+                    if above.clicked() {
+                        self.chosen = Some(b.path.clone());
+                    }
+                    let holds = match (b.files, b.apps) {
+                        (true, true) => "Photos, files and apps",
+                        (true, false) => "Photos and files",
+                        _ => "Apps",
+                    };
+                    note_under(ui, t, &format!("{holds}, backed up {}.", days_ago(b.age_days)), true, &above, &label, semibold(14.0));
                 }
-                let holds = match (b.files, b.apps) {
-                    (true, true) => "Photos, files and apps",
-                    (true, false) => "Photos and files",
-                    _ => "Apps",
-                };
-                note_under(ui, t, &format!("{holds}, backed up {}.", days_ago(b.age_days)), true, &above, &label, semibold(15.0));
-            }
+            });
+            ui.add_space(8.0);
             if ui.button("Find another backup").clicked()
                 && let Some(dir) = rfd::FileDialog::new().set_directory(&self.dest).pick_folder()
             {
@@ -846,18 +954,17 @@ impl App {
 
         let chosen = self.backups.iter().find(|b| Some(&b.path) == self.chosen.as_ref());
         let (has_files, has_apps) = chosen.map_or((false, false), |b| (b.files, b.apps));
-        ui.add_space(12.0);
-        ui.label(muted("What to restore"));
+        section(ui, t, "What to restore", false);
         ui.add_enabled_ui(!busy, |ui| {
             choice(ui, t, has_files, &mut self.restore_files, "Photos, videos and files", "Files the phone already has are skipped, never replaced.");
             choice(ui, t, has_apps, &mut self.restore_apps, "Apps", "Reinstalls missing apps. Their logins and data do not come back.");
         });
         let picked = (self.restore_files && has_files) || (self.restore_apps && has_apps);
 
-        ui.add_space(16.0);
-        let label = if busy && self.restoring { "Restoring" } else { "Restore" };
+        ui.add_space(24.0);
+        let label = if busy && self.restoring { "Restoring…" } else { "Restore" };
         let path = chosen.map(|b| b.path.clone());
-        if primary(ui, t, label,phone.is_some() && path.is_some() && picked && !busy)
+        if primary(ui, t, label, phone.is_some() && path.is_some() && picked && !busy)
             && let (Some((serial, _)), Some(path)) = (phone.clone(), path.clone())
         {
             // A ticked box the chosen backup has nothing for is ignored, not run.
@@ -882,13 +989,19 @@ impl App {
         match &self.restore_msg {
             Some(Ok(m)) => {
                 ui.add_space(16.0);
-                ui.label(RichText::new("Restore finished").font(semibold(20.0)));
-                ui.label(m);
+                result_box(t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Restore finished").font(semibold(16.0)));
+                    ui.label(m);
+                });
             }
             Some(Err(e)) => {
                 ui.add_space(16.0);
-                ui.label(RichText::new("Restore stopped").font(semibold(20.0)).color(t.error));
-                ui.label(RichText::new(e).color(t.error));
+                result_box(t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Restore stopped").font(semibold(16.0)).color(t.error));
+                    ui.label(e);
+                });
             }
             None => {}
         }
@@ -896,22 +1009,6 @@ impl App {
 }
 
 impl App {
-    /// Dev-only switch at the bottom of the window between real and test data.
-    fn fixture_switch(&mut self, ctx: &egui::Context) {
-        egui::Area::new(egui::Id::unique("fixture")).anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -8.0)).show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().interact_size.y = 24.0;
-                    for (f, label) in [(Fixture::Real, "Real"), (Fixture::Worst, "Worst case"), (Fixture::Empty, "Empty"), (Fixture::One, "One"), (Fixture::Many, "Many")] {
-                        if ui.selectable_label(self.fixture == f, label).clicked() && self.fixture != f {
-                            self.load_fixture(f);
-                        }
-                    }
-                });
-            });
-        });
-    }
-
     fn load_fixture(&mut self, f: Fixture) {
         self.fixture = f;
         let saved = |name: &str, files: bool, apps: bool, age: Option<u64>| backup::Saved {
@@ -924,7 +1021,7 @@ impl App {
         let adb = |model: &str, wifi: bool| Phone::Adb { serial: format!("{model}-serial"), model: model.into(), wifi };
         self.restore_msg = None;
         self.result = None;
-        self.wifi_msg.clear();
+        self.wifi_msg = None;
         match f {
             Fixture::Real => {
                 self.phones = None;
@@ -955,7 +1052,8 @@ impl App {
                     pick: Pick { files: true, apps: true, data: true },
                 }]));
                 self.wifi_open = true;
-                self.wifi_msg = "failed to connect to 'aleksandras-redmi-note-13-pro-plus.northwind.local:41235': No connection could be made because the target machine actively refused it. (10061)".into();
+                self.wifi_msg = Some(backup::wifi_result("connect", "failed to connect to 'aleksandras-redmi-note-13-pro-plus.northwind.local:41235': No connection could be made because the target machine actively refused it. (10061)"));
+                self.connect_addr = "aleksandras-redmi-note-13-pro-plus.northwind.local:41235".into();
             }
             Fixture::Empty => {
                 self.phones = Some(Vec::new());
@@ -971,6 +1069,9 @@ impl App {
             }
         }
         self.chosen = self.backups.first().map(|b| b.path.clone());
+        if f != Fixture::Real {
+            self.scanned = self.dest.clone();
+        }
     }
 }
 
@@ -991,14 +1092,17 @@ impl eframe::App for App {
                 Msg::Progress { done, total, now } => {
                     self.now = now;
                     if total > 0 {
-                        self.status = format!("Copying {} of {}", count(done), files(total));
+                        self.status = format!("Copying {} of {}…", count(done), files(total));
                         self.fraction = Some(done as f32 / total as f32);
                     } else {
                         self.status = format!("{} copied so far", files(done));
                         self.fraction = None;
                     }
                 }
-                Msg::Wifi(s) => self.wifi_msg = s,
+                Msg::Wifi(r) => {
+                    self.wifi_working = false;
+                    self.wifi_msg = Some(r);
+                }
                 Msg::Restored(r) => self.restore_msg = Some(r),
                 Msg::Done(r) => {
                     self.result = Some(r);
@@ -1020,13 +1124,13 @@ impl eframe::App for App {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if self.confirm_close {
-            egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
+            let modal = egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
                 ui.set_max_width(320.0);
                 if self.restoring {
-                    ui.label(RichText::new("Stop restoring?").font(semibold(18.0)));
+                    ui.label(RichText::new("Stop restoring?").font(semibold(16.0)));
                     ui.label("Everything restored so far stays on the phone.");
                 } else {
-                    ui.label(RichText::new("Stop the backup?").font(semibold(18.0)));
+                    ui.label(RichText::new("Stop the backup?").font(semibold(16.0)));
                     ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
                 }
                 ui.horizontal(|ui| {
@@ -1040,11 +1144,15 @@ impl eframe::App for App {
                     }
                 });
             });
-        }
-        if cfg!(debug_assertions) {
-            self.fixture_switch(ui.ctx());
+            // Esc or a click outside means keep going, the safe answer.
+            if modal.should_close() {
+                self.confirm_close = false;
+            }
         }
         let t = tokens(ui.visuals().dark_mode);
+        if self.wifi_open {
+            self.wifi_dialog(ui.ctx(), &t);
+        }
         egui::Frame::central_panel(ui.style()).fill(t.bg).inner_margin(28).show(ui, |ui| {
             let mut area = egui::ScrollArea::vertical().auto_shrink(false);
             // Held every frame: the first frames do not know the content height yet.
@@ -1069,6 +1177,8 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("dest", self.dest.display().to_string());
         let bit = |b: bool| if b { '1' } else { '0' };
+        storage.set_string("pair_addr", self.pair_addr.clone());
+        storage.set_string("connect_addr", self.connect_addr.clone());
         storage.set_string("pick", [bit(self.pick.files), bit(self.pick.apps), bit(self.pick.data)].iter().collect());
     }
 }
