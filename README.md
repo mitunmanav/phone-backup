@@ -52,7 +52,7 @@ The GitHub Actions CI workflow runs these checks and builds a release binary on 
 
 See [CONTRIBUTING.md](https://github.com/mitunmanav/phone-backup/blob/main/CONTRIBUTING.md) for development and pull request guidance. Report security issues privately using the process in [SECURITY.md](https://github.com/mitunmanav/phone-backup/blob/main/SECURITY.md).
 
-The app is written in Rust with [egui](https://github.com/emilk/egui). See the [Android expansion plan](https://github.com/mitunmanav/phone-backup/blob/main/docs/android-design.md) and [completed hardening notes](https://github.com/mitunmanav/phone-backup/blob/main/docs/PLAN.md).
+The app is written in Rust with [egui](https://github.com/emilk/egui). See the [Android expansion plan](https://github.com/mitunmanav/phone-backup/blob/main/docs/android-design.md) and [roadmap](https://github.com/mitunmanav/phone-backup/blob/main/docs/PLAN.md).
 
 ## License
 
