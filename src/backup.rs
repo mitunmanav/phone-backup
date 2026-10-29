@@ -442,7 +442,8 @@ pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result
             failed.push(pkg.clone());
         }
     }
-    let mut msg = format!("Installed {done} of {total} apps. {} were already on the phone.", total - packages.len());
+    let already = total - packages.len();
+    let mut msg = format!("Installed {done} of {} {}. {} {} already on the phone.", count(total), if total == 1 { "app" } else { "apps" }, count(already), were(already));
     if !failed.is_empty() {
         msg += &format!(" Could not install: {}. The phone may block apps from unknown sources or need a newer Android.", failed.join(", "));
     }
@@ -554,9 +555,36 @@ fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
     out
 }
 
-/// 1 -> "1 file", 12 -> "12 files"
-fn file_count(n: usize) -> String {
-    format!("{n} {}", if n == 1 { "file" } else { "files" })
+/// 1280 -> "1,280"
+pub fn count(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// 1 -> "1 file", 1280 -> "1,280 files"
+pub fn files(n: usize) -> String {
+    format!("{} {}", count(n), if n == 1 { "file" } else { "files" })
+}
+
+/// The verb for a count: "1 file was", "2 files were".
+pub fn were(n: usize) -> &'static str {
+    if n == 1 { "was" } else { "were" }
+}
+
+/// ["a"] -> "a", ["a", "b"] -> "a or b", ["a", "b", "c"] -> "a, b or c"
+pub fn or_list(items: &[String]) -> String {
+    match items.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
 /// Copies the photos and files of a backup back to the phone, skipping any file the phone
@@ -656,21 +684,21 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
     }
 
     if stopped() {
-        return Err(format!("You stopped the restore. {} were copied back and stay on the phone.", file_count(copied)));
+        return Err(format!("You stopped the restore. {} {} copied back and stay on the phone.", files(copied), were(copied)));
     }
     if !connected(serial) {
         return Err(DISCONNECTED_RESTORE.into());
     }
-    let mut msg = format!("Copied {} back to the phone. {} were already there.", file_count(copied), file_count(skipped));
+    let mut msg = format!("Copied {} back to the phone. {} {} already there.", files(copied), files(skipped), were(skipped));
     if !broken.is_empty() {
         let names: Vec<&str> = broken.iter().take(3).map(|j| j.remote.as_str()).collect();
-        msg += &format!(" {} could not be copied, for example {}. Restore again to retry.", file_count(broken.len()), names.join(", "));
+        msg += &format!(" {} could not be copied, for example {}. Restore again to retry.", files(broken.len()), names.join(", "));
     }
     if copied > 0 && sdk < 29 {
         msg += " Restart the phone so the Gallery shows the restored photos.";
     }
     if !missing.is_empty() {
-        msg += &format!(" This phone has no SD card named {}, so those files were not restored.", missing.join(", "));
+        msg += &format!(" This phone has no SD card named {}, so those files were not restored.", or_list(&missing));
     }
     Ok(msg)
 }
