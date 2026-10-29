@@ -449,6 +449,45 @@ pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result
     Ok(msg)
 }
 
+/// A phone's backup folder, as the Restore tab lists it.
+pub struct Saved {
+    pub path: PathBuf,
+    /// The phone model, from the folder name "<model>_<id>".
+    pub name: String,
+    pub files: bool,
+    pub apps: bool,
+    /// Days since the last backup into it (errors.log is rewritten by every backup).
+    pub age_days: Option<u64>,
+}
+
+/// The folder itself when it is a backup, else the backups inside it, newest first.
+pub fn saved_backups(folder: &Path) -> Vec<Saved> {
+    if let Some(one) = saved(folder) {
+        return vec![one];
+    }
+    let mut found: Vec<Saved> = fs::read_dir(folder).into_iter().flatten().flatten().filter_map(|e| saved(&e.path())).collect();
+    found.sort_by_key(|s| s.age_days.unwrap_or(u64::MAX));
+    found
+}
+
+fn saved(path: &Path) -> Option<Saved> {
+    let dirs: Vec<String> = fs::read_dir(path).ok()?.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let files = dirs.iter().any(|n| n == "files" || n.starts_with("sdcard_"));
+    let apps = dirs.iter().any(|n| n == "apps");
+    if !files && !apps {
+        return None;
+    }
+    let stamp = fs::metadata(path.join("errors.log")).or_else(|_| fs::metadata(path)).and_then(|m| m.modified()).ok();
+    let folder = path.file_name()?.to_string_lossy().into_owned();
+    Some(Saved {
+        path: path.to_path_buf(),
+        name: folder.rsplit_once('_').map_or(folder.as_str(), |(model, _)| model).to_string(),
+        files,
+        apps,
+        age_days: stamp.and_then(|s| s.elapsed().ok()).map(|d| d.as_secs() / 86_400),
+    })
+}
+
 /// Files saved in a backup folder and the phone path each goes back to: `files` goes to
 /// /sdcard, `sdcard_<card>` to that SD card when the phone has it. Also returns the cards the
 /// phone lacks. App folders (Android/data, Android/obb) are left out: the apps own those.
@@ -937,6 +976,24 @@ mod tests {
         assert_eq!(missing, ["9999-ZZ"]);
         assert_eq!(again.len(), 2);
         assert!(saved_files(&root, "").is_err());
+    }
+
+    #[test]
+    fn lists_saved_backups() {
+        let root = std::env::temp_dir().join(format!("phone-backup-list-test-{}", std::process::id()));
+        fs::create_dir_all(root.join("Pixel 8_ABC123").join("files")).unwrap();
+        fs::create_dir_all(root.join("SM G991B_R58M").join("apps")).unwrap();
+        fs::create_dir_all(root.join("Holiday photos")).unwrap();
+        let mut found = saved_backups(&root);
+        // A backup folder chosen directly is listed alone.
+        let one = saved_backups(&root.join("Pixel 8_ABC123"));
+        fs::remove_dir_all(&root).unwrap();
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(found.len(), 2);
+        assert_eq!((found[0].name.as_str(), found[0].files, found[0].apps), ("Pixel 8", true, false));
+        assert_eq!((found[1].name.as_str(), found[1].files, found[1].apps), ("SM G991B", false, true));
+        assert_eq!(found[0].age_days, Some(0));
+        assert_eq!(one.len(), 1);
     }
 
     #[test]
