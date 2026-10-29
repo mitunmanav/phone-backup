@@ -12,6 +12,7 @@
     --bg: #E9EDF1; --surface: #FFFFFF; --line: #C5CDD5;
     --ink: #16202B; --muted: #56616D;
     --accent: #7A2E6E; --on-accent: #FFFFFF;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -50,10 +51,15 @@
     display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 22px;
     border-radius: 8px; font-weight: 600; text-decoration: none;
     border: 1px solid var(--line); color: var(--ink); background: transparent;
-    transition: transform .12s ease-out;
+    transition: transform 160ms var(--ease-out), background-color 150ms ease;
   }
   .btn:active { transform: scale(.97); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  @media (hover: hover) and (pointer: fine) {
+    .btn:hover { background: var(--surface); }
+    /* Mixing toward ink darkens plum in light mode and lightens it in dark, so label contrast only improves. */
+    .btn.primary:hover { background: color-mix(in srgb, var(--accent) 85%, var(--ink)); }
+  }
   .note { margin: 16px 0 0; font-size: .9rem; color: var(--muted); }
 
   /* The hero: the folder the app really writes on the PC. */
@@ -64,6 +70,9 @@
   .tree ul { list-style: none; margin: 0; padding: 0; }
   .tree ul ul { padding-left: 22px; border-left: 1px solid var(--line); margin-left: 8px; }
   .tree li { white-space: nowrap; }
+  /* Rows arrive top to bottom once on load, like files landing in the backup. --i is the row number. */
+  .tree li > span { display: inline-block; animation: arrive 360ms var(--ease-out) both; animation-delay: calc(200ms + var(--i) * 50ms); }
+  @keyframes arrive { from { opacity: 0; transform: translateX(-8px); } }
   .tree .dir { font-weight: 700; }
   .tree .root { color: var(--accent); }
   .tree .hint { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: .85rem; margin-left: 10px; }
@@ -86,7 +95,11 @@
   footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
   footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 32px; justify-content: space-between; }
 
-  @media (prefers-reduced-motion: reduce) { .btn { transition: none; } .btn:active { transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .btn { transition: background-color 150ms ease; } .btn:active { transform: none; }
+    .tree li > span { animation-name: fade; }
+  }
+  @keyframes fade { from { opacity: 0; } }
 </style>
 </head>
 <body>
@@ -118,23 +131,23 @@
 
     <div class="tree mono" role="img" aria-label="Example backup folder: files, apps and data folders inside a folder named after the phone.">
       <ul>
-        <li><span class="dir root">Phone backups</span>
+        <li style="--i:0"><span class="dir root">Phone backups</span>
           <ul>
-            <li><span class="dir">Pixel 8_37F1</span><span class="hint">one folder per phone</span>
+            <li style="--i:1"><span class="dir">Pixel 8_37F1</span><span class="hint">one folder per phone</span>
               <ul>
-                <li><span class="dir">files</span>
+                <li style="--i:2"><span class="dir">files</span>
                   <ul>
-                    <li>DCIM</li>
-                    <li>Download</li>
-                    <li>WhatsApp</li>
+                    <li style="--i:3"><span>DCIM</span></li>
+                    <li style="--i:4"><span>Download</span></li>
+                    <li style="--i:5"><span>WhatsApp</span></li>
                   </ul>
                 </li>
-                <li><span class="dir">apps</span><span class="hint">reinstall later</span></li>
-                <li><span class="dir">data</span>
+                <li style="--i:6"><span class="dir">apps</span><span class="hint">reinstall later</span></li>
+                <li style="--i:7"><span class="dir">data</span>
                   <ul>
-                    <li>contacts.vcf</li>
-                    <li>call_log.txt</li>
-                    <li>sms.txt</li>
+                    <li style="--i:8"><span>contacts.vcf</span></li>
+                    <li style="--i:9"><span>call_log.txt</span></li>
+                    <li style="--i:10"><span>sms.txt</span></li>
                   </ul>
                 </li>
               </ul>
