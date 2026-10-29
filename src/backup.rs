@@ -442,11 +442,51 @@ pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result
             failed.push(pkg.clone());
         }
     }
-    let mut msg = format!("Installed {done} of {total} apps. {} were already on the phone.", total - packages.len());
+    let already = total - packages.len();
+    let mut msg = format!("Installed {done} of {} {}. {} {} already on the phone.", count(total), if total == 1 { "app" } else { "apps" }, count(already), were(already));
     if !failed.is_empty() {
         msg += &format!(" Could not install: {}. The phone may block apps from unknown sources or need a newer Android.", failed.join(", "));
     }
     Ok(msg)
+}
+
+/// A phone's backup folder, as the Restore tab lists it.
+pub struct Saved {
+    pub path: PathBuf,
+    /// The phone model, from the folder name "<model>_<id>".
+    pub name: String,
+    pub files: bool,
+    pub apps: bool,
+    /// Days since the last backup into it (errors.log is rewritten by every backup).
+    pub age_days: Option<u64>,
+}
+
+/// The folder itself when it is a backup, else the backups inside it, newest first.
+pub fn saved_backups(folder: &Path) -> Vec<Saved> {
+    if let Some(one) = saved(folder) {
+        return vec![one];
+    }
+    let mut found: Vec<Saved> = fs::read_dir(folder).into_iter().flatten().flatten().filter_map(|e| saved(&e.path())).collect();
+    found.sort_by_key(|s| s.age_days.unwrap_or(u64::MAX));
+    found
+}
+
+fn saved(path: &Path) -> Option<Saved> {
+    let dirs: Vec<String> = fs::read_dir(path).ok()?.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let files = dirs.iter().any(|n| n == "files" || n.starts_with("sdcard_"));
+    let apps = dirs.iter().any(|n| n == "apps");
+    if !files && !apps {
+        return None;
+    }
+    let stamp = fs::metadata(path.join("errors.log")).or_else(|_| fs::metadata(path)).and_then(|m| m.modified()).ok();
+    let folder = path.file_name()?.to_string_lossy().into_owned();
+    Some(Saved {
+        path: path.to_path_buf(),
+        name: folder.rsplit_once('_').map_or(folder.as_str(), |(model, _)| model).to_string(),
+        files,
+        apps,
+        age_days: stamp.and_then(|s| s.elapsed().ok()).map(|d| d.as_secs() / 86_400),
+    })
 }
 
 /// Files saved in a backup folder and the phone path each goes back to: `files` goes to
@@ -515,9 +555,36 @@ fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
     out
 }
 
-/// 1 -> "1 file", 12 -> "12 files"
-fn file_count(n: usize) -> String {
-    format!("{n} {}", if n == 1 { "file" } else { "files" })
+/// 1280 -> "1,280"
+pub fn count(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// 1 -> "1 file", 1280 -> "1,280 files"
+pub fn files(n: usize) -> String {
+    format!("{} {}", count(n), if n == 1 { "file" } else { "files" })
+}
+
+/// The verb for a count: "1 file was", "2 files were".
+pub fn were(n: usize) -> &'static str {
+    if n == 1 { "was" } else { "were" }
+}
+
+/// ["a"] -> "a", ["a", "b"] -> "a or b", ["a", "b", "c"] -> "a, b or c"
+pub fn or_list(items: &[String]) -> String {
+    match items.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
 /// Copies the photos and files of a backup back to the phone, skipping any file the phone
@@ -617,21 +684,21 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
     }
 
     if stopped() {
-        return Err(format!("You stopped the restore. {} were copied back and stay on the phone.", file_count(copied)));
+        return Err(format!("You stopped the restore. {} {} copied back and stay on the phone.", files(copied), were(copied)));
     }
     if !connected(serial) {
         return Err(DISCONNECTED_RESTORE.into());
     }
-    let mut msg = format!("Copied {} back to the phone. {} were already there.", file_count(copied), file_count(skipped));
+    let mut msg = format!("Copied {} back to the phone. {} {} already there.", files(copied), files(skipped), were(skipped));
     if !broken.is_empty() {
         let names: Vec<&str> = broken.iter().take(3).map(|j| j.remote.as_str()).collect();
-        msg += &format!(" {} could not be copied, for example {}. Restore again to retry.", file_count(broken.len()), names.join(", "));
+        msg += &format!(" {} could not be copied, for example {}. Restore again to retry.", files(broken.len()), names.join(", "));
     }
     if copied > 0 && sdk < 29 {
         msg += " Restart the phone so the Gallery shows the restored photos.";
     }
     if !missing.is_empty() {
-        msg += &format!(" This phone has no SD card named {}, so those files were not restored.", missing.join(", "));
+        msg += &format!(" This phone has no SD card named {}, so those files were not restored.", or_list(&missing));
     }
     Ok(msg)
 }
@@ -937,6 +1004,24 @@ mod tests {
         assert_eq!(missing, ["9999-ZZ"]);
         assert_eq!(again.len(), 2);
         assert!(saved_files(&root, "").is_err());
+    }
+
+    #[test]
+    fn lists_saved_backups() {
+        let root = std::env::temp_dir().join(format!("phone-backup-list-test-{}", std::process::id()));
+        fs::create_dir_all(root.join("Pixel 8_ABC123").join("files")).unwrap();
+        fs::create_dir_all(root.join("SM G991B_R58M").join("apps")).unwrap();
+        fs::create_dir_all(root.join("Holiday photos")).unwrap();
+        let mut found = saved_backups(&root);
+        // A backup folder chosen directly is listed alone.
+        let one = saved_backups(&root.join("Pixel 8_ABC123"));
+        fs::remove_dir_all(&root).unwrap();
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(found.len(), 2);
+        assert_eq!((found[0].name.as_str(), found[0].files, found[0].apps), ("Pixel 8", true, false));
+        assert_eq!((found[1].name.as_str(), found[1].files, found[1].apps), ("SM G991B", false, true));
+        assert_eq!(found[0].age_days, Some(0));
+        assert_eq!(one.len(), 1);
     }
 
     #[test]
