@@ -21,7 +21,8 @@ The app stays free, offline and account-free.
 | MMS, with attachments | `Telephony.Mms` and its parts | Same as SMS | Yes |
 | Call history | `CallLog.Calls` | `CallLog.Calls` insert | Yes |
 | Calendar events and reminders | `CalendarContract` | `CalendarContract` insert into a local account | Yes |
-| Device info (model, Android version, storage, battery) | `getprop`, `dumpsys battery`, `df` | n/a | No |
+| Blocked numbers | `BlockedNumberContract` | Only the default dialer or SMS app may write | Yes; later |
+| Device info (model, Android version, storage, battery) | `getprop` (`ro.product.manufacturer`, `ro.product.model`, `ro.config.marketing_name` where the vendor sets it, `ro.build.version.release`, `ro.build.version.sdk`), `dumpsys battery`, `df` | n/a | No |
 | Alarms, browser bookmarks, system settings | No public API on current Android | No | Not supported; the UI says so |
 | App private data | Needs root | No | Not supported (WhatsApp files are an exception, see section 7) |
 
@@ -48,15 +49,15 @@ Rust client  <== JSON lines over TCP ==>      TCP server on 127.0.0.1:P
 - `minSdk 23` (Android 6, where runtime permissions start). `targetSdk` follows the current Google Play requirement.
 - Components:
   - `MainActivity`: asks for permissions and shows the connection status.
-  - `BridgeService`: foreground service (`foregroundServiceType="dataSync"`) with a persistent notification. Opens a `ServerSocket` bound to `127.0.0.1`.
+  - `BridgeService`: foreground service (`foregroundServiceType="dataSync"`) with a persistent notification. Opens a `ServerSocket` bound to `127.0.0.1`. Holds a partial wake lock (plus a Wi-Fi lock in Wi-Fi mode) only while a request runs, so a long backup survives the screen turning off. No restart watchdog: the PC starts the service again if it dies.
   - The components Android requires before an app can become the default SMS app: an SMS deliver receiver, an MMS WAP-push receiver, a "respond via message" service and a compose activity. They can be minimal.
-- Permissions, requested only for the data the user picked: `READ_CONTACTS`, `WRITE_CONTACTS`, `READ_SMS`, `READ_CALL_LOG`, `WRITE_CALL_LOG`, `READ_CALENDAR`, `WRITE_CALENDAR`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS` (Android 13+). Writing SMS needs no extra permission once the app is the default SMS app.
+- Permissions, requested only for the data the user picked: `READ_CONTACTS`, `WRITE_CONTACTS`, `READ_SMS`, `READ_CALL_LOG`, `WRITE_CALL_LOG`, `READ_CALENDAR`, `WRITE_CALENDAR`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `WAKE_LOCK`, `POST_NOTIFICATIONS` (Android 13+). Writing SMS needs no extra permission once the app is the default SMS app.
 - Distribution: the PC app ships the APK next to its own executable and installs it with `adb install -r`. The APK is also published on the GitHub releases page so anyone can check the build.
 
 ### 3.2 Session start (PC side)
 
 1. Pick the device (existing `detect()`).
-2. Check `dumpsys package <companion>` for the installed `versionCode`; install or upgrade if missing or older.
+2. Check `dumpsys package <companion>` for the installed `versionCode`; install or upgrade if missing or older with `adb install -r -g`. `-g` grants the runtime permissions at install time, so most phones need no permission taps. Some vendor builds ignore it, and the default-SMS role can never be granted this way; the `perms` reply shows what is still missing.
 3. Start the service with `am start-foreground-service` (Android 8+), passing a random session token as an intent extra. Open the activity instead when permissions are still missing.
 4. `adb forward tcp:0 tcp:<P>`; adb prints the free PC port it chose. `P` is a fixed port constant of the companion app.
 5. Connect and send `hello` with the token. The service rejects any connection without it, so other apps on the phone cannot use the channel.
@@ -64,7 +65,7 @@ Rust client  <== JSON lines over TCP ==>      TCP server on 127.0.0.1:P
 
 ### 3.3 Protocol
 
-Newline-delimited JSON, UTF-8, one object per line. Every request has an `id`. Lists stream as `item` lines followed by one `end` line.
+Newline-delimited JSON, UTF-8, one object per line. JSON escapes newlines inside strings, so a line is always exactly one message and no length prefix is needed. Every request has an `id`. Lists stream as `item` lines followed by one `end` line.
 
 ```
 PC -> {"id":1,"op":"hello","token":"...","proto":1}
@@ -83,6 +84,7 @@ PH <- {"id":4,"ok":false,"error":"permission_denied","need":"sms"}
 - Operations: `hello`, `perms`, `count` (for progress bars), `list`, `insert`, `sms_role`, `bye`.
 - Kinds: `contacts`, `sms`, `mms`, `calllog`, `calendar`.
 - Binary data (MMS attachments, contact photos) does not travel in JSON. The phone writes it under its app-specific folder (`Android/data/<package>/files/out/`) and returns a relative path; the PC fetches it with `adb pull`. Restore mirrors this with `adb push` into `files/in/`.
+- File bytes never go through this channel. `adb pull` / `adb push` already stream large files well, so the companion needs no file server of its own.
 - `proto` is a version number. The PC reinstalls the companion when the phone reports an older one.
 
 ### 3.4 SMS and MMS restore
