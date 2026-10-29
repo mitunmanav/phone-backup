@@ -394,6 +394,10 @@ struct App {
     /// The busy job is a restore, not a backup.
     restoring: bool,
     restore_msg: Option<Result<String, String>>,
+    /// The running restore is only a check; holds what it checks.
+    checking: Option<Plan>,
+    /// The last check and what it found. Restore now is offered only while the choices still match.
+    preview: Option<(Plan, Result<String, String>)>,
     backups: Vec<backup::Saved>,
     /// The folder `backups` was read from.
     scanned: PathBuf,
@@ -405,6 +409,9 @@ struct App {
     /// Debug builds only: scroll position to open at, for screenshots.
     scroll: Option<f32>,
 }
+
+/// A restore's choices: phone serial, backup folder, files, apps.
+type Plan = (String, PathBuf, bool, bool);
 
 /// Test data for checking the layout against realistic worst cases. Never shown in release builds.
 #[derive(Clone, Copy, PartialEq)]
@@ -539,6 +546,8 @@ impl App {
             tab: Tab::Backup,
             restoring: false,
             restore_msg: None,
+            checking: None,
+            preview: None,
             backups: Vec::new(),
             scanned: PathBuf::new(),
             chosen: None,
@@ -629,19 +638,16 @@ impl App {
     }
 
     /// Restores photos and files first, then apps, from one backup folder.
-    fn restore(
-        &mut self,
-        ctx: &egui::Context,
-        serial: String,
-        folder: PathBuf,
-        files: bool,
-        apps: bool,
-    ) {
+    /// With `check`, changes nothing on the phone and reports what a restore would do.
+    fn restore(&mut self, ctx: &egui::Context, plan: Plan, check: bool) {
         let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
         busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
         self.restoring = true;
         self.restore_msg = None;
+        self.preview = None;
+        self.checking = check.then(|| plan.clone());
+        let (serial, folder, files, apps) = plan;
         self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
@@ -653,10 +659,12 @@ impl App {
             let mut said = Vec::new();
             let mut result = Ok(());
             if files {
-                result = backup::restore_files(&serial, &folder, &report).map(|m| said.push(m));
+                result =
+                    backup::restore_files(&serial, &folder, check, &report).map(|m| said.push(m));
             }
             if apps && result.is_ok() {
-                result = backup::restore_apps(&serial, &folder, &report).map(|m| said.push(m));
+                result =
+                    backup::restore_apps(&serial, &folder, check, &report).map(|m| said.push(m));
             }
             let result = match result {
                 Ok(()) => Ok(said.join("\n")),
@@ -1289,25 +1297,34 @@ impl App {
         let picked = (self.restore_files && has_files) || (self.restore_apps && has_apps);
 
         ui.add_space(24.0);
-        let label = if busy && self.restoring {
-            "Restoring…"
-        } else {
-            "Restore"
-        };
         let path = chosen.map(|b| b.path.clone());
-        if primary(
-            ui,
-            t,
-            label,
-            phone.is_some() && path.is_some() && picked && !busy,
-        ) && let (Some((serial, _)), Some(path)) = (phone.clone(), path.clone())
-        {
-            // A ticked box the chosen backup has nothing for is ignored, not run.
-            let (files, apps) = (
+        // A ticked box the chosen backup has nothing for is ignored, not run.
+        let plan: Option<Plan> = match (&phone, &path) {
+            (Some((serial, _)), Some(path)) if picked => Some((
+                serial.clone(),
+                path.clone(),
                 self.restore_files && has_files,
                 self.restore_apps && has_apps,
-            );
-            self.restore(ui.ctx(), serial, path, files, apps);
+            )),
+            _ => None,
+        };
+        // Any change to the phone, backup or ticks after a check means checking again.
+        let preview = self
+            .preview
+            .as_ref()
+            .filter(|(p, _)| Some(p) == plan.as_ref())
+            .map(|(_, r)| r.clone());
+        let checked = matches!(preview, Some(Ok(_)));
+        let label = match (busy && self.restoring, self.checking.is_some(), checked) {
+            (true, true, _) => "Checking…",
+            (true, false, _) => "Restoring…",
+            (false, _, true) => "Restore now",
+            (false, _, false) => "Check restore",
+        };
+        if primary(ui, t, label, plan.is_some() && !busy)
+            && let Some(plan) = plan
+        {
+            self.restore(ui.ctx(), plan, !checked);
         }
         if !busy {
             if phone.is_none() {
@@ -1325,6 +1342,18 @@ impl App {
         }
         if busy && self.restoring {
             self.progress(ui, t);
+        }
+        if let Some(r) = preview.filter(|_| !busy) {
+            ui.add_space(16.0);
+            result_box(t).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let (title, color, text) = match &r {
+                    Ok(m) => ("What will happen", t.ink, m),
+                    Err(e) => ("Cannot restore", t.error, e),
+                };
+                ui.label(RichText::new(title).font(semibold(16.0)).color(color));
+                ui.label(text.as_str());
+            });
         }
         match &self.restore_msg {
             Some(Ok(m)) => {
@@ -1445,6 +1474,14 @@ impl App {
             }
         }
         self.chosen = self.backups.first().map(|b| b.path.clone());
+        let first_adb = self.phones.iter().flatten().find_map(|p| match p {
+            Phone::Adb { serial, .. } => Some(serial.clone()),
+            _ => None,
+        });
+        self.preview = first_adb.zip(self.chosen.clone()).map(|(serial, path)| {
+            let plan = (serial, path, true, true);
+            (plan, Ok("Files: will copy 128,456 files (214.7 GB) to the phone. 1,284 files already on the phone will be skipped; nothing is replaced. This phone has no SD card named 3A1F-0C2B or 9C33-6BD5, so those files cannot be restored.\nApps: will install 212 of 214, for example com.northwindindustries.holdings.expensereports.enterprise, com.whatsapp, org.mozilla.firefox. The rest are already on the phone.".into()))
+        });
         if f != Fixture::Real {
             self.scanned = self.dest.clone();
         }
@@ -1479,7 +1516,10 @@ impl eframe::App for App {
                     self.wifi_working = false;
                     self.wifi_msg = Some(r);
                 }
-                Msg::Restored(r) => self.restore_msg = Some(r),
+                Msg::Restored(r) => match self.checking.take() {
+                    Some(plan) => self.preview = Some((plan, r)),
+                    None => self.restore_msg = Some(r),
+                },
                 Msg::Done(r) => {
                     self.result = Some(r);
                     // Flash the taskbar button if the window is in the background.
