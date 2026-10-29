@@ -136,7 +136,7 @@ struct App {
     confirm_close: bool,
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
-    /// The busy job is an app restore, not a backup.
+    /// The busy job is a restore, not a backup.
     restoring: bool,
     restore_msg: Option<Result<String, String>>,
 }
@@ -256,7 +256,7 @@ impl App {
         });
     }
 
-    fn restore(&mut self, ctx: &egui::Context, serial: String, folder: PathBuf) {
+    fn restore(&mut self, ctx: &egui::Context, serial: String, folder: PathBuf, apps: bool) {
         let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
         busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
@@ -270,7 +270,7 @@ impl App {
                 let _ = tx.send(m);
                 ctx.request_repaint();
             };
-            let result = backup::restore_apps(&serial, &folder, &report);
+            let result = if apps { backup::restore_apps(&serial, &folder, &report) } else { backup::restore_files(&serial, &folder, &report) };
             busy.store(false, Ordering::Relaxed);
             report(Msg::Restored(result));
         });
@@ -399,7 +399,7 @@ impl App {
         // The one main action.
         ui.add_space(16.0);
         let label = if busy && self.restoring {
-            "Restoring apps"
+            "Restoring"
         } else if busy {
             "Backing up"
         } else if self.result.is_some() {
@@ -506,9 +506,9 @@ impl App {
 
         // Restoring is rare next to backing up, so it stays folded away too.
         ui.add_space(24.0);
-        egui::CollapsingHeader::new(RichText::new("Restore apps to a phone").font(semibold(15.0))).show(ui, |ui| {
+        egui::CollapsingHeader::new(RichText::new("Restore to a phone").font(semibold(15.0))).show(ui, |ui| {
             ui.label(muted(
-                "Reinstalls the apps saved in a backup that are missing from the connected phone. Their data and logins are not restored.",
+                "Copies a backup's photos and files, or its apps, back to the connected phone. Nothing already on the phone is replaced. App data and logins are not restored.",
             ));
             let serial = phones.iter().flatten().find_map(|p| match p {
                 Phone::Adb { serial, .. } => Some(serial.clone()),
@@ -517,11 +517,15 @@ impl App {
             if serial.is_none() {
                 ui.label(muted("Connect a phone with USB debugging turned on first."));
             }
-            if ui.add_enabled(serial.is_some() && !busy, egui::Button::new("Choose backup and restore")).clicked() {
-                if let (Some(serial), Some(folder)) = (serial, rfd::FileDialog::new().set_directory(&self.dest).pick_folder()) {
-                    self.restore(ui.ctx(), serial, folder);
+            ui.horizontal_wrapped(|ui| {
+                for (label, apps) in [("Restore photos and files", false), ("Restore apps", true)] {
+                    if ui.add_enabled(serial.is_some() && !busy, egui::Button::new(label)).clicked() {
+                        if let (Some(serial), Some(folder)) = (serial.clone(), rfd::FileDialog::new().set_directory(&self.dest).pick_folder()) {
+                            self.restore(ui.ctx(), serial, folder, apps);
+                        }
+                    }
                 }
-            }
+            });
             match &self.restore_msg {
                 Some(Ok(m)) => {
                     ui.label(m);
@@ -632,8 +636,8 @@ impl eframe::App for App {
             egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
                 ui.set_max_width(320.0);
                 if self.restoring {
-                    ui.label(RichText::new("Stop restoring apps?").font(semibold(18.0)));
-                    ui.label("Apps installed so far stay on the phone.");
+                    ui.label(RichText::new("Stop restoring?").font(semibold(18.0)));
+                    ui.label("Everything restored so far stays on the phone.");
                 } else {
                     ui.label(RichText::new("Stop the backup?").font(semibold(18.0)));
                     ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
@@ -644,7 +648,7 @@ impl eframe::App for App {
                         self.closing = true;
                         self.confirm_close = false;
                     }
-                    if ui.button("Keep backing up").clicked() {
+                    if ui.button(if self.restoring { "Keep restoring" } else { "Keep backing up" }).clicked() {
                         self.confirm_close = false;
                     }
                 });

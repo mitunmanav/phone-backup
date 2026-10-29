@@ -449,6 +449,195 @@ pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result
     Ok(msg)
 }
 
+/// Files saved in a backup folder and the phone path each goes back to: `files` goes to
+/// /sdcard, `sdcard_<card>` to that SD card when the phone has it. Also returns the cards the
+/// phone lacks. App folders (Android/data, Android/obb) are left out: the apps own those.
+fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), String> {
+    // The `files` folder itself works as well as the phone's folder.
+    let folder = if folder.file_name().is_some_and(|n| n == "files") { folder.parent().unwrap_or(folder) } else { folder };
+    let mut roots = Vec::new();
+    let mut missing = Vec::new();
+    for entry in fs::read_dir(folder).map_err(|e| format!("Cannot open {}: {e}", folder.display()))?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "files" {
+            roots.push((entry.path(), "/sdcard".to_string()));
+        } else if let Some(card) = name.strip_prefix("sdcard_") {
+            if volumes.split_whitespace().any(|v| v == card) {
+                roots.push((entry.path(), format!("/storage/{card}")));
+            } else {
+                missing.push(card.to_string());
+            }
+        }
+    }
+    if roots.is_empty() {
+        return Err("This folder has no saved files. Choose the phone's backup folder, the one that holds the files folder.".into());
+    }
+    let mut jobs = Vec::new();
+    for (local_root, remote_root) in roots {
+        let mut stack = vec![local_root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                let Ok(meta) = entry.metadata() else { continue };
+                let rel = path.strip_prefix(&local_root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                let lower = rel.to_lowercase();
+                if lower == "android/data" || lower == "android/obb" {
+                    continue;
+                }
+                if meta.is_dir() {
+                    stack.push(path);
+                } else {
+                    // shortcut: names that safe_name or unclash changed go back changed; the original is not stored.
+                    jobs.push(Job { remote: format!("{remote_root}/{rel}"), size: meta.len(), mtime: 0, local: path });
+                }
+            }
+        }
+    }
+    jobs.sort_by(|a, b| a.remote.cmp(&b.remote));
+    Ok((jobs, missing))
+}
+
+/// Wraps a path in single quotes for the phone's shell.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Runs `<cmd> 'path' 'path' ...` on the phone in batches that fit one command line, to the
+/// end even after Stop (cleanup must finish), and returns everything it printed.
+fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
+    let mut out = String::new();
+    for batch in paths.chunks(100) {
+        let line = std::iter::once(cmd.to_string()).chain(batch.iter().map(|p| sh_quote(p))).collect::<Vec<_>>().join(" ");
+        if let Ok(o) = adb().args(["-s", serial, "shell", &line]).output() {
+            out += &String::from_utf8_lossy(&o.stdout);
+        }
+    }
+    out
+}
+
+/// 1 -> "1 file", 12 -> "12 files"
+fn file_count(n: usize) -> String {
+    format!("{n} {}", if n == 1 { "file" } else { "files" })
+}
+
+/// Copies the photos and files of a backup back to the phone, skipping any file the phone
+/// already has, so restoring twice copies nothing twice and nothing on the phone is replaced.
+pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
+    if !connected(serial) {
+        return Err(DISCONNECTED.into());
+    }
+    let (mut jobs, missing) = saved_files(folder, &shell(serial, "ls /storage"))?;
+    let total = jobs.len();
+
+    report(Msg::Status("Checking what is already on the phone".into()));
+    // "/sdcard" or "/storage/<card>": the storage each file goes to.
+    let roots: std::collections::BTreeSet<String> = jobs
+        .iter()
+        .map(|j| if j.remote.starts_with("/sdcard/") { "/sdcard".into() } else { j.remote.splitn(4, '/').take(3).collect::<Vec<_>>().join("/") })
+        .collect();
+    let mut on_phone = std::collections::HashSet::new();
+    for root in &roots {
+        // Android's shared storage ignores letter case, so compare names in lower case.
+        on_phone.extend(shell(serial, &format!("find {root}/ -type f")).lines().map(str::to_lowercase));
+    }
+    if stopped() {
+        return Err("You stopped the restore. Nothing was copied.".into());
+    }
+    if !connected(serial) {
+        return Err(DISCONNECTED_RESTORE.into());
+    }
+    jobs.retain(|j| !on_phone.contains(&j.remote.to_lowercase()));
+    let skipped = total - jobs.len();
+
+    let to_copy = jobs.len();
+    let needed: u64 = jobs.iter().map(|j| j.size).sum();
+    let free = shell(serial, "stat -f -c '%a %S' /sdcard");
+    if let Some(free) = free.split_once(' ').and_then(|(a, b)| Some(a.parse::<u64>().ok()? * b.trim().parse::<u64>().ok()?)) {
+        // 200 MB spare so the phone itself is not left with full storage.
+        if needed + 200_000_000 > free {
+            return Err(format!(
+                "Not enough space on the phone: the restore needs {}, but only {} is free. Free up space on the phone first.",
+                size(needed),
+                size(free)
+            ));
+        }
+    }
+
+    // One `adb push` per folder, like the backup. With several files adb needs the folder to exist.
+    let mut by_dir: BTreeMap<&str, Vec<&Job>> = BTreeMap::new();
+    for job in &jobs {
+        by_dir.entry(job.remote.rsplit_once('/').map_or("/sdcard", |d| d.0)).or_default().push(job);
+    }
+    shell_each(serial, "mkdir -p", &by_dir.keys().copied().collect::<Vec<_>>());
+
+    let tmp = std::env::temp_dir().join(format!("phone-backup-push-{}", std::process::id()));
+    let mut tried: Vec<&Job> = Vec::new();
+    'dirs: for (dir, group) in &by_dir {
+        let (long, short): (Vec<&Job>, Vec<&Job>) = group.iter().partition(|j| too_long(&j.local));
+        // 100 paths of at most 240 characters stay under Windows' 32,767-character command line.
+        for batch in short.chunks(100).chain(long.chunks(1)) {
+            report(Msg::Progress { done: tried.len(), total: to_copy, now: dir.to_string() });
+            if stopped() {
+                break 'dirs;
+            }
+            let mut c = adb();
+            c.args(["-s", serial, "push"]);
+            if too_long(&batch[0].local) {
+                // adb.exe cannot read past 260 characters; Rust's fs can, so copy short and push.
+                let short = tmp.join(batch[0].local.file_name().unwrap_or_default());
+                let _ = fs::create_dir_all(&tmp);
+                let _ = fs::copy(&batch[0].local, &short);
+                c.arg(short);
+            } else {
+                c.args(batch.iter().map(|j| &j.local));
+            }
+            c.arg(format!("{dir}/"));
+            run(c);
+            tried.extend(batch);
+        }
+    }
+    let _ = fs::remove_dir_all(&tmp);
+    report(Msg::Progress { done: tried.len(), total: to_copy, now: String::new() });
+
+    // Check every file sent. A wrong size means the copy broke off (Stop or a pulled cable);
+    // the phone did not have that file before, so removing the broken copy loses nothing.
+    let sent: Vec<&str> = tried.iter().map(|j| j.remote.as_str()).collect();
+    let sizes: std::collections::HashMap<String, u64> = shell_each(serial, "stat -c '%s %n'", &sent)
+        .lines()
+        .filter_map(|l| l.split_once(' ').and_then(|(s, p)| Some((p.to_string(), s.parse().ok()?))))
+        .collect();
+    let broken: Vec<&Job> = tried.iter().copied().filter(|j| sizes.get(&j.remote) != Some(&j.size)).collect();
+    shell_each(serial, "rm -f", &broken.iter().filter(|j| sizes.contains_key(&j.remote)).map(|j| j.remote.as_str()).collect::<Vec<_>>());
+    let copied = tried.len() - broken.len();
+
+    // Android 10+ rescans on request so the Gallery shows the files; older phones do it on restart.
+    let sdk: u32 = shell_each(serial, "getprop", &["ro.build.version.sdk"]).trim().parse().unwrap_or(0);
+    if copied > 0 && sdk >= 29 {
+        shell_each(serial, "content call --uri content://media --method scan_volume --arg", &["external_primary"]);
+    }
+
+    if stopped() {
+        return Err(format!("You stopped the restore. {} were copied back and stay on the phone.", file_count(copied)));
+    }
+    if !connected(serial) {
+        return Err(DISCONNECTED_RESTORE.into());
+    }
+    let mut msg = format!("Copied {} back to the phone. {} were already there.", file_count(copied), file_count(skipped));
+    if !broken.is_empty() {
+        let names: Vec<&str> = broken.iter().take(3).map(|j| j.remote.as_str()).collect();
+        msg += &format!(" {} could not be copied, for example {}. Restore again to retry.", file_count(broken.len()), names.join(", "));
+    }
+    if copied > 0 && sdk < 29 {
+        msg += " Restart the phone so the Gallery shows the restored photos.";
+    }
+    if !missing.is_empty() {
+        msg += &format!(" This phone has no SD card named {}, so those files were not restored.", missing.join(", "));
+    }
+    Ok(msg)
+}
+
+const DISCONNECTED_RESTORE: &str = "The phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.";
+
 /// True when the local copy is missing or differs in size or time.
 fn needs_copy(job: &Job) -> bool {
     let Ok(meta) = fs::metadata(&job.local) else { return true };
@@ -728,6 +917,32 @@ mod tests {
         assert_eq!(found[0].0, "com.example");
         assert_eq!(found[0].1.len(), 2);
         assert!(saved_apps(&root).is_err());
+    }
+
+    #[test]
+    fn maps_saved_files_to_phone_paths() {
+        let root = std::env::temp_dir().join(format!("phone-backup-restore-test-{}", std::process::id()));
+        for f in ["files/DCIM/Camera/a.jpg", "files/Android/data/com.x/f", "files/Android/media/com.x/m.jpg", "sdcard_1234-AB/Music/s.mp3", "sdcard_9999-ZZ/x", "apps/com.x/base.apk"] {
+            let p = root.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "abc").unwrap();
+        }
+        let (jobs, missing) = saved_files(&root, "emulated self 1234-AB").unwrap();
+        // Picking the files folder itself works too.
+        let (again, _) = saved_files(&root.join("files"), "").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        let remotes: Vec<_> = jobs.iter().map(|j| j.remote.as_str()).collect();
+        assert_eq!(remotes, ["/sdcard/Android/media/com.x/m.jpg", "/sdcard/DCIM/Camera/a.jpg", "/storage/1234-AB/Music/s.mp3"]);
+        assert_eq!(jobs[0].size, 3);
+        assert_eq!(missing, ["9999-ZZ"]);
+        assert_eq!(again.len(), 2);
+        assert!(saved_files(&root, "").is_err());
+    }
+
+    #[test]
+    fn quotes_shell_paths() {
+        assert_eq!(sh_quote("/sdcard/a b.jpg"), "'/sdcard/a b.jpg'");
+        assert_eq!(sh_quote("/sdcard/it's $x.jpg"), r"'/sdcard/it'\''s $x.jpg'");
     }
 
     #[test]
