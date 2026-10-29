@@ -1,6 +1,8 @@
 # Hardening and feature plan
 
-Each item lands on its own branch and is merged into `main` with `--no-ff` after `cargo test` and `cargo clippy` pass.
+> Every item below is implemented on `main`. This table records the original scope and decisions; the Android expansion plan is in [android-design.md](android-design.md).
+
+Each item landed on its own branch and was merged to `main` after `cargo test` and `cargo clippy` passed.
 
 ## Edge cases
 
@@ -32,3 +34,4 @@ Checked and not a bug: if one file in a multi-file `adb pull` fails (deleted mid
 ## Out of scope
 
 Scheduled backups, encryption, restoring files and messages to the phone, iPhone support, WhatsApp chat export, and app private data (Android blocks it without root).
+
