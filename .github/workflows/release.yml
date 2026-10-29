@@ -1,7 +1,7 @@
 name: Release
 
 # Every push to main whose Cargo.toml version has no tag yet publishes that version.
-# CI makes pull requests that change the app bump the version, so each app update ships.
+# Features merge without a version change; a pull request that bumps the version ships them together.
 on:
   push:
     branches: [main]

@@ -19,5 +19,5 @@ cargo build --locked --release
 - Include tests for changed backup, restore, parsing, or device-detection behavior.
 - Describe any manual checks, including Windows version and phone connection mode when relevant.
 - Call out changes that could affect existing backups or restore behavior.
-- If the change touches the app, bump `version` in `Cargo.toml` (patch for fixes, minor for features). Merging it to `main` publishes that version as a release.
+- Do not change `version` in `Cargo.toml`. Changes collect on `main`; a maintainer bumps the version (patch for fixes, minor for features) when a release is ready, and merging that bump publishes it.
 - Do not include real phone backups, contacts, messages, serial numbers, or unredacted logs in issues or pull requests.

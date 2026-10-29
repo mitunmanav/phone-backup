@@ -46,7 +46,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-The GitHub Actions CI workflow runs these checks and builds a release binary on Windows. Every change to the app bumps the version in `Cargo.toml` (CI fails otherwise). When it reaches `main`, the Release workflow tags that version and publishes the executable with a SHA-256 checksum.
+The GitHub Actions CI workflow runs these checks and builds a release binary on Windows for every pull request. When a new version in `Cargo.toml` reaches `main`, the Release workflow runs the checks again, tags that version and publishes the executable with a SHA-256 checksum. How versions are bumped is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing and security
 
