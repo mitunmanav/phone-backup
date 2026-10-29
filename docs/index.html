@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone Backup: free Android backup for Windows</title>
+<meta name="description" content="A free, open-source Windows app that backs up an Android phone over USB or Wi-Fi. No account, no cloud.">
+<meta name="color-scheme" content="light dark">
+<style>
+  /* Same colors as the app (src/main.rs, fn tokens). */
+  :root {
+    --bg: #E9EDF1; --surface: #FFFFFF; --line: #C5CDD5;
+    --ink: #16202B; --muted: #56616D;
+    --accent: #7A2E6E; --on-accent: #FFFFFF;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10161C; --surface: #18212A; --line: #2C3946;
+      --ink: #E6ECF1; --muted: #93A1AE;
+      --accent: #D08BC6; --on-accent: #10161C;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 17px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+  @media (min-width: 640px) { .wrap { padding: 0 32px; } }
+  .mono { font-family: "Cascadia Code", "Cascadia Mono", Consolas, monospace; }
+
+  header .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--ink); text-decoration: none; min-height: 44px; }
+  .brand svg { color: var(--accent); }
+  .nav-link { color: var(--ink); min-height: 44px; display: inline-flex; align-items: center; padding: 0 4px; }
+
+  .hero { display: grid; gap: 40px; align-items: center; padding-block: 48px 80px; }
+  @media (min-width: 900px) { .hero { grid-template-columns: 1fr 1fr; gap: 64px; padding-block: 96px 120px; } }
+  h1 {
+    font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    font-size: clamp(2.25rem, 6vw, 3.75rem); line-height: 1.05; font-weight: 600;
+    letter-spacing: -0.03em; margin: 0 0 20px; text-wrap: balance;
+  }
+  .lead { font-size: 1.2rem; color: var(--muted); margin: 0 0 32px; max-width: 30em; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 22px;
+    border-radius: 8px; font-weight: 600; text-decoration: none;
+    border: 1px solid var(--line); color: var(--ink); background: transparent;
+    transition: transform .12s ease-out;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .note { margin: 16px 0 0; font-size: .9rem; color: var(--muted); }
+
+  /* The hero: the folder the app really writes on the PC. */
+  .tree {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 24px 20px; font-size: .95rem; line-height: 2; overflow-x: auto;
+  }
+  .tree ul { list-style: none; margin: 0; padding: 0; }
+  .tree ul ul { padding-left: 22px; border-left: 1px solid var(--line); margin-left: 8px; }
+  .tree li { white-space: nowrap; }
+  .tree .dir { font-weight: 700; }
+  .tree .root { color: var(--accent); }
+  .tree .hint { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: .85rem; margin-left: 10px; }
+  @media (max-width: 420px) { .tree { padding: 20px 14px; font-size: .85rem; } .tree ul ul { padding-left: 14px; margin-left: 4px; } }
+
+  section { padding: 72px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: clamp(1.6rem, 3.5vw, 2.1rem); line-height: 1.2; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 12px; }
+  .section-lead { color: var(--muted); margin: 0 0 40px; max-width: 36em; }
+  h3 { font-size: 1.1rem; margin: 0 0 6px; }
+  .cols { display: grid; gap: 32px 40px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+  .cols p { margin: 0; color: var(--muted); max-width: 32em; }
+  .cols .mono { color: var(--accent); font-size: .9rem; display: block; margin-bottom: 4px; }
+  code { font-family: "Cascadia Code", Consolas, monospace; font-size: .9em; }
+  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0 0; max-width: 32em; }
+
+  .split { display: grid; gap: 40px; }
+  @media (min-width: 900px) { .split { grid-template-columns: 1fr 1fr; gap: 64px; } }
+  .split p { color: var(--muted); margin: 0; max-width: 32em; }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 32px; justify-content: space-between; }
+
+  @media (prefers-reduced-motion: reduce) { .btn { transition: none; } .btn:active { transform: none; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="./">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M12 7v7m-3-3 3 3 3-3"/></svg>
+      Phone Backup
+    </a>
+    <a class="nav-link" href="https://github.com/mitunmanav/phone-backup">Source on GitHub</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <h1>Your Android phone, copied to your PC</h1>
+      <p class="lead">A free Windows app that backs up photos, files, apps, contacts and messages over a USB cable or Wi-Fi. No account, no cloud. The backup is an ordinary folder you can open.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/mitunmanav/phone-backup/releases">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 20h16"/></svg>
+          Download for Windows
+        </a>
+        <a class="btn" href="https://github.com/mitunmanav/phone-backup">Read the code</a>
+      </div>
+      <p class="note">Free and open source under the GPL-3.0 license.</p>
+    </div>
+
+    <div class="tree mono" role="img" aria-label="Example backup folder: files, apps and data folders inside a folder named after the phone.">
+      <ul>
+        <li><span class="dir root">Phone backups</span>
+          <ul>
+            <li><span class="dir">Pixel 8_37F1</span><span class="hint">one folder per phone</span>
+              <ul>
+                <li><span class="dir">files</span>
+                  <ul>
+                    <li>DCIM</li>
+                    <li>Download</li>
+                    <li>WhatsApp</li>
+                  </ul>
+                </li>
+                <li><span class="dir">apps</span><span class="hint">reinstall later</span></li>
+                <li><span class="dir">data</span>
+                  <ul>
+                    <li>contacts.vcf</li>
+                    <li>call_log.txt</li>
+                    <li>sms.txt</li>
+                  </ul>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>What it saves</h2>
+      <p class="section-lead">Tick what you want. The next backup copies only what is new or changed.</p>
+      <div class="cols">
+        <div>
+          <span class="mono">files</span>
+          <h3>Photos, videos and files</h3>
+          <p>Everything in the phone's storage and SD card, in the same folders as on the phone.</p>
+        </div>
+        <div>
+          <span class="mono">apps</span>
+          <h3>Apps</h3>
+          <p>The apps you installed, ready to put back on a phone. Their logins and data do not come with them.</p>
+        </div>
+        <div>
+          <span class="mono">data</span>
+          <h3>Contacts, calls and messages</h3>
+          <p>Contacts open in Google Contacts or any phone. Some phones do not allow reading these over USB.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Restore to any phone</h2>
+      <p class="section-lead">Pick a backup and put photos and files back, or reinstall missing apps. Files the phone already has are skipped, never replaced.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Three ways to connect</h2>
+      <p class="section-lead">Use whichever suits you. The app tells you what to tap on the phone.</p>
+      <div class="cols">
+        <div>
+          <h3>File transfer</h3>
+          <p>Plug in the phone, unlock it, tap the USB notification and choose File transfer. Saves photos and files.</p>
+        </div>
+        <div>
+          <h3>USB debugging</h3>
+          <p>Adds apps, contacts and messages. Turn it on in Developer options and put <code>adb.exe</code> from Google's free <a href="https://developer.android.com/tools/releases/platform-tools">Platform Tools</a> next to the app.</p>
+        </div>
+        <div>
+          <h3>Wi-Fi</h3>
+          <p>No cable. Turn on Wireless debugging on the phone and type the pairing code it shows.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div>
+        <h2>Nothing leaves your computer</h2>
+        <p>No account, no tracking, no subscription. The app never talks to a server, and the code is public so anyone can check.</p>
+      </div>
+      <div>
+        <h2>Build it yourself</h2>
+        <p>Install <a href="https://rustup.rs/">Rust</a>, then run this in the project folder. Found a bug? <a href="https://github.com/mitunmanav/phone-backup/issues">Open an issue</a>.</p>
+        <pre><code>cargo build --release</code></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Phone Backup is free software under the GPL-3.0 license.</span>
+    <span>Android is a trademark of Google LLC. Not affiliated with Google.</span>
+  </div>
+</footer>
+
+</body>
+</html>
