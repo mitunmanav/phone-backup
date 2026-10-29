@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Windows checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Each app change becomes a release, so it needs a version Release has not published yet.
+      - name: Check the version was bumped
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base=origin/${{ github.base_ref }}
+          if git diff --quiet "$base" HEAD -- src assets Cargo.toml Cargo.lock build.rs; then exit 0; fi
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::This changes the app, so bump the version in Cargo.toml (v$version is already released)."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --locked --release
