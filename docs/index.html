@@ -6,6 +6,8 @@
 <title>Phone Backup: free Android backup for Windows</title>
 <meta name="description" content="A free, open-source Windows app that backs up an Android phone over USB or Wi-Fi. No account, no cloud.">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#E9EDF1">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10161C">
 <style>
   /* Same colors as the app (src/main.rs, fn tokens). */
   :root {
@@ -22,7 +24,8 @@
     }
   }
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
+  html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+  a { touch-action: manipulation; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 17px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -52,6 +55,7 @@
     border-radius: 8px; font-weight: 600; text-decoration: none;
     border: 1px solid var(--line); color: var(--ink); background: transparent;
     transition: transform 160ms var(--ease-out), background-color 150ms ease;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   }
   .btn:active { transform: scale(.97); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
