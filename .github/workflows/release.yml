@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build Windows release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --locked --release
+
+      - name: Package release and checksum
+        shell: pwsh
+        run: |
+          $assetName = "phone-backup-windows-x86_64.zip"
+          $packageDir = Join-Path $env:RUNNER_TEMP "phone-backup-release"
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          Copy-Item "target/release/phone-backup.exe", "README.md", "LICENSE" -Destination $packageDir
+          Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $assetName
+          $hash = (Get-FileHash $assetName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $assetName" | Set-Content "SHA256SUMS.txt" -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            phone-backup-windows-x86_64.zip
+            SHA256SUMS.txt
+
