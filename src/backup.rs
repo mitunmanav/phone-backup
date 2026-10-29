@@ -1642,24 +1642,31 @@ mod tests {
             data: false,
         };
         let quiet = |_: Msg| {};
-        let stopper = std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_secs(4));
-            STOP.store(true, Ordering::Relaxed);
-        });
-        let r = adb_backup(&serial, "E2E", &dest, pick, &quiet);
-        stopper.join().unwrap();
+        // Interrupt after the first folder is copied, not after a fixed time: a fast phone
+        // finishes the whole seed before any timer fires.
+        fn after_first_folder(act: impl Fn()) -> impl Fn(Msg) {
+            let seen = std::cell::Cell::new(0);
+            move |m| {
+                if matches!(m, Msg::Progress { .. }) {
+                    seen.set(seen.get() + 1);
+                    if seen.get() == 2 {
+                        act();
+                    }
+                }
+            }
+        }
+        let stop = || STOP.store(true, Ordering::Relaxed);
+        let r = adb_backup(&serial, "E2E", &dest, pick, &after_first_folder(stop));
         assert_eq!(r.err().as_deref(), Some(STOPPED));
         // The phone list keeps working after a stopped job.
         assert_eq!(adb_count(), 1, "still listed once after Stop");
         STOP.store(false, Ordering::Relaxed);
 
-        let unplug = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(4));
+        let unplug = || {
             let _ = adb().args(["disconnect", tcp]).output();
-        });
+        };
         let _ = fs::remove_dir_all(&dest);
-        let r = adb_backup(tcp, "E2E", &dest, pick, &quiet);
-        unplug.join().unwrap();
+        let r = adb_backup(tcp, "E2E", &dest, pick, &after_first_folder(unplug));
         assert_eq!(r.err().as_deref(), Some(DISCONNECTED));
         // Interrupted copies are never mistaken for finished ones.
         let again = adb_backup(&serial, "E2E", &dest, pick, &quiet).unwrap();
