@@ -33,39 +33,22 @@ Checked and not a bug: if one file in a multi-file `adb pull` fails (deleted mid
 
 ## v1 features
 
-Ordered from cheapest to largest. Items 1 to 4 come first.
+Ordered from cheapest to largest. Each feature, and each nice-to-have inside it, lands as its own pull request so it can be rolled back alone.
 
-| # | Feature | Size |
-|---|---|---|
-| V1 | Before a restore, list what will be added, skipped, or cannot move and why. | Small |
-| V2 | Save a report after every backup or restore: what was copied and what failed. | Small |
-| V3 | `manifest.json` with a SHA-256 hash per file, a "Verify backup" check, and a phone battery check before starting. | Small |
-| V4 | Back up the calendar and MMS messages. | Small |
-| V5 | Export contacts and messages as CSV, the calendar as ICS, and messages as a self-contained HTML page that opens offline. | Medium |
-| V6 | Wi-Fi pairing by QR code instead of typing the pairing code. | Medium |
-| V7 | Phone to phone: back up one phone and restore it to another in one flow. | Medium |
-| V8 | Tools: HEIC to JPG, duplicate finder, launch scrcpy if it is installed. | Medium |
-| V9 | Optional password-protected backups (AES-256-GCM, Argon2id key). | Medium |
-| V10 | Read WhatsApp backups with the user's own key: view, search and export. | Large |
-| V11 | Restore contacts, messages, call history and calendar to a phone. Messages and call history need a small companion Android app, so this may slip to v1.5. | Large |
-| V12 | Import backups made by other phone-transfer apps. | Large |
-
-## Nice-to-have features
-
-Do these first: time left, keep awake, battery warning, delete a backup, pick single folders, and a safety copy before a restore.
-
-| Area | Features |
-|---|---|
-| During a backup | Time left ("about 12 min"); keep the computer from sleeping; warn when the phone battery is under 20%; show the folder being copied; progress on the taskbar icon. |
-| Backup list | Size and date of each backup; delete an old backup (asks first); rename a backup; browse its contents in the app. |
-| Choosing | Pick single folders (for example only DCIM); skip junk such as cache, stickers and sent-media copies; show the size of each choice before starting; skip files over a chosen size. |
-| Restore | Pick files from a list with thumbnails; safety copy of anything that would be replaced; re-check files after copying. |
-| Contacts and messages | Merge duplicate contacts with undo; search messages inside a backup; print or save messages as PDF. |
-| Photos | HEIC to JPG keeping date and location; sort into year and month folders on export. |
-| Connecting | USB debugging steps per brand (Samsung, Xiaomi and others); ignore USB devices that are not phones; a "Phone not showing up?" helper. |
-| Trust and help | "Export diagnostics": a local zip of logs the user checks before sharing; a plain list of what the app never does (no internet, no ads, no auto-start). |
-| Comfort | Keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. |
-| After a job | Save the report as a file; a "Copy error list" button; optional sound or notification when done. |
+| # | Feature | Also includes | Size |
+|---|---|---|---|
+| V1 | Before a restore, list what will be added, skipped, or cannot move and why. | Pick files from a list with thumbnails. (Restore already never replaces a file and re-checks each copy.) | Small |
+| V2 | Save a report after every backup or restore: what was copied and what failed. | Save it as a file; a "Copy error list" button; optional sound or notification when done; "Export diagnostics": a local zip of logs the user checks before sharing. | Small |
+| V3 | `manifest.json` with a SHA-256 hash per file, a "Verify backup" check, and a phone battery check before starting. | Warn under 20% battery; keep the computer from sleeping; time left ("about 12 min"); show the folder being copied; progress on the taskbar icon. | Small |
+| V4 | Back up the calendar and MMS messages. | Pick single folders (for example only DCIM); skip junk such as cache, stickers and sent-media copies; show the size of each choice before starting; skip files over a chosen size. | Small |
+| V5 | Export contacts and messages as CSV, the calendar as ICS, and messages as a self-contained HTML page that opens offline. | Search messages inside a backup; print or save messages as PDF; HEIC to JPG keeping date and location; sort photos into year and month folders. | Medium |
+| V6 | Wi-Fi pairing by QR code instead of typing the pairing code. | USB debugging steps per brand (Samsung, Xiaomi and others); ignore USB devices that are not phones; a "Phone not showing up?" helper. | Medium |
+| V7 | Phone to phone: back up one phone and restore it to another in one flow. | Backup list with size and date; delete (asks first), rename and browse a backup in the app. | Medium |
+| V8 | Tools: HEIC to JPG, duplicate finder, launch scrcpy if it is installed. | Merge duplicate contacts with undo. | Medium |
+| V9 | Optional password-protected backups (AES-256-GCM, Argon2id key). | A plain list of what the app never does; keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. | Medium |
+| V10 | Read WhatsApp backups with the user's own key: view, search and export. | | Large |
+| V11 | Restore contacts, messages, call history and calendar to a phone. Messages and call history need a small companion Android app, so this may slip to v1.5. | | Large |
+| V12 | Import backups made by other phone-transfer apps. | | Large |
 
 ## Out of scope
 
