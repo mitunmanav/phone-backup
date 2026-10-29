@@ -20,4 +20,3 @@ cargo build --locked --release
 - Describe any manual checks, including Windows version and phone connection mode when relevant.
 - Call out changes that could affect existing backups or restore behavior.
 - Do not include real phone backups, contacts, messages, serial numbers, or unredacted logs in issues or pull requests.
-

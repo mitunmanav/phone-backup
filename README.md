@@ -57,4 +57,3 @@ The app is written in Rust with [egui](https://github.com/emilk/egui). See the [
 ## License
 
 [GPL-3.0-or-later](LICENSE). You may use, share, and modify the app; distributed copies and modified versions must remain under the same license.
-

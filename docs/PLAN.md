@@ -33,5 +33,4 @@ Checked and not a bug: if one file in a multi-file `adb pull` fails (deleted mid
 
 ## Out of scope
 
-Scheduled backups, encryption, restoring files and messages to the phone, iPhone support, WhatsApp chat export, and app private data (Android blocks it without root).
-
+Scheduled backups, encryption, restoring contacts, call history and messages to the phone, iPhone support, WhatsApp chat export, and app private data (Android blocks it without root).

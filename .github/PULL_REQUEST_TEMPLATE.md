@@ -12,4 +12,3 @@
 ## User and data impact
 
 <!-- Describe backup/restore behavior changes. Do not attach real phone data or unredacted logs. -->
-
