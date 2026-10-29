@@ -23,7 +23,7 @@ pub enum Msg {
     Status(String),
     Progress { done: usize, total: usize, now: String },
     Phones(Vec<Phone>),
-    Wifi(String),
+    Wifi(Result<String, String>),
     Done(Result<Vec<Summary>, String>),
     Restored(Result<String, String>),
 }
@@ -127,10 +127,24 @@ fn parse_adb_devices(text: &str) -> Vec<Phone> {
 }
 
 /// Runs `adb pair` or `adb connect` and returns what adb said.
-pub fn wifi(args: &[&str]) -> String {
+pub fn wifi(args: &[&str]) -> Result<String, String> {
     match adb().args(args).output() {
-        Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string(),
-        Err(e) => format!("Cannot run adb: {e}. Install Android SDK platform-tools."),
+        Ok(o) => wifi_result(args[0], &format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
+        Err(_) => Err("This computer does not have adb yet. Download Platform Tools and put adb.exe next to this app.".into()),
+    }
+}
+
+/// Turns what `adb pair` or `adb connect` printed into plain words. `adb connect` exits 0
+/// even when it could not connect, so the words are all there is to go on.
+pub fn wifi_result(cmd: &str, out: &str) -> Result<String, String> {
+    let out = out.to_lowercase();
+    match cmd {
+        "pair" if out.contains("successfully paired") => Ok("Paired. Now connect with step 2.".into()),
+        "pair" => Err("The phone did not pair. The code and port change each time the pairing screen opens, so type the ones it shows now.".into()),
+        // "connected to" and "already connected to"; the failures say "connect to".
+        _ if out.contains("connected to") => Ok("Connected. The phone shows up here in a moment.".into()),
+        _ if out.contains("authenticate") => Err("The phone did not accept this computer. Pair it first with step 1.".into()),
+        _ => Err("The phone did not answer at that address. Check that both are on the same Wi-Fi and the address matches the Wireless debugging screen.".into()),
     }
 }
 
@@ -225,7 +239,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
         }
     }
     for (remote_root, local_root) in &storages {
-        status(format!("Reading the file list on {model}"));
+        status(format!("Reading the file list on {model}…"));
         let listing = shell(serial, &format!("find {remote_root}/ -type f -exec stat -c '%s %Y %n' {{}} +"));
         for (size, mtime, path) in listing.lines().filter_map(parse_stat) {
             // shortcut: file names containing a newline are skipped; rare, would need find -print0.
@@ -240,7 +254,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
 
     // Installers of apps the user installed (base + split APKs). App private data is not
     // readable without root on Android 12+, so this restores the apps, not their logins/settings.
-    status("Reading the list of installed apps".into());
+    status("Reading the list of installed apps…".into());
     let apps = if pick.apps {
         shell(
             serial,
@@ -286,7 +300,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
     }
 
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
-    status("Saving contacts, call history and messages".into());
+    status("Saving contacts, call history and messages…".into());
     let data_dir = root.join("data");
     let _ = fs::create_dir_all(if pick.data { &data_dir } else { &root });
     let mut data = Vec::new();
@@ -596,7 +610,7 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
     let (mut jobs, missing) = saved_files(folder, &shell(serial, "ls /storage"))?;
     let total = jobs.len();
 
-    report(Msg::Status("Checking what is already on the phone".into()));
+    report(Msg::Status("Checking what is already on the phone…".into()));
     // "/sdcard" or "/storage/<card>": the storage each file goes to.
     let roots: std::collections::BTreeSet<String> = jobs
         .iter()
@@ -898,6 +912,18 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_adb_wifi_output() {
+        assert!(wifi_result("pair", "Successfully paired to 192.168.1.5:37145 [guid=adb-R5CT-x]").is_ok());
+        assert!(wifi_result("pair", "Failed: Unable to start pairing client.").is_err());
+        assert!(wifi_result("connect", "connected to 192.168.1.5:41235").is_ok());
+        assert!(wifi_result("connect", "already connected to 192.168.1.5:41235").is_ok());
+        assert!(wifi_result("connect", "failed to connect to '192.168.1.5:41235': refused (10061)").is_err());
+        assert!(wifi_result("connect", "cannot connect to 192.168.1.5:41235: refused (10061)").is_err());
+        let auth = wifi_result("connect", "failed to authenticate to 192.168.1.5:41235").unwrap_err();
+        assert!(auth.contains("Pair it first"));
+    }
 
     #[test]
     fn parses_stat_lines() {
