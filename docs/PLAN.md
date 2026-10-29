@@ -1,12 +1,12 @@
 # Hardening and feature plan
 
-The Edge cases and Features tables are done; v1 and the nice-to-have list are next. The Android companion plan is in [android-design.md](android-design.md).
+The Android companion plan is in [android-design.md](android-design.md).
 
 Each item lands as its own pull request and is merged into `main` after CI passes.
 
-## Edge cases
+## Edge cases (shipped)
 
-| # | Problem today | Fix | Branch |
+| # | Problem | Fix | Branch |
 |---|---|---|---|
 | E1 | Phone unplugged before or during the file listing: the listing comes back empty and the app reports "Backup finished" with 0 files. | Check `adb get-state` after listing and after copying; report "The phone was disconnected" instead of a false success. | `fix/disconnect` |
 | E2 | `adb` not on PATH (normal for non-developers): ADB phones are never seen and the screen keeps saying "turn on USB debugging", which cannot help. | Look for adb next to the app, then on PATH, then in the default Android SDK folder. Tell the user when adb is missing. | `fix/adb-discovery` |
@@ -22,7 +22,7 @@ Each item lands as its own pull request and is merged into `main` after CI passe
 
 Checked and not a bug: if one file in a multi-file `adb pull` fails (deleted mid-backup), adb carries on with the rest and removes the partial file (AOSP `file_sync_client.cpp`, `do_sync_pull`).
 
-## Features
+## Features (shipped)
 
 | # | Feature | Branch |
 |---|---|---|
