@@ -75,13 +75,14 @@
   }
   .tree ul { list-style: none; margin: 0; padding: 0; }
   .tree ul ul { padding-left: 22px; border-left: 1px solid var(--line); margin-left: 8px; }
-  .tree li { white-space: nowrap; }
+  /* Long phone names and paths wrap instead of being cut off at large text sizes. */
+  .tree li { overflow-wrap: anywhere; }
   /* Rows arrive top to bottom once on load, like files landing in the backup. --i is the row number. */
-  .tree li > span { display: inline-block; animation: arrive 360ms var(--ease-out) both; animation-delay: calc(200ms + var(--i) * 50ms); }
+  .tree li > span { display: inline-block; max-width: 100%; line-height: 1.5; animation: arrive 360ms var(--ease-out) both; animation-delay: calc(200ms + var(--i) * 50ms); }
   @keyframes arrive { from { opacity: 0; transform: translateX(-8px); } }
-  .tree .dir { font-weight: 700; }
+  .tree .dir { font-weight: 700; margin-right: 10px; }
   .tree .root { color: var(--accent); }
-  .tree .hint { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: .85rem; margin-left: 10px; }
+  .tree .hint { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: .85rem; }
   @media (max-width: 420px) { .tree { padding: 20px 14px; font-size: .85rem; } .tree ul ul { padding-left: 14px; margin-left: 4px; } }
 
   section { padding: 72px 0; border-top: 1px solid var(--line); }
