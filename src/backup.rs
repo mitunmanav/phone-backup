@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
@@ -16,24 +16,35 @@ fn stopped() -> bool {
     STOP.load(Ordering::Relaxed)
 }
 
-const STOPPED: &str = "You stopped the backup. Files copied so far are kept; press Back up again to continue.";
+const STOPPED: &str =
+    "You stopped the backup. Files copied so far are kept; press Back up again to continue.";
 
 /// What the backup reports back to the window while it runs.
 pub enum Msg {
     Status(String),
-    Progress { done: usize, total: usize, now: String },
+    Progress {
+        done: usize,
+        total: usize,
+        now: String,
+    },
     Phones(Vec<Phone>),
-    Wifi(String),
+    Wifi(Result<String, String>),
     Done(Result<Vec<Summary>, String>),
     Restored(Result<String, String>),
 }
 
 #[derive(Clone, PartialEq)]
 pub enum Phone {
-    Adb { serial: String, model: String, wifi: bool },
+    Adb {
+        serial: String,
+        model: String,
+        wifi: bool,
+    },
     /// Plugged in with USB debugging on, but "Allow" not tapped yet.
     Unauthorized,
-    Mtp { name: String },
+    Mtp {
+        name: String,
+    },
 }
 
 pub struct Summary {
@@ -60,9 +71,14 @@ pub struct Pick {
 /// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
 /// Most people never install the SDK, so shipping adb.exe beside the app is the normal case.
 fn adb_path() -> Option<PathBuf> {
-    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
-    let on_path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
-    let sdk = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Android\Sdk\platform-tools"));
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf));
+    let on_path = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let sdk = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join(r"Android\Sdk\platform-tools"));
     beside
         .iter()
         .flat_map(|d| [d.clone(), d.join("platform-tools")])
@@ -87,9 +103,16 @@ fn adb() -> Command {
 /// Phones on ADB; if none, phones in "File transfer" (MTP) mode.
 pub fn detect() -> Vec<Phone> {
     let out = adb().args(["devices", "-l"]).output();
-    let mut phones = out.map(|o| parse_adb_devices(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default();
+    let mut phones = out
+        .map(|o| parse_adb_devices(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default();
     // One phone on both USB and Wi-Fi is listed twice; keep the faster USB entry.
-    if phones.iter().filter(|p| matches!(p, Phone::Adb { .. })).count() > 1 {
+    if phones
+        .iter()
+        .filter(|p| matches!(p, Phone::Adb { .. }))
+        .count()
+        > 1
+    {
         phones.sort_by_key(|p| matches!(p, Phone::Adb { wifi: true, .. }));
         let mut seen = std::collections::HashSet::new();
         phones.retain(|p| match p {
@@ -103,7 +126,12 @@ pub fn detect() -> Vec<Phone> {
     mtp_rs::mtp::MtpDevice::list_devices()
         .unwrap_or_default()
         .into_iter()
-        .map(|d| Phone::Mtp { name: d.product.or(d.manufacturer).unwrap_or_else(|| "Phone".into()) })
+        .map(|d| Phone::Mtp {
+            name: d
+                .product
+                .or(d.manufacturer)
+                .unwrap_or_else(|| "Phone".into()),
+        })
         .collect()
 }
 
@@ -111,12 +139,21 @@ fn parse_adb_devices(text: &str) -> Vec<Phone> {
     let mut phones = Vec::new();
     for line in text.lines().skip(1) {
         let mut words = line.split_whitespace();
-        let (Some(serial), Some(state)) = (words.next(), words.next()) else { continue };
+        let (Some(serial), Some(state)) = (words.next(), words.next()) else {
+            continue;
+        };
         match state {
             "device" => {
-                let model = words.find_map(|w| w.strip_prefix("model:")).unwrap_or(serial).replace('_', " ");
+                let model = words
+                    .find_map(|w| w.strip_prefix("model:"))
+                    .unwrap_or(serial)
+                    .replace('_', " ");
                 let wifi = serial.contains(':') || serial.contains("._adb-tls-connect");
-                phones.push(Phone::Adb { serial: serial.into(), model, wifi });
+                phones.push(Phone::Adb {
+                    serial: serial.into(),
+                    model,
+                    wifi,
+                });
             }
             // "authorizing" is the moment the Allow prompt is on screen.
             "unauthorized" | "authorizing" => phones.push(Phone::Unauthorized),
@@ -127,10 +164,24 @@ fn parse_adb_devices(text: &str) -> Vec<Phone> {
 }
 
 /// Runs `adb pair` or `adb connect` and returns what adb said.
-pub fn wifi(args: &[&str]) -> String {
+pub fn wifi(args: &[&str]) -> Result<String, String> {
     match adb().args(args).output() {
-        Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string(),
-        Err(e) => format!("Cannot run adb: {e}. Install Android SDK platform-tools."),
+        Ok(o) => wifi_result(args[0], &format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
+        Err(_) => Err("This computer does not have adb yet. Download Platform Tools and put adb.exe next to this app.".into()),
+    }
+}
+
+/// Turns what `adb pair` or `adb connect` printed into plain words. `adb connect` exits 0
+/// even when it could not connect, so the words are all there is to go on.
+pub fn wifi_result(cmd: &str, out: &str) -> Result<String, String> {
+    let out = out.to_lowercase();
+    match cmd {
+        "pair" if out.contains("successfully paired") => Ok("Paired. Now connect with step 2.".into()),
+        "pair" => Err("The phone did not pair. The code and port change each time the pairing screen opens, so type the ones it shows now.".into()),
+        // "connected to" and "already connected to"; the failures say "connect to".
+        _ if out.contains("connected to") => Ok("Connected. The phone shows up here in a moment.".into()),
+        _ if out.contains("authenticate") => Err("The phone did not accept this computer. Pair it first with step 1.".into()),
+        _ => Err("The phone did not answer at that address. Check that both are on the same Wi-Fi and the address matches the Wireless debugging screen.".into()),
     }
 }
 
@@ -154,7 +205,9 @@ fn shell(serial: &str, cmd: &str) -> String {
 /// Unlike `output()`, this kills the command on Stop: a long `find` or `adb pull` would
 /// otherwise keep running after the window closes.
 fn run(mut c: Command) -> Vec<u8> {
-    let Ok(mut child) = c.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Vec::new() };
+    let Ok(mut child) = c.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+        return Vec::new();
+    };
     // Read in a thread so a big listing cannot fill the pipe and stall the command.
     let mut stdout = child.stdout.take();
     let reader = std::thread::spawn(move || {
@@ -177,14 +230,23 @@ fn run(mut c: Command) -> Vec<u8> {
 
 /// True while adb still sees the phone. Listing commands just return nothing when it is gone.
 fn connected(serial: &str) -> bool {
-    adb().args(["-s", serial, "get-state"]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "device")
+    adb()
+        .args(["-s", serial, "get-state"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "device")
 }
 
 const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Back up again to continue.";
 
 /// ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
+/// Not stoppable like `shell`: the phone list calls it too, and Stop stays set after a job ends.
 fn phone_id(serial: &str) -> String {
-    match shell(serial, "getprop ro.serialno").trim() {
+    let out = adb()
+        .args(["-s", serial, "shell", "getprop ro.serialno"])
+        .output()
+        .map(|o| o.stdout)
+        .unwrap_or_default();
+    match String::from_utf8_lossy(&out).trim() {
         "" => serial.to_string(),
         s => s.to_string(),
     }
@@ -201,10 +263,20 @@ struct Job {
 /// Parses a `stat -c '%s %Y %n'` line into (size, mtime, rest).
 fn parse_stat(line: &str) -> Option<(u64, i64, &str)> {
     let mut it = line.splitn(3, ' ');
-    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?))
+    Some((
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?,
+    ))
 }
 
-pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &dyn Fn(Msg)) -> Result<Summary, String> {
+pub fn adb_backup(
+    serial: &str,
+    model: &str,
+    dest: &Path,
+    pick: Pick,
+    report: &dyn Fn(Msg),
+) -> Result<Summary, String> {
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -219,29 +291,47 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
     if pick.files {
         storages.push(("/sdcard".to_string(), root.join("files")));
     }
-    for vol in shell(serial, "ls /storage").split_whitespace().filter(|_| pick.files) {
+    for vol in shell(serial, "ls /storage")
+        .split_whitespace()
+        .filter(|_| pick.files)
+    {
         if !["emulated", "self"].contains(&vol) {
-            storages.push((format!("/storage/{vol}"), root.join(format!("sdcard_{}", safe_name(vol)))));
+            storages.push((
+                format!("/storage/{vol}"),
+                root.join(format!("sdcard_{}", safe_name(vol))),
+            ));
         }
     }
     for (remote_root, local_root) in &storages {
-        status(format!("Reading the file list on {model}"));
-        let listing = shell(serial, &format!("find {remote_root}/ -type f -exec stat -c '%s %Y %n' {{}} +"));
+        status(format!("Reading the file list on {model}…"));
+        let listing = shell(
+            serial,
+            &format!("find {remote_root}/ -type f -exec stat -c '%s %Y %n' {{}} +"),
+        );
         for (size, mtime, path) in listing.lines().filter_map(parse_stat) {
             // shortcut: file names containing a newline are skipped; rare, would need find -print0.
-            let Some(rel) = path.strip_prefix(&format!("{remote_root}/")) else { continue };
+            let Some(rel) = path.strip_prefix(&format!("{remote_root}/")) else {
+                continue;
+            };
             if is_junk(path) {
                 continue;
             }
-            let local = rel.split('/').fold(local_root.clone(), |p, part| p.join(safe_name(part)));
-            jobs.push(Job { remote: path.to_string(), size, mtime, local });
+            let local = rel
+                .split('/')
+                .fold(local_root.clone(), |p, part| p.join(safe_name(part)));
+            jobs.push(Job {
+                remote: path.to_string(),
+                size,
+                mtime,
+                local,
+            });
         }
     }
 
     // Installers of apps the user installed (base + split APKs). App private data is not
     // readable without root on Android 12+, so this restores the apps, not their logins/settings.
-    status("Reading the list of installed apps".into());
     let apps = if pick.apps {
+        status("Reading the list of installed apps…".into());
         shell(
             serial,
             r#"for p in $(pm list packages -3 | cut -d: -f2); do for a in $(pm path $p | cut -d: -f2); do stat -c "%s %Y $p %n" $a; done; done"#,
@@ -250,10 +340,17 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
         String::new()
     };
     for (size, mtime, rest) in apps.lines().filter_map(parse_stat) {
-        let Some((pkg, path)) = rest.trim().split_once(' ') else { continue };
+        let Some((pkg, path)) = rest.trim().split_once(' ') else {
+            continue;
+        };
         let name = path.rsplit('/').next().unwrap_or(path);
         let local = root.join("apps").join(safe_name(pkg)).join(safe_name(name));
-        jobs.push(Job { remote: path.to_string(), size, mtime, local });
+        jobs.push(Job {
+            remote: path.to_string(),
+            size,
+            mtime,
+            local,
+        });
     }
 
     if stopped() {
@@ -263,6 +360,32 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
         return Err(DISCONNECTED.into());
     }
     unclash(&mut jobs);
+    if pick.files {
+        // Names changed for Windows go back to the phone under their real names; see saved_files.
+        let mut map = renamed(&root);
+        map.extend(jobs.iter().filter_map(|j| {
+            let (rel, local_rel) = storages.iter().find_map(|(r, l)| {
+                Some((
+                    j.remote.strip_prefix(&format!("{r}/"))?,
+                    j.local.strip_prefix(l).ok()?,
+                ))
+            })?;
+            let local = j
+                .local
+                .strip_prefix(&root)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            (local_rel != Path::new(rel)).then(|| (local, j.remote.clone()))
+        }));
+        let _ = fs::create_dir_all(&root);
+        let _ = fs::write(
+            root.join(RENAMED),
+            map.iter()
+                .map(|(local, remote)| format!("{local}\t{remote}\n"))
+                .collect::<String>(),
+        );
+    }
     let files = jobs.len();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
@@ -286,7 +409,7 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
     }
 
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
-    status("Saving contacts, call history and messages".into());
+    status("Saving contacts, call history and messages…".into());
     let data_dir = root.join("data");
     let _ = fs::create_dir_all(if pick.data { &data_dir } else { &root });
     let mut data = Vec::new();
@@ -310,7 +433,32 @@ pub fn adb_backup(serial: &str, model: &str, dest: &Path, pick: Pick, report: &d
     }
 
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Ok(Summary { name: model.to_string(), root, files, copied: to_copy.saturating_sub(errors.len()), errors, data, full: true, pick })
+    Ok(Summary {
+        name: model.to_string(),
+        root,
+        files,
+        copied: to_copy.saturating_sub(errors.len()),
+        errors,
+        data,
+        full: true,
+        pick,
+    })
+}
+
+/// Lists files whose name was changed to be legal on Windows: "files/Docs/_CON.txt<TAB>/sdcard/Docs/CON.txt".
+const RENAMED: &str = "renamed.txt";
+
+/// The renamed files of a backup folder: path inside it (with `/`) to the phone path.
+fn renamed(root: &Path) -> BTreeMap<String, String> {
+    fs::read_to_string(root.join(RENAMED))
+        .unwrap_or_default()
+        .lines()
+        // safe_name turns tabs into `_`, so the first tab always ends the local path.
+        .filter_map(|l| {
+            l.split_once('\t')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+        })
+        .collect()
 }
 
 /// Bytes the current user may still write on the drive holding `path`.
@@ -320,7 +468,14 @@ fn free_space(path: &Path) -> Option<u64> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut free = 0u64;
     // SAFETY: `wide` is NUL-terminated and outlives the call; null pointers skip the other outputs.
-    let ok = unsafe { windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    let ok = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
     (ok != 0).then_some(free)
 }
 
@@ -364,10 +519,22 @@ fn vcard(rows: &str) -> String {
     let mut contacts: BTreeMap<u64, (String, Vec<String>)> = BTreeMap::new();
     for line in rows.lines() {
         // Row: 3 contact_id=12, mimetype=vnd.android.cursor.item/phone_v2, display_name=Ann, data1=+1 555
-        let Some(rest) = line.strip_prefix("Row: ").and_then(|r| r.split_once(" contact_id=")).map(|r| r.1) else { continue };
-        let Some((id, rest)) = rest.split_once(", mimetype=") else { continue };
-        let Some((mime, rest)) = rest.split_once(", display_name=") else { continue };
-        let Some((name, value)) = rest.split_once(", data1=") else { continue };
+        let Some(rest) = line
+            .strip_prefix("Row: ")
+            .and_then(|r| r.split_once(" contact_id="))
+            .map(|r| r.1)
+        else {
+            continue;
+        };
+        let Some((id, rest)) = rest.split_once(", mimetype=") else {
+            continue;
+        };
+        let Some((mime, rest)) = rest.split_once(", display_name=") else {
+            continue;
+        };
+        let Some((name, value)) = rest.split_once(", data1=") else {
+            continue;
+        };
         let Ok(id) = id.parse() else { continue };
         let field = match mime {
             "vnd.android.cursor.item/phone_v2" => "TEL",
@@ -377,7 +544,16 @@ fn vcard(rows: &str) -> String {
         if value == "NULL" || value.is_empty() {
             continue;
         }
-        let entry = contacts.entry(id).or_insert_with(|| (if name == "NULL" { String::new() } else { name.to_string() }, Vec::new()));
+        let entry = contacts.entry(id).or_insert_with(|| {
+            (
+                if name == "NULL" {
+                    String::new()
+                } else {
+                    name.to_string()
+                },
+                Vec::new(),
+            )
+        });
         let line = format!("{field}:{}", vcard_escape(value));
         if !entry.1.contains(&line) {
             entry.1.push(line);
@@ -397,17 +573,28 @@ fn vcard(rows: &str) -> String {
 }
 
 fn vcard_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace(',', "\\,").replace(';', "\\;")
+    s.replace('\\', "\\\\")
+        .replace(',', "\\,")
+        .replace(';', "\\;")
 }
 
 /// (package, its APK files) for each app saved under the backup folder or its `apps` folder.
 fn saved_apps(folder: &Path) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
-    let apps = if folder.join("apps").is_dir() { folder.join("apps") } else { folder.to_path_buf() };
+    let apps = if folder.join("apps").is_dir() {
+        folder.join("apps")
+    } else {
+        folder.to_path_buf()
+    };
     let mut packages: Vec<(String, Vec<PathBuf>)> = fs::read_dir(&apps)
         .map_err(|e| format!("Cannot open {}: {e}", apps.display()))?
         .flatten()
         .filter_map(|d| {
-            let apks: Vec<PathBuf> = fs::read_dir(d.path()).ok()?.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("apk"))).collect();
+            let apks: Vec<PathBuf> = fs::read_dir(d.path())
+                .ok()?
+                .flatten()
+                .map(|f| f.path())
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("apk")))
+                .collect();
             (!apks.is_empty()).then(|| (d.file_name().to_string_lossy().into_owned(), apks))
         })
         .collect();
@@ -427,13 +614,21 @@ pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result
     }
     let installed = shell(serial, "pm list packages");
     let total = packages.len();
-    packages.retain(|(pkg, _)| !installed.lines().any(|l| l.trim() == format!("package:{pkg}")));
+    packages.retain(|(pkg, _)| {
+        !installed
+            .lines()
+            .any(|l| l.trim() == format!("package:{pkg}"))
+    });
     let (mut done, mut failed) = (0, Vec::new());
     for (n, (pkg, apks)) in packages.iter().enumerate() {
         if stopped() {
             return Err("You stopped the restore. Apps installed so far stay on the phone.".into());
         }
-        report(Msg::Status(format!("Installing app {} of {}: {pkg}", n + 1, packages.len())));
+        report(Msg::Status(format!(
+            "Installing app {} of {}: {pkg}",
+            n + 1,
+            packages.len()
+        )));
         let mut c = adb();
         c.args(["-s", serial, "install-multiple", "-r"]).args(apks);
         if String::from_utf8_lossy(&run(c)).contains("Success") {
@@ -443,9 +638,18 @@ pub fn restore_apps(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Result
         }
     }
     let already = total - packages.len();
-    let mut msg = format!("Installed {done} of {} {}. {} {} already on the phone.", count(total), if total == 1 { "app" } else { "apps" }, count(already), were(already));
+    let mut msg = format!(
+        "Installed {done} of {} {}. {} {} already on the phone.",
+        count(total),
+        if total == 1 { "app" } else { "apps" },
+        count(already),
+        were(already)
+    );
     if !failed.is_empty() {
-        msg += &format!(" Could not install: {}. The phone may block apps from unknown sources or need a newer Android.", failed.join(", "));
+        msg += &format!(
+            " Could not install: {}. The phone may block apps from unknown sources or need a newer Android.",
+            failed.join(", ")
+        );
     }
     Ok(msg)
 }
@@ -466,26 +670,46 @@ pub fn saved_backups(folder: &Path) -> Vec<Saved> {
     if let Some(one) = saved(folder) {
         return vec![one];
     }
-    let mut found: Vec<Saved> = fs::read_dir(folder).into_iter().flatten().flatten().filter_map(|e| saved(&e.path())).collect();
+    let mut found: Vec<Saved> = fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| saved(&e.path()))
+        .collect();
     found.sort_by_key(|s| s.age_days.unwrap_or(u64::MAX));
     found
 }
 
 fn saved(path: &Path) -> Option<Saved> {
-    let dirs: Vec<String> = fs::read_dir(path).ok()?.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    let files = dirs.iter().any(|n| n == "files" || n.starts_with("sdcard_"));
+    let dirs: Vec<String> = fs::read_dir(path)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let files = dirs
+        .iter()
+        .any(|n| n == "files" || n.starts_with("sdcard_"));
     let apps = dirs.iter().any(|n| n == "apps");
     if !files && !apps {
         return None;
     }
-    let stamp = fs::metadata(path.join("errors.log")).or_else(|_| fs::metadata(path)).and_then(|m| m.modified()).ok();
+    let stamp = fs::metadata(path.join("errors.log"))
+        .or_else(|_| fs::metadata(path))
+        .and_then(|m| m.modified())
+        .ok();
     let folder = path.file_name()?.to_string_lossy().into_owned();
     Some(Saved {
         path: path.to_path_buf(),
-        name: folder.rsplit_once('_').map_or(folder.as_str(), |(model, _)| model).to_string(),
+        name: folder
+            .rsplit_once('_')
+            .map_or(folder.as_str(), |(model, _)| model)
+            .to_string(),
         files,
         apps,
-        age_days: stamp.and_then(|s| s.elapsed().ok()).map(|d| d.as_secs() / 86_400),
+        age_days: stamp
+            .and_then(|s| s.elapsed().ok())
+            .map(|d| d.as_secs() / 86_400),
     })
 }
 
@@ -494,10 +718,17 @@ fn saved(path: &Path) -> Option<Saved> {
 /// phone lacks. App folders (Android/data, Android/obb) are left out: the apps own those.
 fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), String> {
     // The `files` folder itself works as well as the phone's folder.
-    let folder = if folder.file_name().is_some_and(|n| n == "files") { folder.parent().unwrap_or(folder) } else { folder };
+    let folder = if folder.file_name().is_some_and(|n| n == "files") {
+        folder.parent().unwrap_or(folder)
+    } else {
+        folder
+    };
     let mut roots = Vec::new();
     let mut missing = Vec::new();
-    for entry in fs::read_dir(folder).map_err(|e| format!("Cannot open {}: {e}", folder.display()))?.flatten() {
+    for entry in fs::read_dir(folder)
+        .map_err(|e| format!("Cannot open {}: {e}", folder.display()))?
+        .flatten()
+    {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name == "files" {
             roots.push((entry.path(), "/sdcard".to_string()));
@@ -512,6 +743,7 @@ fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), 
     if roots.is_empty() {
         return Err("This folder has no saved files. Choose the phone's backup folder, the one that holds the files folder.".into());
     }
+    let renamed = renamed(folder);
     let mut jobs = Vec::new();
     for (local_root, remote_root) in roots {
         let mut stack = vec![local_root.clone()];
@@ -519,7 +751,11 @@ fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), 
             for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
                 let path = entry.path();
                 let Ok(meta) = entry.metadata() else { continue };
-                let rel = path.strip_prefix(&local_root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                let rel = path
+                    .strip_prefix(&local_root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 let lower = rel.to_lowercase();
                 if lower == "android/data" || lower == "android/obb" {
                     continue;
@@ -527,8 +763,21 @@ fn saved_files(folder: &Path, volumes: &str) -> Result<(Vec<Job>, Vec<String>), 
                 if meta.is_dir() {
                     stack.push(path);
                 } else {
-                    // shortcut: names that safe_name or unclash changed go back changed; the original is not stored.
-                    jobs.push(Job { remote: format!("{remote_root}/{rel}"), size: meta.len(), mtime: 0, local: path });
+                    let key = path
+                        .strip_prefix(folder)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let remote = renamed
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{remote_root}/{rel}"));
+                    jobs.push(Job {
+                        remote,
+                        size: meta.len(),
+                        mtime: 0,
+                        local: path,
+                    });
                 }
             }
         }
@@ -547,7 +796,10 @@ fn sh_quote(s: &str) -> String {
 fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
     let mut out = String::new();
     for batch in paths.chunks(100) {
-        let line = std::iter::once(cmd.to_string()).chain(batch.iter().map(|p| sh_quote(p))).collect::<Vec<_>>().join(" ");
+        let line = std::iter::once(cmd.to_string())
+            .chain(batch.iter().map(|p| sh_quote(p)))
+            .collect::<Vec<_>>()
+            .join(" ");
         if let Ok(o) = adb().args(["-s", serial, "shell", &line]).output() {
             out += &String::from_utf8_lossy(&o.stdout);
         }
@@ -560,7 +812,7 @@ pub fn count(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -596,16 +848,30 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
     let (mut jobs, missing) = saved_files(folder, &shell(serial, "ls /storage"))?;
     let total = jobs.len();
 
-    report(Msg::Status("Checking what is already on the phone".into()));
+    report(Msg::Status("Checking what is already on the phone…".into()));
     // "/sdcard" or "/storage/<card>": the storage each file goes to.
     let roots: std::collections::BTreeSet<String> = jobs
         .iter()
-        .map(|j| if j.remote.starts_with("/sdcard/") { "/sdcard".into() } else { j.remote.splitn(4, '/').take(3).collect::<Vec<_>>().join("/") })
+        .map(|j| {
+            if j.remote.starts_with("/sdcard/") {
+                "/sdcard".into()
+            } else {
+                j.remote
+                    .splitn(4, '/')
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join("/")
+            }
+        })
         .collect();
     let mut on_phone = std::collections::HashSet::new();
     for root in &roots {
         // Android's shared storage ignores letter case, so compare names in lower case.
-        on_phone.extend(shell(serial, &format!("find {root}/ -type f")).lines().map(str::to_lowercase));
+        on_phone.extend(
+            shell(serial, &format!("find {root}/ -type f"))
+                .lines()
+                .map(str::to_lowercase),
+        );
     }
     if stopped() {
         return Err("You stopped the restore. Nothing was copied.".into());
@@ -619,7 +885,10 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
     let to_copy = jobs.len();
     let needed: u64 = jobs.iter().map(|j| j.size).sum();
     let free = shell(serial, "stat -f -c '%a %S' /sdcard");
-    if let Some(free) = free.split_once(' ').and_then(|(a, b)| Some(a.parse::<u64>().ok()? * b.trim().parse::<u64>().ok()?)) {
+    if let Some(free) = free
+        .split_once(' ')
+        .and_then(|(a, b)| Some(a.parse::<u64>().ok()? * b.trim().parse::<u64>().ok()?))
+    {
         // 200 MB spare so the phone itself is not left with full storage.
         if needed + 200_000_000 > free {
             return Err(format!(
@@ -633,72 +902,135 @@ pub fn restore_files(serial: &str, folder: &Path, report: &dyn Fn(Msg)) -> Resul
     // One `adb push` per folder, like the backup. With several files adb needs the folder to exist.
     let mut by_dir: BTreeMap<&str, Vec<&Job>> = BTreeMap::new();
     for job in &jobs {
-        by_dir.entry(job.remote.rsplit_once('/').map_or("/sdcard", |d| d.0)).or_default().push(job);
+        by_dir
+            .entry(job.remote.rsplit_once('/').map_or("/sdcard", |d| d.0))
+            .or_default()
+            .push(job);
     }
-    shell_each(serial, "mkdir -p", &by_dir.keys().copied().collect::<Vec<_>>());
+    shell_each(
+        serial,
+        "mkdir -p",
+        &by_dir.keys().copied().collect::<Vec<_>>(),
+    );
 
     let tmp = std::env::temp_dir().join(format!("phone-backup-push-{}", std::process::id()));
     let mut tried: Vec<&Job> = Vec::new();
     'dirs: for (dir, group) in &by_dir {
-        let (long, short): (Vec<&Job>, Vec<&Job>) = group.iter().partition(|j| too_long(&j.local));
+        // Pushing into a folder keeps the local name, so renamed files go one by one to their full path.
+        let alone = |j: &Job| {
+            too_long(&j.local)
+                || j.local.file_name().and_then(|n| n.to_str()) != j.remote.rsplit('/').next()
+        };
+        let (single, many): (Vec<&Job>, Vec<&Job>) = group.iter().partition(|j| alone(j));
         // 100 paths of at most 240 characters stay under Windows' 32,767-character command line.
-        for batch in short.chunks(100).chain(long.chunks(1)) {
-            report(Msg::Progress { done: tried.len(), total: to_copy, now: dir.to_string() });
+        for batch in many.chunks(100).chain(single.chunks(1)) {
+            report(Msg::Progress {
+                done: tried.len(),
+                total: to_copy,
+                now: dir.to_string(),
+            });
             if stopped() {
                 break 'dirs;
             }
             let mut c = adb();
             c.args(["-s", serial, "push"]);
-            if too_long(&batch[0].local) {
-                // adb.exe cannot read past 260 characters; Rust's fs can, so copy short and push.
-                let short = tmp.join(batch[0].local.file_name().unwrap_or_default());
-                let _ = fs::create_dir_all(&tmp);
-                let _ = fs::copy(&batch[0].local, &short);
-                c.arg(short);
+            if alone(batch[0]) {
+                let mut src = batch[0].local.clone();
+                if too_long(&src) {
+                    // adb.exe cannot read past 260 characters; Rust's fs can, so copy short and push.
+                    let short = tmp.join("file");
+                    let _ = fs::create_dir_all(&tmp);
+                    let _ = fs::copy(&src, &short);
+                    src = short;
+                }
+                c.arg(src).arg(&batch[0].remote);
             } else {
-                c.args(batch.iter().map(|j| &j.local));
+                c.args(batch.iter().map(|j| &j.local))
+                    .arg(format!("{dir}/"));
             }
-            c.arg(format!("{dir}/"));
             run(c);
             tried.extend(batch);
         }
     }
     let _ = fs::remove_dir_all(&tmp);
-    report(Msg::Progress { done: tried.len(), total: to_copy, now: String::new() });
+    report(Msg::Progress {
+        done: tried.len(),
+        total: to_copy,
+        now: String::new(),
+    });
 
     // Check every file sent. A wrong size means the copy broke off (Stop or a pulled cable);
     // the phone did not have that file before, so removing the broken copy loses nothing.
     let sent: Vec<&str> = tried.iter().map(|j| j.remote.as_str()).collect();
-    let sizes: std::collections::HashMap<String, u64> = shell_each(serial, "stat -c '%s %n'", &sent)
-        .lines()
-        .filter_map(|l| l.split_once(' ').and_then(|(s, p)| Some((p.to_string(), s.parse().ok()?))))
+    let sizes: std::collections::HashMap<String, u64> =
+        shell_each(serial, "stat -c '%s %n'", &sent)
+            .lines()
+            .filter_map(|l| {
+                l.split_once(' ')
+                    .and_then(|(s, p)| Some((p.to_string(), s.parse().ok()?)))
+            })
+            .collect();
+    let broken: Vec<&Job> = tried
+        .iter()
+        .copied()
+        .filter(|j| sizes.get(&j.remote) != Some(&j.size))
         .collect();
-    let broken: Vec<&Job> = tried.iter().copied().filter(|j| sizes.get(&j.remote) != Some(&j.size)).collect();
-    shell_each(serial, "rm -f", &broken.iter().filter(|j| sizes.contains_key(&j.remote)).map(|j| j.remote.as_str()).collect::<Vec<_>>());
+    shell_each(
+        serial,
+        "rm -f",
+        &broken
+            .iter()
+            .filter(|j| sizes.contains_key(&j.remote))
+            .map(|j| j.remote.as_str())
+            .collect::<Vec<_>>(),
+    );
     let copied = tried.len() - broken.len();
 
     // Android 10+ rescans on request so the Gallery shows the files; older phones do it on restart.
-    let sdk: u32 = shell_each(serial, "getprop", &["ro.build.version.sdk"]).trim().parse().unwrap_or(0);
+    let sdk: u32 = shell_each(serial, "getprop", &["ro.build.version.sdk"])
+        .trim()
+        .parse()
+        .unwrap_or(0);
     if copied > 0 && sdk >= 29 {
-        shell_each(serial, "content call --uri content://media --method scan_volume --arg", &["external_primary"]);
+        shell_each(
+            serial,
+            "content call --uri content://media --method scan_volume --arg",
+            &["external_primary"],
+        );
     }
 
     if stopped() {
-        return Err(format!("You stopped the restore. {} {} copied back and stay on the phone.", files(copied), were(copied)));
+        return Err(format!(
+            "You stopped the restore. {} {} copied back and stay on the phone.",
+            files(copied),
+            were(copied)
+        ));
     }
     if !connected(serial) {
         return Err(DISCONNECTED_RESTORE.into());
     }
-    let mut msg = format!("Copied {} back to the phone. {} {} already there.", files(copied), files(skipped), were(skipped));
+    let mut msg = format!(
+        "Copied {} back to the phone. {} {} already there.",
+        files(copied),
+        files(skipped),
+        were(skipped)
+    );
     if !broken.is_empty() {
         let names: Vec<&str> = broken.iter().take(3).map(|j| j.remote.as_str()).collect();
-        msg += &format!(" {} could not be copied, for example {}. Restore again to retry.", files(broken.len()), names.join(", "));
+        msg += &format!(
+            " {} could not be copied, for example {}. Restore again to retry.",
+            files(broken.len()),
+            names.join(", ")
+        );
     }
     if copied > 0 && sdk < 29 {
         msg += " Restart the phone so the Gallery shows the restored photos.";
     }
     if !missing.is_empty() {
-        msg += &format!(" This phone has no SD card named {}, so those files were not restored.", or_list(&missing));
+        msg += &format!(
+            " This phone has no SD card named {}, so those files were not restored.",
+            or_list(&missing)
+        );
     }
     Ok(msg)
 }
@@ -707,7 +1039,9 @@ const DISCONNECTED_RESTORE: &str = "The phone was disconnected. Files copied so 
 
 /// True when the local copy is missing or differs in size or time.
 fn needs_copy(job: &Job) -> bool {
-    let Ok(meta) = fs::metadata(&job.local) else { return true };
+    let Ok(meta) = fs::metadata(&job.local) else {
+        return true;
+    };
     let local_mtime = meta
         .modified()
         .ok()
@@ -727,7 +1061,8 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
     let mut single = Vec::new();
     for job in jobs {
         // adb pull into a folder keeps the phone's file name, so renamed files go one by one.
-        let same_name = job.local.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
+        let same_name =
+            job.local.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
         match (same_name && !too_long(&job.local), job.local.parent()) {
             (true, Some(dir)) => by_dir.entry(dir.to_path_buf()).or_default().push(job),
             _ => single.push(job),
@@ -745,10 +1080,17 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
         // enough that progress moves inside a big Camera folder.
         let mut start = 0;
         while start < jobs.len() {
-            report(Msg::Progress { done: done + start, total, now: now.clone() });
+            report(Msg::Progress {
+                done: done + start,
+                total,
+                now: now.clone(),
+            });
             let mut end = start;
             let mut len = 0;
-            while end < jobs.len() && end - start < 200 && (end == start || len + jobs[end].remote.len() < 20_000) {
+            while end < jobs.len()
+                && end - start < 200
+                && (end == start || len + jobs[end].remote.len() < 20_000)
+            {
                 len += jobs[end].remote.len() + 3;
                 end += 1;
             }
@@ -756,7 +1098,9 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
                 return errors;
             }
             let mut c = adb();
-            c.args(["-s", serial, "pull", "-a"]).args(jobs[start..end].iter().map(|j| &j.remote)).arg(&dir);
+            c.args(["-s", serial, "pull", "-a"])
+                .args(jobs[start..end].iter().map(|j| &j.remote))
+                .arg(&dir);
             run(c);
             start = end;
         }
@@ -769,7 +1113,11 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
         if stopped() {
             break;
         }
-        report(Msg::Progress { done, total, now: job.remote.clone() });
+        report(Msg::Progress {
+            done,
+            total,
+            now: job.remote.clone(),
+        });
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
         }
@@ -778,19 +1126,25 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
             let short = tmp.join("file");
             let _ = fs::create_dir_all(&tmp);
             let mut c = adb();
-            c.args(["-s", serial, "pull", "-a", &job.remote]).arg(&short);
+            c.args(["-s", serial, "pull", "-a", &job.remote])
+                .arg(&short);
             run(c);
             let _ = fs::rename(&short, &job.local);
         } else {
             let mut c = adb();
-            c.args(["-s", serial, "pull", "-a", &job.remote]).arg(&job.local);
+            c.args(["-s", serial, "pull", "-a", &job.remote])
+                .arg(&job.local);
             run(c);
         }
         done += 1;
     }
     let _ = fs::remove_dir_all(&tmp);
     record_failures(&single, &mut errors);
-    report(Msg::Progress { done, total, now: String::new() });
+    report(Msg::Progress {
+        done,
+        total,
+        now: String::new(),
+    });
     errors
 }
 
@@ -800,21 +1154,33 @@ fn too_long(path: &Path) -> bool {
 }
 
 fn record_failures(jobs: &[Job], errors: &mut Vec<String>) {
-    errors.extend(jobs.iter().filter(|j| needs_copy(j)).map(|j| format!("{} -> {}", j.remote, j.local.display())));
+    errors.extend(
+        jobs.iter()
+            .filter(|j| needs_copy(j))
+            .map(|j| format!("{} -> {}", j.remote, j.local.display())),
+    );
 }
 
 /// Makes a phone file name legal on Windows (no <>:"/\|?*, no trailing dot/space, no CON/NUL...).
 fn safe_name(name: &str) -> String {
     let mut s: String = name
         .chars()
-        .map(|c| if c < ' ' || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .map(|c| {
+            if c < ' ' || r#"<>:"/\|?*"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     if s.ends_with(['.', ' ']) {
         s = s.trim_end_matches(['.', ' ']).to_string() + "_";
     }
     let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
     let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
-        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
     if reserved || s.is_empty() {
         s.insert(0, '_');
     }
@@ -832,18 +1198,36 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
     let (mut files, mut copied, mut errors) = (0, 0, Vec::new());
 
-    for (n, storage) in device.storages().await.map_err(|e| e.to_string())?.iter().enumerate() {
+    for (n, storage) in device
+        .storages()
+        .await
+        .map_err(|e| e.to_string())?
+        .iter()
+        .enumerate()
+    {
         let desc = &storage.info().description;
         // First storage is the phone's internal storage: same folder an ADB backup uses.
-        let base = if n == 0 { root.join("files") } else { root.join(format!("storage_{}", safe_name(desc))) };
+        let base = if n == 0 {
+            root.join("files")
+        } else {
+            root.join(format!("storage_{}", safe_name(desc)))
+        };
         let mut stack = vec![(None, base)];
         while let Some((parent, dir)) = stack.pop() {
             if stopped() {
                 return Err(STOPPED.into());
             }
-            let now = dir.strip_prefix(&root).unwrap_or(&dir).display().to_string();
+            let now = dir
+                .strip_prefix(&root)
+                .unwrap_or(&dir)
+                .display()
+                .to_string();
             // Total is unknown until the walk ends, so progress reports 0 for it.
-            report(Msg::Progress { done: copied, total: 0, now });
+            report(Msg::Progress {
+                done: copied,
+                total: 0,
+                now,
+            });
             let objects = match storage.list_objects(parent).await {
                 Ok(o) => o,
                 Err(e) => {
@@ -868,12 +1252,16 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
                 let result: Result<(), String> = async {
                     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                     let mut out = fs::File::create(&part).map_err(|e| e.to_string())?;
-                    let mut dl = storage.download(obj.handle, ByteRange::Full).await.map_err(|e| e.to_string())?;
+                    let mut dl = storage
+                        .download(obj.handle, ByteRange::Full)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     while let Some(chunk) = dl.next_chunk().await {
                         if stopped() {
                             return Err(STOPPED.to_string());
                         }
-                        out.write_all(&chunk.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                        out.write_all(&chunk.map_err(|e| e.to_string())?)
+                            .map_err(|e| e.to_string())?;
                     }
                     drop(out);
                     // Only a fully downloaded file gets its real name.
@@ -892,7 +1280,20 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
     }
     let _ = fs::create_dir_all(&root);
     let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Ok(Summary { name, root, files, copied, errors, data: Vec::new(), full: false, pick: Pick { files: true, apps: false, data: false } })
+    Ok(Summary {
+        name,
+        root,
+        files,
+        copied,
+        errors,
+        data: Vec::new(),
+        full: false,
+        pick: Pick {
+            files: true,
+            apps: false,
+            data: false,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -900,8 +1301,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reads_adb_wifi_output() {
+        assert!(
+            wifi_result(
+                "pair",
+                "Successfully paired to 192.168.1.5:37145 [guid=adb-R5CT-x]"
+            )
+            .is_ok()
+        );
+        assert!(wifi_result("pair", "Failed: Unable to start pairing client.").is_err());
+        assert!(wifi_result("connect", "connected to 192.168.1.5:41235").is_ok());
+        assert!(wifi_result("connect", "already connected to 192.168.1.5:41235").is_ok());
+        assert!(
+            wifi_result(
+                "connect",
+                "failed to connect to '192.168.1.5:41235': refused (10061)"
+            )
+            .is_err()
+        );
+        assert!(
+            wifi_result(
+                "connect",
+                "cannot connect to 192.168.1.5:41235: refused (10061)"
+            )
+            .is_err()
+        );
+        let auth =
+            wifi_result("connect", "failed to authenticate to 192.168.1.5:41235").unwrap_err();
+        assert!(auth.contains("Pair it first"));
+    }
+
+    #[test]
     fn parses_stat_lines() {
-        assert_eq!(parse_stat("1234 1700000000 /sdcard/DCIM/a b.jpg"), Some((1234, 1700000000, "/sdcard/DCIM/a b.jpg")));
+        assert_eq!(
+            parse_stat("1234 1700000000 /sdcard/DCIM/a b.jpg"),
+            Some((1234, 1700000000, "/sdcard/DCIM/a b.jpg"))
+        );
         assert_eq!(parse_stat("find: /sdcard/x: Permission denied"), None);
         assert_eq!(parse_stat(""), None);
     }
@@ -915,7 +1350,14 @@ mod tests {
             ZX1  offline\n\
             ZX2  authorizing transport_id:4\n";
         let phones = parse_adb_devices(text);
-        assert!(phones[0] == Phone::Adb { serial: "emulator-5554".into(), model: "Pixel 8".into(), wifi: false });
+        assert!(
+            phones[0]
+                == Phone::Adb {
+                    serial: "emulator-5554".into(),
+                    model: "Pixel 8".into(),
+                    wifi: false
+                }
+        );
         assert!(matches!(&phones[1], Phone::Adb { wifi: true, model, .. } if model == "SM G991B"));
         assert!(phones[2] == Phone::Unauthorized);
         assert!(phones[3] == Phone::Unauthorized);
@@ -988,8 +1430,16 @@ mod tests {
 
     #[test]
     fn maps_saved_files_to_phone_paths() {
-        let root = std::env::temp_dir().join(format!("phone-backup-restore-test-{}", std::process::id()));
-        for f in ["files/DCIM/Camera/a.jpg", "files/Android/data/com.x/f", "files/Android/media/com.x/m.jpg", "sdcard_1234-AB/Music/s.mp3", "sdcard_9999-ZZ/x", "apps/com.x/base.apk"] {
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-restore-test-{}", std::process::id()));
+        for f in [
+            "files/DCIM/Camera/a.jpg",
+            "files/Android/data/com.x/f",
+            "files/Android/media/com.x/m.jpg",
+            "sdcard_1234-AB/Music/s.mp3",
+            "sdcard_9999-ZZ/x",
+            "apps/com.x/base.apk",
+        ] {
             let p = root.join(f);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, "abc").unwrap();
@@ -999,7 +1449,14 @@ mod tests {
         let (again, _) = saved_files(&root.join("files"), "").unwrap();
         fs::remove_dir_all(&root).unwrap();
         let remotes: Vec<_> = jobs.iter().map(|j| j.remote.as_str()).collect();
-        assert_eq!(remotes, ["/sdcard/Android/media/com.x/m.jpg", "/sdcard/DCIM/Camera/a.jpg", "/storage/1234-AB/Music/s.mp3"]);
+        assert_eq!(
+            remotes,
+            [
+                "/sdcard/Android/media/com.x/m.jpg",
+                "/sdcard/DCIM/Camera/a.jpg",
+                "/storage/1234-AB/Music/s.mp3"
+            ]
+        );
         assert_eq!(jobs[0].size, 3);
         assert_eq!(missing, ["9999-ZZ"]);
         assert_eq!(again.len(), 2);
@@ -1008,7 +1465,8 @@ mod tests {
 
     #[test]
     fn lists_saved_backups() {
-        let root = std::env::temp_dir().join(format!("phone-backup-list-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-list-test-{}", std::process::id()));
         fs::create_dir_all(root.join("Pixel 8_ABC123").join("files")).unwrap();
         fs::create_dir_all(root.join("SM G991B_R58M").join("apps")).unwrap();
         fs::create_dir_all(root.join("Holiday photos")).unwrap();
@@ -1018,8 +1476,14 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
         found.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(found.len(), 2);
-        assert_eq!((found[0].name.as_str(), found[0].files, found[0].apps), ("Pixel 8", true, false));
-        assert_eq!((found[1].name.as_str(), found[1].files, found[1].apps), ("SM G991B", false, true));
+        assert_eq!(
+            (found[0].name.as_str(), found[0].files, found[0].apps),
+            ("Pixel 8", true, false)
+        );
+        assert_eq!(
+            (found[1].name.as_str(), found[1].files, found[1].apps),
+            ("SM G991B", false, true)
+        );
         assert_eq!(found[0].age_days, Some(0));
         assert_eq!(one.len(), 1);
     }
@@ -1032,16 +1496,189 @@ mod tests {
 
     #[test]
     fn renames_clashing_names() {
-        let job = |remote: &str, local: &str| Job { remote: remote.into(), size: 0, mtime: 0, local: PathBuf::from(local) };
-        let mut jobs = vec![job("/sdcard/b", "x/IMG.jpg"), job("/sdcard/a", "x/img.jpg"), job("/sdcard/c", "x/img.JPG"), job("/sdcard/d", "x/notes")];
+        let job = |remote: &str, local: &str| Job {
+            remote: remote.into(),
+            size: 0,
+            mtime: 0,
+            local: PathBuf::from(local),
+        };
+        let mut jobs = vec![
+            job("/sdcard/b", "x/IMG.jpg"),
+            job("/sdcard/a", "x/img.jpg"),
+            job("/sdcard/c", "x/img.JPG"),
+            job("/sdcard/d", "x/notes"),
+        ];
         unclash(&mut jobs);
-        let locals: Vec<_> = jobs.iter().map(|j| j.local.to_string_lossy().replace('\\', "/")).collect();
-        assert_eq!(locals, ["x/img.jpg", "x/IMG (2).jpg", "x/img (3).JPG", "x/notes"]);
+        let locals: Vec<_> = jobs
+            .iter()
+            .map(|j| j.local.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(
+            locals,
+            ["x/img.jpg", "x/IMG (2).jpg", "x/img (3).JPG", "x/notes"]
+        );
+    }
+
+    /// Backs up and restores a real phone or emulator. Run with
+    /// `PB_E2E_SERIAL=emulator-5554 cargo test e2e -- --ignored --nocapture`.
+    /// Expects the files that docs/e2e-seed.sh puts in /sdcard/E2E.
+    #[test]
+    #[ignore]
+    fn e2e_backup_and_restore() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let dest = std::env::temp_dir().join(format!("pb-e2e-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let all = Pick {
+            files: true,
+            apps: true,
+            data: true,
+        };
+        let quiet = |_: Msg| {};
+        let first = adb_backup(&serial, "E2E", &dest, all, &quiet).unwrap();
+        println!(
+            "first: files {} copied {} errors {:?} data {:?}",
+            first.files, first.copied, first.errors, first.data
+        );
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        let e2e = first.root.join("files").join("E2E");
+        for (name, body) in [
+            // Shared storage ignores case, so img.jpg replaced IMG.jpg on the phone itself.
+            ("Camera/IMG.jpg", "two2\n"),
+            ("Docs/it's $x.txt", "q\n"),
+            ("Docs/trailing dot_", "d\n"),
+            ("Docs/_CON.txt", "e\n"),
+            ("Docs/ünïcødé 日本.txt", "u\n"),
+            ("Docs/empty.bin", ""),
+            ("Docs/ leading space.txt", "lead\n"),
+            ("Docs/-dash.txt", "dash\n"),
+            ("sp ace dir/x y.txt", "s\n"),
+            ("many/f450.txt", "450\n"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(e2e.join(name)).unwrap_or_else(|e| panic!("{name}: {e}")),
+                body,
+                "{name}"
+            );
+        }
+        assert!(!e2e.join(".thumbnails").exists());
+        assert_eq!(
+            fs::metadata(e2e.join("Camera/big.bin")).unwrap().len(),
+            20 << 20
+        );
+        let deep: PathBuf = (1..=12)
+            .fold(e2e.join("deep"), |p, i| {
+                p.join(format!("folder_with_a_fairly_long_name_{i}"))
+            })
+            .join("deepfile.txt");
+        assert_eq!(fs::read_to_string(&deep).unwrap(), "deep\n");
+        assert!(first.root.join("apps").read_dir().unwrap().count() > 0);
+        let vcf = fs::read_to_string(first.root.join("data").join("contacts.vcf")).unwrap();
+        println!("{vcf}");
+        assert!(vcf.contains("TEL:+1 555 0100"));
+
+        let again = adb_backup(&serial, "E2E", &dest, all, &quiet).unwrap();
+        assert_eq!(
+            (again.copied, again.files, again.errors.len()),
+            (0, first.files, 0)
+        );
+
+        // Restore: delete some files on the phone, then bring them back.
+        let deep_remote = (1..=12).fold("/sdcard/E2E/deep".to_string(), |p, i| {
+            format!("{p}/folder_with_a_fairly_long_name_{i}")
+        }) + "/deepfile.txt";
+        let gone = [
+            "/sdcard/E2E/Docs/it's $x.txt",
+            "/sdcard/E2E/Docs/ünïcødé 日本.txt",
+            "/sdcard/E2E/Docs/empty.bin",
+            "/sdcard/E2E/many/f7.txt",
+            "/sdcard/E2E/Docs/CON.txt",
+            "/sdcard/E2E/Docs/trailing dot.",
+            &deep_remote,
+        ];
+        shell_each(&serial, "rm -f", &gone);
+        // adb shell on Windows turns LF into CRLF.
+        let sh = |cmd: &str| shell(&serial, cmd).replace("\r\n", "\n");
+        let msg = restore_files(&serial, &first.root, &quiet).unwrap();
+        println!("restore: {msg}");
+        assert!(
+            msg.starts_with(&format!("Copied {} back", files(gone.len()))),
+            "{msg}"
+        );
+        assert_eq!(sh("cat '/sdcard/E2E/Docs/it'\\''s $x.txt'"), "q\n");
+        assert_eq!(
+            sh("cat '/sdcard/E2E/Docs/CON.txt' '/sdcard/E2E/Docs/trailing dot.'"),
+            "e\nd\n"
+        );
+        assert_eq!(sh(&format!("cat {}", sh_quote(&deep_remote))), "deep\n");
+        // Windows-safe names stay on the computer, never copied back as extra files.
+        assert_eq!(sh("ls /sdcard/E2E/Docs | grep -c -e _CON -e 'dot_'"), "0\n");
+        let msg = restore_files(&serial, &first.root, &quiet).unwrap();
+        assert!(msg.starts_with("Copied 0 files back"), "{msg}");
+        // Every saved app is still installed, so nothing is reinstalled.
+        let msg = restore_apps(&serial, &first.root, &quiet).unwrap();
+        assert!(msg.starts_with("Installed 0 of"), "{msg}");
+        fs::remove_dir_all(&dest).unwrap();
+    }
+
+    /// Needs the same emulator on USB (PB_E2E_SERIAL) and on TCP (`adb connect 127.0.0.1:5555`).
+    #[test]
+    #[ignore]
+    fn e2e_stop_disconnect_and_duplicate() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let tcp = "127.0.0.1:5555";
+        let adb_count = || {
+            detect()
+                .iter()
+                .filter(|p| matches!(p, Phone::Adb { .. }))
+                .count()
+        };
+        assert_eq!(adb_count(), 1, "one phone on USB and TCP is listed once");
+
+        let dest = std::env::temp_dir().join(format!("pb-e2e-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let pick = Pick {
+            files: true,
+            apps: false,
+            data: false,
+        };
+        let quiet = |_: Msg| {};
+        let stopper = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(4));
+            STOP.store(true, Ordering::Relaxed);
+        });
+        let r = adb_backup(&serial, "E2E", &dest, pick, &quiet);
+        stopper.join().unwrap();
+        assert_eq!(r.err().as_deref(), Some(STOPPED));
+        // The phone list keeps working after a stopped job.
+        assert_eq!(adb_count(), 1, "still listed once after Stop");
+        STOP.store(false, Ordering::Relaxed);
+
+        let unplug = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(4));
+            let _ = adb().args(["disconnect", tcp]).output();
+        });
+        let _ = fs::remove_dir_all(&dest);
+        let r = adb_backup(tcp, "E2E", &dest, pick, &quiet);
+        unplug.join().unwrap();
+        assert_eq!(r.err().as_deref(), Some(DISCONNECTED));
+        // Interrupted copies are never mistaken for finished ones.
+        let again = adb_backup(&serial, "E2E", &dest, pick, &quiet).unwrap();
+        assert!(
+            again.errors.is_empty() && again.copied > 0,
+            "{:?}",
+            again.errors
+        );
+        let _ = fs::remove_dir_all(&dest);
     }
 
     #[test]
     fn missing_local_file_needs_copy() {
-        let job = Job { remote: "/sdcard/x".into(), size: 1, mtime: 0, local: PathBuf::from("does/not/exist") };
+        let job = Job {
+            remote: "/sdcard/x".into(),
+            size: 1,
+            mtime: 0,
+            local: PathBuf::from("does/not/exist"),
+        };
         assert!(needs_copy(&job));
     }
 }
