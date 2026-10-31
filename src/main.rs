@@ -920,7 +920,7 @@ impl App {
         self.verifying = false;
         self.exporting = true;
         self.export_msg = None;
-        self.status = "Startingâ€¦".into();
+        self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
         thread::spawn(move || {
