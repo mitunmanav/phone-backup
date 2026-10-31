@@ -686,8 +686,9 @@ struct App {
     to: Option<String>,
     /// Back up the phone copied to before anything changes on it.
     safety: bool,
-    /// The source phone's serial and the backup folder its last transfer check made.
-    source: Option<(String, PathBuf)>,
+    /// The source phone's serial, the backup folder its last transfer check made and what that
+    /// check backed up (the folder holds older backups too).
+    source: Option<(String, PathBuf, Arc<HashSet<PathBuf>>)>,
     ask: Option<Ask>,
     /// What the last copy between backups or delete said.
     tidy_msg: Option<Result<String, String>>,
@@ -1176,7 +1177,7 @@ impl App {
             ctx.request_repaint();
         };
         match plan {
-            Some(((_, folder, ..), false)) => {
+            Some(((_, folder, _, _, Some(ran)), false)) => {
                 self.checking = None;
                 self.restore_report = Some(folder.join(backup::RESTORE_REPORT));
                 thread::spawn(move || {
@@ -1184,6 +1185,7 @@ impl App {
                         (&to, &to_model),
                         &dest,
                         &folder,
+                        &ran,
                         pick,
                         safety,
                         &report,
@@ -1205,7 +1207,7 @@ impl App {
                         &report,
                     );
                     busy.store(false, Ordering::Relaxed);
-                    report(Msg::Transferred(folder.map(|f| (from, f)), r));
+                    report(Msg::Transferred(folder.map(|(f, ran)| (from, f, ran)), r));
                 });
             }
         }
@@ -2872,15 +2874,15 @@ impl App {
         let folder = self
             .source
             .as_ref()
-            .filter(|(s, _)| Some(s) == self.from.as_ref())
-            .map(|(_, f)| f.clone());
+            .filter(|(s, ..)| Some(s) == self.from.as_ref())
+            .map(|(_, f, ran)| (f.clone(), ran.clone()));
         let plan: Option<Plan> = match (&self.to, folder) {
-            (Some(to), Some(folder)) if ready && picked => Some((
+            (Some(to), Some((folder, ran))) if ready && picked => Some((
                 to.clone(),
                 folder,
                 self.restore_files,
                 self.restore_apps,
-                None,
+                Some(ran),
             )),
             _ => None,
         };
@@ -3830,11 +3832,13 @@ impl eframe::App for App {
                     self.wifi_msg = Some(r);
                 }
                 Msg::Transferred(folder, r) => {
-                    if let Some((from, folder)) = folder {
+                    if let Some((from, folder, ran)) = folder {
+                        let ran = Arc::new(ran);
                         if let Some(plan) = &mut self.checking {
                             plan.1 = folder.clone();
+                            plan.4 = Some(ran.clone());
                         }
-                        self.source = Some((from, folder));
+                        self.source = Some((from, folder, ran));
                     }
                     if let Some(plan) = self.checking.take() {
                         self.preview = Some((plan, r));

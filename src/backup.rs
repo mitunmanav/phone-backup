@@ -37,8 +37,12 @@ pub enum Msg {
     Verified(PathBuf, Result<String, String>),
     /// An export ended: its folder, and what it made or why it stopped.
     Exported(PathBuf, Result<String, String>),
-    /// A phone-to-phone check: the source phone's serial and backup folder, once backed up.
-    Transferred(Option<(String, PathBuf)>, Result<String, String>),
+    /// A phone-to-phone check: the source phone's serial, its backup folder and the files and
+    /// apps of this run, once backed up.
+    Transferred(
+        Option<(String, PathBuf, HashSet<PathBuf>)>,
+        Result<String, String>,
+    ),
     /// A copy between backups, or a delete, ended.
     Tidied(Result<String, String>),
     /// Sizes of backup folders, in bytes.
@@ -609,6 +613,18 @@ pub fn adb_backup(
     pick: Pick,
     report: &dyn Fn(Msg),
 ) -> Result<Summary, String> {
+    adb_backup_run(serial, model, dest, pick, report).map(|(s, _)| s)
+}
+
+/// `adb_backup`, plus the files and app installers this run covered. The backup folder keeps
+/// everything from earlier runs too, so a transfer restores only this list.
+fn adb_backup_run(
+    serial: &str,
+    model: &str,
+    dest: &Path,
+    pick: Pick,
+    report: &dyn Fn(Msg),
+) -> Result<(Summary, HashSet<PathBuf>), String> {
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -705,6 +721,7 @@ pub fn adb_backup(
     }
     let files = jobs.len();
     let mut listed: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
+    let ran: HashSet<PathBuf> = listed.iter().cloned().collect();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
     let needed: u64 = jobs.iter().map(|j| j.size).sum();
@@ -781,7 +798,7 @@ pub fn adb_backup(
         pick,
     };
     write_report(&s, &copied);
-    Ok(s)
+    Ok((s, ran))
 }
 
 /// Saves the pictures, videos and other files sent in picture messages as `<part id>_<name>`.
@@ -1168,16 +1185,33 @@ fn saved_apps(folder: &Path) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
     Ok(packages)
 }
 
+/// The apps of `packages` with only the APK files in `only`; apps left with none are dropped.
+fn only_in(
+    packages: Vec<(String, Vec<PathBuf>)>,
+    only: &HashSet<PathBuf>,
+) -> Vec<(String, Vec<PathBuf>)> {
+    packages
+        .into_iter()
+        .map(|(pkg, apks)| (pkg, apks.into_iter().filter(|a| only.contains(a)).collect()))
+        .filter(|(_, apks): &(String, Vec<PathBuf>)| !apks.is_empty())
+        .collect()
+}
+
 /// Reinstalls the apps saved in a backup's `apps` folder (one folder of APKs per app) that are
 /// not on the phone yet. Only the apps come back, not their data or logins.
-/// With `check`, installs nothing and says what a restore would do.
+/// With `check`, installs nothing and says what a restore would do. `only` limits it to those
+/// APK files of the backup.
 pub fn restore_apps(
     serial: &str,
     folder: &Path,
+    only: Option<&HashSet<PathBuf>>,
     check: bool,
     report: &dyn Fn(Msg),
 ) -> Result<String, String> {
     let mut packages = saved_apps(folder)?;
+    if let Some(o) = only {
+        packages = only_in(packages, o);
+    }
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -1708,13 +1742,27 @@ pub fn restore(
     check: bool,
     report: &dyn Fn(Msg),
 ) -> Result<String, String> {
+    restore_in((serial, phone), folder, pick, only, false, check, report)
+}
+
+/// `restore` for phone (serial, name); with `apps_too`, `only` limits the apps as well as the files.
+fn restore_in(
+    (serial, phone): (&str, &str),
+    folder: &Path,
+    pick: Pick,
+    only: Option<&HashSet<PathBuf>>,
+    apps_too: bool,
+    check: bool,
+    report: &dyn Fn(Msg),
+) -> Result<String, String> {
     let mut said = Vec::new();
     let mut result = Ok(());
     if pick.files {
         result = restore_files(serial, folder, only, check, report).map(|m| said.push(m));
     }
     if pick.apps && result.is_ok() {
-        result = restore_apps(serial, folder, check, report).map(|m| said.push(m));
+        let apps_only = only.filter(|_| apps_too);
+        result = restore_apps(serial, folder, apps_only, check, report).map(|m| said.push(m));
     }
     let result = match result {
         Ok(()) => Ok(said.join("\n")),
@@ -1731,20 +1779,24 @@ pub fn restore(
     result
 }
 
+/// A backup folder and the files and app installers one run put or kept in it.
+type Run = (PathBuf, HashSet<PathBuf>);
+
 /// Phone to phone, first step: backs up `from` (serial, model), then checks what restoring that
-/// backup to `to` would do. Returns the new backup's folder, once made, and what was found.
+/// backup to `to` would do. Returns the new backup's folder and the files and apps of this run, once
+/// made, and what was found. Only that run moves: the folder holds earlier backups of the phone too.
 pub fn transfer_check(
     from: (&str, &str),
     to: (&str, &str),
     dest: &Path,
     pick: Pick,
     report: &dyn Fn(Msg),
-) -> (Option<PathBuf>, Result<String, String>) {
+) -> (Option<Run>, Result<String, String>) {
     let source = Pick {
         data: false,
         ..pick.clone()
     };
-    let s = match adb_backup(from.0, from.1, dest, source, report) {
+    let (s, ran) = match adb_backup_run(from.0, from.1, dest, source, report) {
         Ok(s) => s,
         Err(e) => return (None, Err(format!("Backing up {}: {e}", from.1))),
     };
@@ -1755,20 +1807,21 @@ pub fn transfer_check(
             files(s.errors.len())
         );
     }
-    let found = restore(to.0, to.1, &s.root, pick, None, true, report);
+    let found = restore_in(to, &s.root, pick, Some(&ran), true, true, report);
     let said = match found {
         Ok(m) => Ok(format!("{said}\n{m}")),
         Err(e) => Err(format!("{said}\n{e}")),
     };
-    (Some(s.root), said)
+    (Some((s.root, ran)), said)
 }
 
 /// Phone to phone, second step: with `safety`, first backs up all of `to` (serial, model) into
-/// its own folder; then restores the backup in `folder` to it.
+/// its own folder; then restores `ran`, the files and apps of the check's backup in `folder`, to it.
 pub fn transfer_now(
     to: (&str, &str),
     dest: &Path,
     folder: &Path,
+    ran: &HashSet<PathBuf>,
     pick: Pick,
     safety: bool,
     report: &dyn Fn(Msg),
@@ -1780,7 +1833,7 @@ pub fn transfer_now(
             .map_err(|e| format!("Safety backup of {}: {e} Nothing was restored.", to.1))?;
         said = format!("Safety backup of {} saved in {}.\n", to.1, s.root.display());
     }
-    match restore(to.0, to.1, folder, pick, None, false, report) {
+    match restore_in(to, folder, pick, Some(ran), true, false, report) {
         Ok(m) => Ok(said + &m),
         Err(e) => Err(said + &e),
     }
@@ -2562,6 +2615,23 @@ mod tests {
     }
 
     #[test]
+    fn scopes_apps_to_one_run() {
+        let a = |p: &str| PathBuf::from(p);
+        let packages = vec![
+            ("old.app".to_string(), vec![a("apps/old.app/base.apk")]),
+            (
+                "new.app".to_string(),
+                vec![a("apps/new.app/base.apk"), a("apps/new.app/split.apk")],
+            ),
+        ];
+        let ran = HashSet::from([a("apps/new.app/base.apk"), a("files/x.jpg")]);
+        assert_eq!(
+            only_in(packages, &ran),
+            vec![("new.app".to_string(), vec![a("apps/new.app/base.apk")])]
+        );
+    }
+
+    #[test]
     fn maps_saved_files_to_phone_paths() {
         let root =
             std::env::temp_dir().join(format!("phone-backup-restore-test-{}", std::process::id()));
@@ -2954,9 +3024,9 @@ mod tests {
         let msg = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
         assert!(msg.starts_with("Copied 0 files back"), "{msg}");
         // Every saved app is still installed, so nothing is reinstalled.
-        let msg = restore_apps(&serial, &first.root, true, &quiet).unwrap();
+        let msg = restore_apps(&serial, &first.root, None, true, &quiet).unwrap();
         assert_eq!(msg, "Apps: every saved app is already on the phone.");
-        let msg = restore_apps(&serial, &first.root, false, &quiet).unwrap();
+        let msg = restore_apps(&serial, &first.root, None, false, &quiet).unwrap();
         assert!(msg.starts_with("Installed 0 of"), "{msg}");
         fs::remove_dir_all(&dest).unwrap();
     }
@@ -2978,9 +3048,9 @@ mod tests {
             ..Pick::default()
         };
         let quiet = |_: Msg| {};
-        let (folder, found) =
+        let (run, found) =
             transfer_check((&serial, "From"), (tcp, "To"), &dest, pick.clone(), &quiet);
-        let folder = folder.expect("the first phone was backed up");
+        let (folder, ran) = run.expect("the first phone was backed up");
         let found = found.unwrap();
         assert!(
             found.starts_with("From is backed up.\nFiles: will copy 0 files"),
@@ -2990,13 +3060,20 @@ mod tests {
             !folder.join(RESTORE_REPORT).exists(),
             "a check writes no report"
         );
-        let done = transfer_now((tcp, "To"), &dest, &folder, pick, true, &quiet).unwrap();
+        // A file from an earlier backup of the first phone is in the folder but not in this run.
+        let stale = folder.join("files/E2E/stale-from-earlier-run.txt");
+        fs::write(&stale, "old").unwrap();
+        let done = transfer_now((tcp, "To"), &dest, &folder, &ran, pick, true, &quiet).unwrap();
         println!("{done}");
         assert!(done.starts_with("Safety backup of To saved in"), "{done}");
         // The safety backup has its own folder beside the source's.
         let backups = saved_backups(&dest);
         assert_eq!(backups.len(), 2);
         assert!(folder.join(RESTORE_REPORT).exists());
+        assert!(
+            !shell(tcp, "ls /sdcard/E2E").contains("stale-from-earlier-run"),
+            "a file outside this run must not be restored"
+        );
         fs::remove_dir_all(&dest).unwrap();
     }
 
