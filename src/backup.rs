@@ -253,6 +253,7 @@ fn phone_id(serial: &str) -> String {
 }
 
 /// One file to copy: remote path, its size and mtime (Unix seconds), and where it goes locally.
+#[derive(Clone)]
 struct Job {
     remote: String,
     size: u64,
@@ -400,6 +401,7 @@ pub fn adb_backup(
             ));
         }
     }
+    let tried = jobs.clone();
     let errors = pull(serial, jobs, &root, report);
     if stopped() {
         return Err(STOPPED.into());
@@ -432,8 +434,12 @@ pub fn adb_backup(
         data.push((label, ok));
     }
 
-    let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Ok(Summary {
+    let copied: Vec<PathBuf> = tried
+        .into_iter()
+        .filter(|j| !needs_copy(j))
+        .map(|j| j.local)
+        .collect();
+    let s = Summary {
         name: model.to_string(),
         root,
         files,
@@ -442,7 +448,112 @@ pub fn adb_backup(
         data,
         full: true,
         pick,
-    })
+    };
+    write_report(&s, &copied);
+    Ok(s)
+}
+
+/// Rewritten by every backup; also tells the Restore tab when the last backup ran.
+pub const REPORT: &str = "report.txt";
+/// Written by every restore, next to the backup's own report.
+pub const RESTORE_REPORT: &str = "restore-report.txt";
+
+/// Saves a plain-text report the user can open, keep or share.
+pub fn save_report(path: &Path, title: &str, body: &str) {
+    let _ = fs::write(
+        path,
+        format!(
+            "Phone Backup {}\n{title}, {}\n\n{body}\n",
+            env!("CARGO_PKG_VERSION"),
+            now_text()
+        ),
+    );
+}
+
+/// The backup's report: what it holds, every file copied this time and every file that failed.
+fn write_report(s: &Summary, copied: &[PathBuf]) {
+    let held = s.files - s.errors.len().min(s.files);
+    let mut body = format!(
+        "Copied {} this time. The backup holds {}.\n",
+        files(copied.len()),
+        files(held)
+    );
+    for (what, ok) in &s.data {
+        let state = if *ok {
+            "saved"
+        } else {
+            "the phone did not allow reading it"
+        };
+        body += &format!("{what}: {state}\n");
+    }
+    let list = |head: &str, items: Vec<String>| match items.len() {
+        0 => String::new(),
+        n => format!("\n{head} ({}):\n{}\n", count(n), items.join("\n")),
+    };
+    body += &list("Could not copy", s.errors.clone());
+    body += &list(
+        "Copied",
+        copied
+            .iter()
+            .map(|p| p.strip_prefix(&s.root).unwrap_or(p).display().to_string())
+            .collect(),
+    );
+    save_report(
+        &s.root.join(REPORT),
+        &format!("Backup of {}", s.name),
+        &body,
+    );
+}
+
+/// The local date and time as "2026-10-31 14:05".
+#[cfg(windows)]
+fn now_text() -> String {
+    // SAFETY: GetLocalTime only fills the struct it is given.
+    let t = unsafe {
+        let mut t = std::mem::zeroed();
+        windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t);
+        t
+    };
+    format!(
+        "{}-{:02}-{:02} {:02}:{:02}",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute
+    )
+}
+
+#[cfg(not(windows))]
+fn now_text() -> String {
+    String::new()
+}
+
+/// The Windows "done" sound.
+pub fn beep() {
+    // SAFETY: plays a system sound; no pointers involved. 0 is MB_OK.
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(0);
+    }
+}
+
+/// Facts that help someone fix a problem: app, Windows and adb versions and the phones adb sees.
+pub fn diagnostics(dest: &Path) -> String {
+    let out = |c: &mut Command| {
+        c.output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|e| e.to_string())
+    };
+    let windows = if cfg!(windows) {
+        out(Command::new("cmd").args(["/c", "ver"]))
+    } else {
+        String::new()
+    };
+    let adb_at = adb_path().map_or("not found".into(), |p| p.display().to_string());
+    format!(
+        "Phone Backup {}\n{windows}\nBackup folder: {}\n\nadb: {adb_at}\n{}\n\n{}\n",
+        env!("CARGO_PKG_VERSION"),
+        dest.display(),
+        out(adb().arg("version")),
+        out(adb().args(["devices", "-l"])),
+    )
 }
 
 /// Lists files whose name was changed to be legal on Windows: "files/Docs/_CON.txt<TAB>/sdcard/Docs/CON.txt".
@@ -681,7 +792,7 @@ pub struct Saved {
     pub name: String,
     pub files: bool,
     pub apps: bool,
-    /// Days since the last backup into it (errors.log is rewritten by every backup).
+    /// Days since the last backup into it (its report is rewritten by every backup).
     pub age_days: Option<u64>,
 }
 
@@ -714,7 +825,9 @@ fn saved(path: &Path) -> Option<Saved> {
     if !files && !apps {
         return None;
     }
-    let stamp = fs::metadata(path.join("errors.log"))
+    // Backups made before reports existed have errors.log instead.
+    let stamp = fs::metadata(path.join(REPORT))
+        .or_else(|_| fs::metadata(path.join("errors.log")))
         .or_else(|_| fs::metadata(path))
         .and_then(|m| m.modified())
         .ok();
@@ -1248,7 +1361,7 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
     let info = device.device_info();
     let name = info.model.clone();
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
-    let (mut files, mut copied, mut errors) = (0, 0, Vec::new());
+    let (mut files, mut copied, mut errors) = (0, Vec::new(), Vec::new());
 
     for (n, storage) in device
         .storages()
@@ -1276,7 +1389,7 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
                 .to_string();
             // Total is unknown until the walk ends, so progress reports 0 for it.
             report(Msg::Progress {
-                done: copied,
+                done: copied.len(),
                 total: 0,
                 now,
             });
@@ -1321,7 +1434,7 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
                 }
                 .await;
                 match result {
-                    Ok(()) => copied += 1,
+                    Ok(()) => copied.push(local),
                     Err(e) => {
                         let _ = fs::remove_file(&part);
                         errors.push(format!("{}: {e}", local.display()));
@@ -1331,12 +1444,11 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
         }
     }
     let _ = fs::create_dir_all(&root);
-    let _ = fs::write(root.join("errors.log"), errors.join("\n"));
-    Ok(Summary {
+    let s = Summary {
         name,
         root,
         files,
-        copied,
+        copied: copied.len(),
         errors,
         data: Vec::new(),
         full: false,
@@ -1345,7 +1457,9 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
             apps: false,
             data: false,
         },
-    })
+    };
+    write_report(&s, &copied);
+    Ok(s)
 }
 
 #[cfg(test)]
@@ -1545,6 +1659,38 @@ mod tests {
     }
 
     #[test]
+    fn writes_backup_report() {
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-report-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let s = Summary {
+            name: "Pixel 8".into(),
+            root: root.clone(),
+            files: 3,
+            copied: 1,
+            errors: vec![r"/sdcard/b.jpg -> C:\b.jpg".into()],
+            data: vec![("Contacts", true), ("Messages", false)],
+            full: true,
+            pick: Pick {
+                files: true,
+                apps: false,
+                data: true,
+            },
+        };
+        write_report(&s, &[root.join("files").join("a.jpg")]);
+        let text = fs::read_to_string(root.join(REPORT)).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(text.contains("Backup of Pixel 8, "));
+        assert!(text.contains("Copied 1 file this time. The backup holds 2 files."));
+        assert!(text.contains("Messages: the phone did not allow reading it"));
+        assert!(text.contains("Could not copy (1):\n/sdcard/b.jpg"));
+        assert!(text.contains(&format!(
+            "Copied (1):\n{}",
+            Path::new("files").join("a.jpg").display()
+        )));
+    }
+
+    #[test]
     fn quotes_shell_paths() {
         assert_eq!(sh_quote("/sdcard/a b.jpg"), "'/sdcard/a b.jpg'");
         assert_eq!(sh_quote("/sdcard/it's $x.jpg"), r"'/sdcard/it'\''s $x.jpg'");
@@ -1594,6 +1740,17 @@ mod tests {
         println!(
             "first: files {} copied {} errors {:?} data {:?}",
             first.files, first.copied, first.errors, first.data
+        );
+        let report = fs::read_to_string(first.root.join(REPORT)).unwrap();
+        assert!(
+            report.contains(
+                &["files", "E2E", "Camera", "IMG.jpg"]
+                    .iter()
+                    .collect::<PathBuf>()
+                    .display()
+                    .to_string()
+            ),
+            "{report}"
         );
         assert!(first.errors.is_empty(), "{:?}", first.errors);
         let e2e = first.root.join("files").join("E2E");

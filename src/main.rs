@@ -480,6 +480,10 @@ struct App {
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
     tab: Tab,
+    /// Play the Windows sound when a backup or restore ends.
+    sound: bool,
+    /// The report of the last restore, for its Open report button.
+    restore_report: Option<PathBuf>,
     /// The busy job is a restore, not a backup.
     restoring: bool,
     restore_msg: Option<Result<String, String>>,
@@ -644,6 +648,8 @@ impl App {
             confirm_close: false,
             closing: false,
             tab: Tab::Backup,
+            sound: cc.storage.and_then(|s| s.get_string("sound")).as_deref() == Some("1"),
+            restore_report: None,
             restoring: false,
             restore_msg: None,
             checking: None,
@@ -774,6 +780,19 @@ impl App {
         self.preview = None;
         self.checking = check.then(|| plan.clone());
         let (serial, folder, files, apps, only) = plan;
+        let phone = self
+            .phones
+            .iter()
+            .flatten()
+            .find_map(|p| match p {
+                Phone::Adb {
+                    serial: s, model, ..
+                } if *s == serial => Some(model.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| serial.clone());
+        let report_path = (!check).then(|| folder.join(backup::RESTORE_REPORT));
+        self.restore_report = report_path.clone();
         self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
@@ -796,6 +815,10 @@ impl App {
                 Ok(()) => Ok(said.join("\n")),
                 Err(e) => Err(said.into_iter().chain([e]).collect::<Vec<_>>().join("\n")),
             };
+            if let Some(path) = report_path {
+                let (Ok(text) | Err(text)) = &result;
+                backup::save_report(&path, &format!("Restore to {phone}"), text);
+            }
             busy.store(false, Ordering::Relaxed);
             report(Msg::Restored(result));
         });
@@ -1404,6 +1427,27 @@ impl App {
             ui.ctx().set_theme(theme);
         });
         ui.add_space(8.0);
+        panel(ui, t, "When a backup or restore ends", "", |ui| {
+            ui.checkbox(&mut self.sound, "Play a sound");
+            ui.label(muted(
+                "The taskbar button flashes when the window is in the background.",
+            ));
+        });
+        ui.add_space(8.0);
+        panel(ui, t, "Help", "", |ui| {
+            if ui.button("Save diagnostics…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_file_name("phone-backup-diagnostics.txt")
+                    .save_file()
+            {
+                let _ = fs::write(&path, backup::diagnostics(&self.dest));
+                let _ = Command::new("explorer").arg(&path).spawn();
+            }
+            ui.label(muted(
+                "Saves the app, Windows and adb versions and the phones adb sees to a text file. Read it before you share it.",
+            ));
+        });
+        ui.add_space(8.0);
         panel(ui, t, "About", "", |ui| {
             ui.label(format!("Phone Backup {}", env!("CARGO_PKG_VERSION")));
             ui.label(muted(
@@ -1644,7 +1688,7 @@ impl App {
                         }
                         if !s.errors.is_empty() {
                             ui.label(
-                                RichText::new(format!("{} could not be copied. Press Back up again to retry. The list is in errors.log.", files(s.errors.len())))
+                                RichText::new(format!("{} could not be copied. Press Back up again to retry. The list is in report.txt.", files(s.errors.len())))
                                     .color(t.error),
                             );
                         }
@@ -1665,9 +1709,17 @@ impl App {
                             ui.label("Apps, contacts and messages were not saved. Turn on USB debugging to include them.");
                         }
                         ui.add_space(4.0);
-                        if ui.button("Open backup folder").clicked() {
-                            let _ = Command::new("explorer").arg(&s.root).spawn();
-                        }
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Open backup folder").clicked() {
+                                let _ = Command::new("explorer").arg(&s.root).spawn();
+                            }
+                            if ui.button("Open report").clicked() {
+                                let _ = Command::new("explorer").arg(s.root.join(backup::REPORT)).spawn();
+                            }
+                            if !s.errors.is_empty() && ui.button("Copy problem list").clicked() {
+                                ui.ctx().copy_text(s.errors.join("\n"));
+                            }
+                        });
                     });
                 }
             }
@@ -1904,6 +1956,7 @@ impl App {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new("Restore finished").font(semibold(16.0)));
                     ui.label(m);
+                    self.open_restore_report(ui);
                 });
             }
             Some(Err(e)) => {
@@ -1916,14 +1969,37 @@ impl App {
                             .color(t.error),
                     );
                     ui.label(e);
+                    self.open_restore_report(ui);
                 });
             }
             None => {}
         }
     }
+
+    fn open_restore_report(&self, ui: &mut egui::Ui) {
+        if let Some(path) = &self.restore_report {
+            ui.add_space(4.0);
+            if ui.button("Open report").clicked() {
+                let _ = Command::new("explorer").arg(path).spawn();
+            }
+        }
+    }
 }
 
 impl App {
+    /// A backup or restore ended: the sound if chosen, and a taskbar flash if the window is
+    /// in the background.
+    fn finished(&self, ctx: &egui::Context) {
+        if self.sound {
+            backup::beep();
+        }
+        if !ctx.input(|i| i.focused) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
+    }
+
     fn load_fixture(&mut self, f: Fixture) {
         self.fixture = f;
         let saved = |name: &str, files: bool, apps: bool, age: Option<u64>| backup::Saved {
@@ -2079,17 +2155,14 @@ impl eframe::App for App {
                 }
                 Msg::Restored(r) => match self.checking.take() {
                     Some(plan) => self.preview = Some((plan, r)),
-                    None => self.restore_msg = Some(r),
+                    None => {
+                        self.restore_msg = Some(r);
+                        self.finished(ui.ctx());
+                    }
                 },
                 Msg::Done(r) => {
                     self.result = Some(r);
-                    // Flash the taskbar button if the window is in the background.
-                    if !ui.ctx().input(|i| i.focused) {
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
-                                egui::UserAttentionType::Informational,
-                            ));
-                    }
+                    self.finished(ui.ctx());
                 }
             }
         }
@@ -2186,6 +2259,7 @@ impl eframe::App for App {
         let bit = |b: bool| if b { '1' } else { '0' };
         storage.set_string("pair_addr", self.pair_addr.clone());
         storage.set_string("connect_addr", self.connect_addr.clone());
+        storage.set_string("sound", bit(self.sound).to_string());
         storage.set_string(
             "pick",
             [
