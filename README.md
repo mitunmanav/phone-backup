@@ -14,6 +14,8 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Restore photos and files, all of them or only the ones you pick from a list with previews, and reinstall apps from a backup.
 - Keep a separate folder for each phone; later backups copy only new or changed files.
 - Save a report after every backup and restore: what was copied and what failed. Optionally play a sound when a job ends.
+- Save a SHA-256 checksum of every file (`checksums.sha256`, which `sha256sum -c` also reads), and check a backup with **Verify backup** on the Restore page.
+- Warn when the phone's battery is under 20% and not charging, keep the computer awake while a job runs, and show the time left.
 - Save a diagnostics file under Settings to attach to a bug report after reading it.
 - Choose the backup folder and a light or dark theme (or follow Windows) under Settings, at the bottom of the page list.
 
