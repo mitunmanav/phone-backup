@@ -3,12 +3,12 @@
 
 mod backup;
 
-use backup::{Msg, Phone, Pick, Summary, count, files, or_list, size};
+use backup::{FLAGS, KINDS, Msg, Phone, Pick, Summary, Tally, count, files, or_list, size};
 use eframe::egui::{
     self, Align, Align2, Color32, FontFamily, FontId, Layout, Rect, RichText, Stroke, StrokeKind,
     TextStyle, vec2,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -258,9 +258,14 @@ fn main() -> eframe::Result {
     )
 }
 
+/// The files in a backup: path, size and time, from `backup::backup_files`.
+type Listed = Result<Vec<(PathBuf, u64, i64)>, String>;
+/// What `backup::measure` found: every file and its size, and the size of the apps.
+type Measured = (Vec<(String, u64)>, u64);
+
 /// What the file picker's worker sends back.
 enum Found {
-    List(Result<Vec<(PathBuf, u64)>, String>),
+    List(Listed),
     Thumb(PathBuf, Option<egui::ColorImage>),
 }
 
@@ -268,7 +273,9 @@ enum Found {
 struct Picker {
     folder: PathBuf,
     /// None while the worker reads the backup.
-    files: Option<Result<Vec<(PathBuf, u64)>, String>>,
+    files: Option<Listed>,
+    /// `backup::flags` of each file.
+    flags: Vec<u8>,
     chosen: HashSet<PathBuf>,
     /// None: not a picture this app can show.
     thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
@@ -473,6 +480,12 @@ struct App {
     adb_ok: bool,
     dest: PathBuf,
     pick: Pick,
+    /// What `backup::measure` found on a phone, by serial; None while it runs.
+    sizes: Option<(String, Option<Measured>)>,
+    /// The sizes for the current choices, worked out again only when they change.
+    tally: Option<(Pick, Tally)>,
+    /// The "Choose files to back up" dialog is open.
+    choosing: bool,
     status: String,
     now: String,
     fraction: Option<f32>,
@@ -630,10 +643,19 @@ impl App {
             .map(|c| c != '0')
             .collect();
         let on = |i: usize| bits.get(i).copied().unwrap_or(true);
+        // Then the five types; folders one per line (none: all); the size limit in bytes.
+        let get = |key: &str| {
+            cc.storage
+                .and_then(|s| s.get_string(key))
+                .unwrap_or_default()
+        };
         let pick = Pick {
             files: on(0),
             apps: on(1),
             data: on(2),
+            folders: get("folders").lines().map(str::to_string).collect(),
+            kinds: std::array::from_fn(|k| on(3 + k)),
+            max_size: get("max_size").parse().ok(),
         };
 
         let mut app = Self {
@@ -644,6 +666,9 @@ impl App {
             adb_ok: true,
             dest,
             pick,
+            sizes: None,
+            tally: None,
+            choosing: false,
             status: String::new(),
             now: String::new(),
             fraction: None,
@@ -685,8 +710,8 @@ impl App {
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many [restore] [settings] [light|dark] [wifi] [busy]
-        // [zoom=<factor>] [scroll=<px>] [pick=<backup folder>] [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; wifi opens its dialog; busy shows a job running; pick= opens the file picker on a real folder; shot= saves a
+        // [choose] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>] [size=<w>x<h>] [shot=<file.png>]" opens
+        // straight on test data; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; pick= opens the file picker on a real folder; shot= saves a
         // picture of the window and closes.
         if cfg!(debug_assertions) {
             let spec = env::var("PB_FIXTURE").unwrap_or_default();
@@ -701,6 +726,7 @@ impl App {
                     "light" => ctx.set_theme(egui::Theme::Light),
                     "dark" => ctx.set_theme(egui::Theme::Dark),
                     "wifi" => app.wifi_open = true,
+                    "choose" => app.choosing = true,
                     "busy" => {
                         app.busy.store(true, Ordering::Relaxed);
                         app.status = "Copying 48,213 of 128,456 files…".into();
@@ -731,7 +757,7 @@ impl App {
         let phones = self.phones.clone().unwrap_or_default();
         let (dest, pick, tx, ctx, busy) = (
             self.dest.clone(),
-            self.pick,
+            self.pick.clone(),
             self.tx.clone(),
             ctx.clone(),
             self.busy.clone(),
@@ -763,12 +789,12 @@ impl App {
                     dest.display()
                 ))
             } else if adb.is_empty() {
-                backup::mtp_backup(&dest, &report).map(|s| vec![s])
+                backup::mtp_backup(&dest, &pick, &report).map(|s| vec![s])
             } else {
                 // One phone failing (say, unplugged) must not skip the others.
                 let (mut done, mut failed) = (Vec::new(), Vec::new());
                 for (serial, model) in &adb {
-                    match backup::adb_backup(serial, model, &dest, pick, &report) {
+                    match backup::adb_backup(serial, model, &dest, pick.clone(), &report) {
                         Ok(s) => done.push(s),
                         Err(e) if adb.len() > 1 => failed.push(format!("{model}: {e}")),
                         Err(e) => failed.push(e),
@@ -910,6 +936,7 @@ impl App {
         self.picker = Some(Picker {
             folder,
             files: None,
+            flags: Vec::new(),
             chosen: HashSet::new(),
             thumbs: HashMap::new(),
             asked: Vec::new(),
@@ -926,8 +953,12 @@ impl App {
                     if let Ok(list) = &list {
                         p.chosen = match &self.only {
                             Some((folder, chosen, _)) if *folder == p.folder => (**chosen).clone(),
-                            _ => list.iter().map(|(f, _)| f.clone()).collect(),
+                            _ => list.iter().map(|(f, ..)| f.clone()).collect(),
                         };
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs() as i64);
+                        p.flags = backup::flags(list, now);
                     }
                     p.files = Some(list);
                 }
@@ -960,7 +991,7 @@ impl App {
                     Some(Ok(list)) => {
                         ui.horizontal_wrapped(|ui| {
                             if ui.button("Select all").clicked() {
-                                p.chosen = list.iter().map(|(f, _)| f.clone()).collect();
+                                p.chosen = list.iter().map(|(f, ..)| f.clone()).collect();
                             }
                             if ui.button("Select none").clicked() {
                                 p.chosen.clear();
@@ -978,6 +1009,38 @@ impl App {
                                 .wrap_mode(egui::TextWrapMode::Extend),
                             );
                         });
+                        // Files that may not be worth restoring, one button per reason.
+                        let flagged: Vec<_> = FLAGS
+                            .iter()
+                            .map(|&(bit, word)| {
+                                let n = p.flags.iter().filter(|f| *f & bit != 0).count();
+                                (bit, word, n)
+                            })
+                            .filter(|f| f.2 > 0)
+                            .collect();
+                        if !flagged.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                for (bit, word, n) in flagged {
+                                    let label = match (word, n) {
+                                        ("large", _) => format!("Untick {} over 1 GB", files(n)),
+                                        ("duplicate", 1) => "Untick 1 duplicate".into(),
+                                        ("duplicate", _) => {
+                                            format!("Untick {} duplicates", count(n))
+                                        }
+                                        ("empty", 1) => "Untick 1 empty file".into(),
+                                        ("empty", _) => format!("Untick {} empty files", count(n)),
+                                        (_, _) => format!("Untick {} {word}", files(n)),
+                                    };
+                                    if ui.button(label).clicked() {
+                                        for ((path, ..), f) in list.iter().zip(&p.flags) {
+                                            if f & bit != 0 {
+                                                p.chosen.remove(path);
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        }
                         ui.add_space(4.0);
                         let files_root = p.folder.join("files");
                         // The room left in the dialog's body, so only the list scrolls, not the body too.
@@ -990,7 +1053,9 @@ impl App {
                             .auto_shrink([false, true])
                             .show_rows(ui, 40.0, list.len(), |ui, rows| {
                                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                                for (path, bytes) in &list[rows] {
+                                for ((path, bytes, _), flag) in
+                                    list[rows.clone()].iter().zip(&p.flags[rows])
+                                {
                                     ui.horizontal(|ui| {
                                         let (tile, _) = ui.allocate_exact_size(
                                             vec2(40.0, 40.0),
@@ -1055,6 +1120,19 @@ impl App {
                                                     ui.spacing().icon_width
                                                         + ui.spacing().icon_spacing,
                                                 );
+                                                // Why it may not be worth restoring, before the folder so it is never cut.
+                                                let why: Vec<_> = FLAGS
+                                                    .iter()
+                                                    .filter(|(bit, _)| flag & bit != 0)
+                                                    .map(|(_, word)| *word)
+                                                    .collect();
+                                                if !why.is_empty() {
+                                                    let why = why.join(", ");
+                                                    let mut why =
+                                                        why[..1].to_uppercase() + &why[1..];
+                                                    why.push('.');
+                                                    ui.label(RichText::new(why).size(12.0));
+                                                }
                                                 ui.label(
                                                     RichText::new(format!(
                                                         "{} in {}",
@@ -1658,24 +1736,36 @@ impl App {
         // File transfer mode can only reach files.
         let mtp_only = adb.is_empty() && mtp.is_some();
 
+        let measured = self.measured();
+        let about = |bytes: u64| format!(" About {}.", size(bytes));
+        let files_size = measured.map(|(_, t)| about(t.total)).unwrap_or_default();
+        let apps_size = measured.map(|(apps, _)| about(apps)).unwrap_or_default();
+        let limits = match self.pick.limits() {
+            l if l.is_empty() => "Everything in the phone's storage and SD card.".into(),
+            l => l,
+        };
+        let can_choose = self.pick.files;
         panel(ui, t, "What to back up", "", |ui| {
             ui.add_enabled_ui(!busy, |ui| {
-                choice(
+                if choice(
                     ui,
                     t,
                     true,
                     &mut self.pick.files,
                     "Photos, videos and files",
-                    "Everything in the phone's storage and SD card.",
-                    None,
-                );
+                    &format!("{limits}{files_size}"),
+                    can_choose.then_some("Choose…"),
+                ) {
+                    self.choosing = true;
+                    self.measure(ui.ctx());
+                }
                 choice(
                     ui,
                     t,
                     !mtp_only,
                     &mut self.pick.apps,
                     "Apps",
-                    "The apps you installed, without their logins or data.",
+                    &format!("The apps you installed, without their logins or data.{apps_size}"),
                     None,
                 );
                 choice(
@@ -1683,7 +1773,7 @@ impl App {
                     t,
                     !mtp_only,
                     &mut self.pick.data,
-                    "Contacts, call history and messages",
+                    "Contacts, calls, messages and calendar",
                     "Some phones do not allow this over USB.",
                     None,
                 );
@@ -1703,7 +1793,8 @@ impl App {
                 }
             });
         });
-        let picked = self.pick.files || (!mtp_only && (self.pick.apps || self.pick.data));
+        let files_on = self.pick.files && self.pick.kinds.contains(&true);
+        let picked = files_on || (!mtp_only && (self.pick.apps || self.pick.data));
         let name = match (adb.as_slice(), mtp) {
             ([(model, _)], _) => model.clone(),
             ([_, ..], _) => format!("{} phones", adb.len()),
@@ -1733,6 +1824,174 @@ impl App {
             enabled: ready && picked,
             plan: None,
         }
+    }
+
+    /// The first USB-debugging phone's serial and model.
+    fn adb_phone(&self) -> Option<(String, String)> {
+        self.phones.iter().flatten().find_map(|p| match p {
+            Phone::Adb { serial, model, .. } => Some((serial.clone(), model.clone())),
+            _ => None,
+        })
+    }
+
+    /// Reads the sizes on the phone in the background, unless they are known or being read.
+    fn measure(&mut self, ctx: &egui::Context) {
+        let Some((serial, _)) = self.adb_phone() else {
+            return;
+        };
+        if self.fixture != Fixture::Real || self.sizes.as_ref().is_some_and(|(s, _)| *s == serial) {
+            return;
+        }
+        self.sizes = Some((serial.clone(), None));
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        thread::spawn(move || {
+            let (list, apps) = backup::measure(&serial);
+            let _ = tx.send(Msg::Sizes(serial, list, apps));
+            ctx.request_repaint();
+        });
+    }
+
+    /// The connected phone's apps size and the sizes for the current choices, once measured.
+    fn measured(&mut self) -> Option<(u64, &Tally)> {
+        let serial = self.adb_phone().map(|p| p.0);
+        let Some((s, Some((list, apps)))) = &self.sizes else {
+            return None;
+        };
+        if Some(s) != serial.as_ref() {
+            return None;
+        }
+        if self.tally.as_ref().is_none_or(|(p, _)| *p != self.pick) {
+            self.tally = Some((self.pick.clone(), backup::tally(list, &self.pick)));
+        }
+        Some((*apps, &self.tally.as_ref()?.1))
+    }
+
+    /// Folders, types and the size limit for photos, videos and files, with the size of each.
+    fn choose_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let serial = self.adb_phone().map(|p| p.0);
+        let reading = matches!(&self.sizes, Some((s, None)) if Some(s) == serial.as_ref());
+        let tally = self
+            .measured()
+            .map(|(_, t)| (t.folders.clone(), t.kinds, t.total, t.count));
+        let pick = &mut self.pick;
+        // A tick box on the left and the size of that choice on the right; long names are cut.
+        let row =
+            |ui: &mut egui::Ui, on: &mut bool, enabled: bool, label: String, bytes: Option<u64>| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if let Some(b) = bytes {
+                            ui.label(RichText::new(size(b)).color(t.muted));
+                        }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                            ui.add_enabled(enabled, egui::Checkbox::new(on, label))
+                                .changed()
+                        })
+                        .inner
+                    })
+                    .inner
+                })
+                .inner
+            };
+        let heading = |ui: &mut egui::Ui, s: &str| {
+            ui.add_space(4.0);
+            ui.label(RichText::new(s).font(semibold(14.0)));
+        };
+        let close = dialog(
+            ctx,
+            "choose",
+            "Choose files to back up",
+            480.0,
+            "Done",
+            |ui| {
+                heading(ui, "Types");
+                for (k, name) in KINDS.iter().enumerate() {
+                    let bytes = tally.as_ref().map(|t| t.1[k]);
+                    row(ui, &mut pick.kinds[k], true, (*name).into(), bytes);
+                }
+                heading(ui, "Folders");
+                match &tally {
+                    Some((sizes, ..)) => {
+                        let mut all = pick.folders.is_empty();
+                        if ui.checkbox(&mut all, "All folders").changed() {
+                            // Unticking starts with every folder ticked, so one can be left out.
+                            pick.folders = if all {
+                                BTreeSet::new()
+                            } else {
+                                sizes.keys().cloned().collect()
+                            };
+                        }
+                        // Folders chosen on an earlier run stay listed even when this phone lacks them.
+                        let mut names: Vec<String> = sizes
+                            .keys()
+                            .chain(&pick.folders)
+                            .cloned()
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect();
+                        // Files not in a folder go last, after the folders.
+                        names.sort_by_key(|n| n.is_empty());
+                        let last = pick.folders.len() == 1;
+                        for name in names {
+                            let mut on = all || pick.folders.contains(&name);
+                            // The last ticked folder stays: none ticked would mean all again.
+                            let enabled = !all && !(last && on);
+                            let bytes = sizes.get(&name).copied();
+                            let label = match name.as_str() {
+                                "" => "Files not in a folder".into(),
+                                n => n.into(),
+                            };
+                            if row(ui, &mut on, enabled, label, bytes) {
+                                if on {
+                                    pick.folders.insert(name);
+                                } else {
+                                    pick.folders.remove(&name);
+                                }
+                            }
+                        }
+                    }
+                    None if reading => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Reading the phone…");
+                        });
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new("Turn on USB debugging to choose folders and see sizes.")
+                                .color(t.muted),
+                        );
+                    }
+                }
+                heading(ui, "Size");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Skip files over");
+                    let label = |m: Option<u64>| m.map_or("No limit".into(), size);
+                    egui::ComboBox::from_id_salt("max_size")
+                        .selected_text(label(pick.max_size))
+                        .show_ui(ui, |ui| {
+                            for m in [
+                                None,
+                                Some(100_000_000),
+                                Some(500_000_000),
+                                Some(1_000_000_000),
+                                Some(4_000_000_000),
+                            ] {
+                                ui.selectable_value(&mut pick.max_size, m, label(m));
+                            }
+                        });
+                });
+                if let Some((.., total, n)) = tally {
+                    ui.add_space(8.0);
+                    ui.label(format!(
+                        "About {} in {} will be backed up.",
+                        size(total),
+                        files(n)
+                    ));
+                }
+            },
+        );
+        self.choosing = !close;
     }
 
     /// What the last backup did.
@@ -2175,11 +2434,7 @@ impl App {
                         ("Messages", false),
                     ],
                     full: true,
-                    pick: Pick {
-                        files: true,
-                        apps: true,
-                        data: true,
-                    },
+                    pick: Pick::default(),
                 }]));
                 self.wifi_msg = Some(backup::wifi_result(
                     "connect",
@@ -2187,6 +2442,27 @@ impl App {
                 ));
                 self.connect_addr =
                     "aleksandras-redmi-note-13-pro-plus.northwind.local:41235".into();
+                let long = "Aleksandra's scanned university documents and receipts 2019-2024";
+                let list = [
+                    ("DCIM/Camera/PXL_20240817_183455123.NIGHT.jpg", 48_213_000_000),
+                    ("DCIM/Camera/VID_20240817.mp4", 96_100_000_000),
+                    ("Download/bartholomew.fitzgerald@northwind-industries-holdings.example.com_invoice.pdf", 1_200_000),
+                    (&format!("{long}/scan.pdf"), 3_400_000_000),
+                    ("Music/a.flac", 12_000_000_000),
+                    ("Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-1.mp4", 7_000_000_000),
+                    ("日本語のフォルダ/メモ.txt", 4_000),
+                    ("notes.txt", 0),
+                ]
+                .iter()
+                .map(|(p, s)| (p.to_string(), *s))
+                .collect();
+                self.sizes = Some((
+                    "Redmi Note 13 Pro+ 5G-serial".into(),
+                    Some((list, 21_400_000_000)),
+                ));
+                self.pick.folders = ["DCIM".to_string(), long.to_string(), String::new()].into();
+                self.pick.kinds = [true, true, false, true, false];
+                self.pick.max_size = Some(4_000_000_000);
             }
             Fixture::Empty => {
                 self.phones = Some(Vec::new());
@@ -2285,6 +2561,10 @@ impl eframe::App for App {
                         self.finished(ui.ctx());
                     }
                 },
+                Msg::Sizes(serial, list, apps) => {
+                    self.sizes = Some((serial, Some((list, apps))));
+                    self.tally = None;
+                }
                 Msg::Done(r) => {
                     self.result = Some(r);
                     self.finished(ui.ctx());
@@ -2347,6 +2627,9 @@ impl eframe::App for App {
             self.wifi_dialog(ui.ctx(), &t);
         }
         self.picker_dialog(ui.ctx(), &t);
+        if self.choosing {
+            self.choose_dialog(ui.ctx(), &t);
+        }
 
         // The page list down the left, or on narrow windows a strip over the page.
         let side = ui.available_width() >= 640.0;
@@ -2401,13 +2684,26 @@ impl eframe::App for App {
         storage.set_string("sound", bit(self.sound).to_string());
         storage.set_string(
             "pick",
-            [
-                bit(self.pick.files),
-                bit(self.pick.apps),
-                bit(self.pick.data),
-            ]
-            .iter()
-            .collect(),
+            [self.pick.files, self.pick.apps, self.pick.data]
+                .iter()
+                .chain(&self.pick.kinds)
+                .map(|&b| bit(b))
+                .collect(),
+        );
+        let folders: Vec<_> = self.pick.folders.iter().cloned().collect();
+        storage.set_string(
+            "folders",
+            folders.join(
+                "
+",
+            ),
+        );
+        storage.set_string(
+            "max_size",
+            self.pick
+                .max_size
+                .map(|m| m.to_string())
+                .unwrap_or_default(),
         );
     }
 }
