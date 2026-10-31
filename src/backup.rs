@@ -37,6 +37,12 @@ pub enum Msg {
     Verified(PathBuf, Result<String, String>),
     /// An export ended: its folder, and what it made or why it stopped.
     Exported(PathBuf, Result<String, String>),
+    /// A phone-to-phone check: the source phone's serial and backup folder, once backed up.
+    Transferred(Option<(String, PathBuf)>, Result<String, String>),
+    /// A copy between backups, or a delete, ended.
+    Tidied(Result<String, String>),
+    /// Sizes of backup folders, in bytes.
+    FolderSizes(Vec<(PathBuf, u64)>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -1238,6 +1244,8 @@ pub struct Saved {
     pub apps: bool,
     /// Days since the last backup into it (its report is rewritten by every backup).
     pub age_days: Option<u64>,
+    /// None until a worker has added it up.
+    pub bytes: Option<u64>,
 }
 
 /// The folder itself when it is a backup, else the backups inside it, newest first.
@@ -1287,6 +1295,7 @@ fn saved(path: &Path) -> Option<Saved> {
         age_days: stamp
             .and_then(|s| s.elapsed().ok())
             .map(|d| d.as_secs() / 86_400),
+        bytes: None,
     })
 }
 
@@ -1683,6 +1692,319 @@ pub fn restore_files(
 }
 
 const DISCONNECTED_RESTORE: &str = "The phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.";
+
+/// Restores photos and files first, then apps, from one backup folder. With `check`, changes
+/// nothing on the phone and says what a restore would do; otherwise saves the restore report
+/// in the backup folder. `phone` names the phone in that report.
+pub fn restore(
+    serial: &str,
+    phone: &str,
+    folder: &Path,
+    pick: Pick,
+    only: Option<&HashSet<PathBuf>>,
+    check: bool,
+    report: &dyn Fn(Msg),
+) -> Result<String, String> {
+    let mut said = Vec::new();
+    let mut result = Ok(());
+    if pick.files {
+        result = restore_files(serial, folder, only, check, report).map(|m| said.push(m));
+    }
+    if pick.apps && result.is_ok() {
+        result = restore_apps(serial, folder, check, report).map(|m| said.push(m));
+    }
+    let result = match result {
+        Ok(()) => Ok(said.join("\n")),
+        Err(e) => Err(said.into_iter().chain([e]).collect::<Vec<_>>().join("\n")),
+    };
+    if !check {
+        let (Ok(text) | Err(text)) = &result;
+        save_report(
+            &folder.join(RESTORE_REPORT),
+            &format!("Restore to {phone}"),
+            text,
+        );
+    }
+    result
+}
+
+/// Phone to phone, first step: backs up `from` (serial, model), then checks what restoring that
+/// backup to `to` would do. Returns the new backup's folder, once made, and what was found.
+pub fn transfer_check(
+    from: (&str, &str),
+    to: (&str, &str),
+    dest: &Path,
+    pick: Pick,
+    report: &dyn Fn(Msg),
+) -> (Option<PathBuf>, Result<String, String>) {
+    let source = Pick {
+        data: false,
+        ..pick.clone()
+    };
+    let s = match adb_backup(from.0, from.1, dest, source, report) {
+        Ok(s) => s,
+        Err(e) => return (None, Err(format!("Backing up {}: {e}", from.1))),
+    };
+    let mut said = format!("{} is backed up.", from.1);
+    if !s.errors.is_empty() {
+        said += &format!(
+            " {} could not be copied from it, so they will not move.",
+            files(s.errors.len())
+        );
+    }
+    let found = restore(to.0, to.1, &s.root, pick, None, true, report);
+    let said = match found {
+        Ok(m) => Ok(format!("{said}\n{m}")),
+        Err(e) => Err(format!("{said}\n{e}")),
+    };
+    (Some(s.root), said)
+}
+
+/// Phone to phone, second step: with `safety`, first backs up all of `to` (serial, model) into
+/// its own folder; then restores the backup in `folder` to it.
+pub fn transfer_now(
+    to: (&str, &str),
+    dest: &Path,
+    folder: &Path,
+    pick: Pick,
+    safety: bool,
+    report: &dyn Fn(Msg),
+) -> Result<String, String> {
+    let mut said = String::new();
+    if safety {
+        let all = Pick::default();
+        let s = adb_backup(to.0, to.1, dest, all, report)
+            .map_err(|e| format!("Safety backup of {}: {e} Nothing was restored.", to.1))?;
+        said = format!("Safety backup of {} saved in {}.\n", to.1, s.root.display());
+    }
+    match restore(to.0, to.1, folder, pick, None, false, report) {
+        Ok(m) => Ok(said + &m),
+        Err(e) => Err(said + &e),
+    }
+}
+
+/// Total bytes of the files in a folder and the folders inside it.
+pub fn folder_size(path: &Path) -> u64 {
+    fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        // DirEntry metadata does not follow links, so a link cannot loop the walk.
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => folder_size(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+/// Gives a backup folder a new name in the same place. Returns its new path.
+pub fn rename_backup(path: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Type a name.".into());
+    }
+    if safe_name(name) != name {
+        return Err(r#"Windows does not allow that name. Leave out \ / : * ? " < > | and do not end it with a dot."#.into());
+    }
+    let new = path.with_file_name(name);
+    if new.exists() {
+        return Err("A folder with that name is already there.".into());
+    }
+    fs::rename(path, &new).map_err(|e| {
+        format!("Windows could not rename it: {e}. Close any window showing files from it and try again.")
+    })?;
+    Ok(new)
+}
+
+/// Moves a backup folder to the Recycle Bin. When the folder is too big for the bin, or its
+/// drive has none, Windows asks before deleting it for good.
+pub fn delete_backup(path: &Path) -> Result<String, String> {
+    // Never anything but a backup, whatever the caller passes.
+    if saved(path).is_none() {
+        return Err("This folder is not a phone backup, so it was left alone.".into());
+    }
+    recycle(path)?;
+    if path.exists() {
+        return Err(format!(
+            "Part of {} could not be deleted. Close any window showing files from it and try again.",
+            path.display()
+        ));
+    }
+    Ok(format!("Moved {} to the Recycle Bin.", path.display()))
+}
+
+#[cfg(windows)]
+fn recycle(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+        FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW, SHFileOperationW,
+    };
+    // A list of paths that ends with two NULs.
+    let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        fFlags: (FOF_ALLOWUNDO
+            | FOF_NOCONFIRMATION
+            | FOF_WANTNUKEWARNING
+            | FOF_SILENT
+            | FOF_NOERRORUI) as u16,
+        ..Default::default()
+    };
+    // SAFETY: `from` is double-NUL-terminated and outlives the call; the other pointers are null.
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if op.fAnyOperationsAborted != 0 {
+        Err("You chose to keep it, so the backup was not deleted.".into())
+    } else if code != 0 {
+        Err(format!(
+            "Windows could not delete {} (code {code}). Close any window showing files from it and try again.",
+            path.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn recycle(_: &Path) -> Result<(), String> {
+    Err("Deleting backups works on Windows only.".into())
+}
+
+/// True when both files hold the same bytes.
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::io::BufReader;
+    let (Ok(fa), Ok(fb)) = (fs::File::open(a), fs::File::open(b)) else {
+        return false;
+    };
+    if fa.metadata().map(|m| m.len()).ok() != fb.metadata().map(|m| m.len()).ok() {
+        return false;
+    }
+    let (mut ra, mut rb) = (BufReader::new(fa), BufReader::new(fb));
+    let (mut ba, mut bb) = (vec![0u8; 65536], vec![0u8; 65536]);
+    loop {
+        let Ok(n) = ra.read(&mut ba) else {
+            return false;
+        };
+        // The sizes match, so the end of one file is the end of both.
+        if n == 0 {
+            return true;
+        }
+        if rb.read_exact(&mut bb[..n]).is_err() || ba[..n] != bb[..n] {
+            return false;
+        }
+    }
+}
+
+/// Copies every file of backup `from` into backup `into`. A file already there with the same
+/// bytes is skipped; one with different bytes is never replaced: the copy gets " (2)", " (3)"...
+/// The reports are left out (each backup keeps its own). Returns what it did, in plain words.
+pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
+    if saved(from).is_none() || saved(into).is_none() {
+        return Err("Both folders must be phone backups.".into());
+    }
+    if from == into {
+        return Err("Choose two different backups.".into());
+    }
+    let mut todo = Vec::new();
+    let mut stack = vec![from.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)
+            .map_err(|e| format!("Cannot open {}: {e}", dir.display()))?
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if !(dir == from
+                && [REPORT, RESTORE_REPORT, RENAMED]
+                    .contains(&&*entry.file_name().to_string_lossy()))
+            {
+                todo.push(path);
+            }
+        }
+    }
+    let (mut copied, mut same, mut renamed_n) = (0, 0, 0);
+    let mut kept_names = Vec::new();
+    for (n, src) in todo.iter().enumerate() {
+        if stopped() {
+            return Err(format!(
+                "You stopped copying. {} copied so far stay in the backup.",
+                files(copied + renamed_n)
+            ));
+        }
+        let rel = src.strip_prefix(from).unwrap_or(src);
+        report(Msg::Progress {
+            done: n,
+            total: todo.len(),
+            now: rel.display().to_string(),
+        });
+        let first = into.join(rel);
+        let mut target = first.clone();
+        let mut k = 1;
+        let free = loop {
+            if !target.exists() {
+                break true;
+            }
+            if same_file(src, &target) {
+                break false;
+            }
+            k += 1;
+            let stem = first.file_stem().unwrap_or_default().to_string_lossy();
+            target = first.with_file_name(match first.extension() {
+                Some(ext) => format!("{stem} ({k}).{}", ext.to_string_lossy()),
+                None => format!("{stem} ({k})"),
+            });
+        };
+        if !free {
+            same += 1;
+            continue;
+        }
+        if let Some(dir) = target.parent() {
+            fs::create_dir_all(dir)
+                .map_err(|e| format!("Cannot write in {}: {e}", dir.display()))?;
+        }
+        fs::copy(src, &target).map_err(|e| format!("Could not copy {}: {e}", src.display()))?;
+        if k == 1 {
+            copied += 1;
+            kept_names.push(rel.to_string_lossy().replace('\\', "/"));
+        } else {
+            renamed_n += 1;
+        }
+    }
+    // Files that kept their name keep their real phone name too; " (2)" copies restore as named.
+    let mut map = renamed(into);
+    for (local, remote) in renamed(from) {
+        if kept_names.contains(&local) {
+            map.entry(local).or_insert(remote);
+        }
+    }
+    let _ = fs::write(
+        into.join(RENAMED),
+        map.iter()
+            .map(|(l, r)| format!("{l}\t{r}\n"))
+            .collect::<String>(),
+    );
+    let mut msg = format!(
+        "Copied {}. {} {} already there.",
+        files(copied + renamed_n),
+        files(same),
+        were(same)
+    );
+    if renamed_n > 0 {
+        msg += &format!(
+            " {} had the same name as a different file, so {} saved with \" (2)\" added.",
+            files(renamed_n),
+            if renamed_n == 1 {
+                "it was"
+            } else {
+                "they were"
+            }
+        );
+    }
+    Ok(msg)
+}
 
 /// True when the local copy is missing or differs in size or time.
 fn needs_copy(job: &Job) -> bool {
@@ -2301,6 +2623,95 @@ mod tests {
     }
 
     #[test]
+    fn merges_backups_without_overwriting() {
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-merge-test-{}", std::process::id()));
+        let (a, b) = (root.join("Old_A"), root.join("New_B"));
+        fs::create_dir_all(a.join("files/DCIM")).unwrap();
+        fs::create_dir_all(b.join("files/DCIM")).unwrap();
+        fs::write(a.join("files/DCIM/same.jpg"), "same").unwrap();
+        fs::write(b.join("files/DCIM/same.jpg"), "same").unwrap();
+        fs::write(a.join("files/DCIM/clash.jpg"), "from a").unwrap();
+        fs::write(b.join("files/DCIM/clash.jpg"), "from b").unwrap();
+        fs::write(a.join("files/DCIM/new.jpg"), "new").unwrap();
+        fs::write(a.join(REPORT), "a's report").unwrap();
+        fs::write(b.join(REPORT), "b's report").unwrap();
+        let msg = merge_backups(&a, &b, &|_| {}).unwrap();
+        // Running it again changes nothing: every file is now already there.
+        let again = merge_backups(&a, &b, &|_| {}).unwrap();
+        let read = |p: &str| fs::read_to_string(b.join(p)).unwrap();
+        let checks = (
+            read("files/DCIM/clash.jpg"),
+            read("files/DCIM/clash (2).jpg"),
+            read("files/DCIM/new.jpg"),
+            read(REPORT),
+            fs::read_to_string(a.join("files/DCIM/clash.jpg")).unwrap(),
+        );
+        let refused = merge_backups(&a, &root, &|_| {});
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(checks.0, "from b");
+        assert_eq!(checks.1, "from a");
+        assert_eq!(checks.2, "new");
+        assert_eq!(checks.3, "b's report");
+        assert_eq!(checks.4, "from a");
+        assert!(
+            msg.starts_with("Copied 2 files. 1 file was already there."),
+            "{msg}"
+        );
+        assert!(again.starts_with("Copied 0 files. 3 files were"), "{again}");
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn renames_and_deletes_backups() {
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-tidy-test-{}", std::process::id()));
+        let (a, b, other) = (
+            root.join("Pixel 8_A"),
+            root.join("Pixel 8_B"),
+            root.join("Notes"),
+        );
+        for d in [a.join("files"), b.join("files"), other.clone()] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(a.join("files/x.jpg"), "12345").unwrap();
+        fs::write(other.join("keep.txt"), "keep").unwrap();
+        let size = folder_size(&a);
+        let taken = rename_backup(&a, "Pixel 8_B");
+        let bad = rename_backup(&a, "Mum: old");
+        let moved = rename_backup(&a, " Mum's old phone ").unwrap();
+        let not_backup = delete_backup(&other);
+        let deleted = delete_backup(&moved);
+        let left = (moved.exists(), b.exists(), other.join("keep.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(size, 5);
+        assert!(taken.is_err() && bad.is_err());
+        assert_eq!(moved, root.join("Mum's old phone"));
+        assert!(not_backup.is_err());
+        assert!(deleted.is_ok(), "{deleted:?}");
+        // Only the chosen backup went; its neighbour and the other folder stayed.
+        assert_eq!(left, (false, true, true));
+    }
+
+    #[test]
+    fn compares_file_bytes() {
+        let dir = std::env::temp_dir().join(format!("phone-backup-same-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let big: Vec<u8> = (0..200_000u32).map(|i| i as u8).collect();
+        let mut other = big.clone();
+        other[150_000] ^= 1;
+        fs::write(dir.join("a"), &big).unwrap();
+        fs::write(dir.join("b"), &big).unwrap();
+        fs::write(dir.join("c"), &other).unwrap();
+        let r = (
+            same_file(&dir.join("a"), &dir.join("b")),
+            same_file(&dir.join("a"), &dir.join("c")),
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(r, (true, false));
+    }
+
+    #[test]
     fn writes_backup_report() {
         let root =
             std::env::temp_dir().join(format!("phone-backup-report-test-{}", std::process::id()));
@@ -2544,6 +2955,45 @@ mod tests {
         assert_eq!(msg, "Apps: every saved app is already on the phone.");
         let msg = restore_apps(&serial, &first.root, false, &quiet).unwrap();
         assert!(msg.starts_with("Installed 0 of"), "{msg}");
+        fs::remove_dir_all(&dest).unwrap();
+    }
+
+    /// Phone to phone with the same emulator on USB (PB_E2E_SERIAL) and on TCP
+    /// (`adb connect 127.0.0.1:5555`) as the two ends. It is one phone, so this tests the flow,
+    /// not files really moving between two phones: every file is already "on the other phone".
+    #[test]
+    #[ignore]
+    fn e2e_phone_to_phone() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let tcp = "127.0.0.1:5555";
+        let dest = std::env::temp_dir().join(format!("pb-e2e-p2p-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let pick = Pick {
+            files: true,
+            apps: false,
+            data: false,
+            ..Pick::default()
+        };
+        let quiet = |_: Msg| {};
+        let (folder, found) =
+            transfer_check((&serial, "From"), (tcp, "To"), &dest, pick.clone(), &quiet);
+        let folder = folder.expect("the first phone was backed up");
+        let found = found.unwrap();
+        assert!(
+            found.starts_with("From is backed up.\nFiles: will copy 0 files"),
+            "{found}"
+        );
+        assert!(
+            !folder.join(RESTORE_REPORT).exists(),
+            "a check writes no report"
+        );
+        let done = transfer_now((tcp, "To"), &dest, &folder, pick, true, &quiet).unwrap();
+        println!("{done}");
+        assert!(done.starts_with("Safety backup of To saved in"), "{done}");
+        // The safety backup has its own folder beside the source's.
+        let backups = saved_backups(&dest);
+        assert_eq!(backups.len(), 2);
+        assert!(folder.join(RESTORE_REPORT).exists());
         fs::remove_dir_all(&dest).unwrap();
     }
 
