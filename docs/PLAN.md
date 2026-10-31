@@ -38,7 +38,6 @@ Ordered from cheapest to largest. Each feature, and each nice-to-have inside it,
 
 | # | Feature | Also includes | Size |
 |---|---|---|---|
-| V7 | Phone to phone: back up one phone and restore it to another in one flow. | Backup list with size and date; delete (asks first), rename and browse a backup in the app. | Medium |
 | V8 | Tools: HEIC to JPG keeping date and location, duplicate finder, launch scrcpy if it is installed. | Merge duplicate contacts with undo. | Medium |
 | V9 | Optional password-protected backups (AES-256-GCM, Argon2id key). | A plain list of what the app never does; keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. | Medium |
 | V10 | Read WhatsApp backups with the user's own key: view, search and export. | | Large |

@@ -210,7 +210,7 @@ fn nav_item(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool, side: bool) ->
 /// What the bar at the foot of the Back up and Restore pages says and offers.
 struct Cmd {
     title: String,
-    note: &'static str,
+    note: String,
     label: &'static str,
     enabled: bool,
     /// Restore only: what the main button runs, and whether it only checks.
@@ -394,7 +394,33 @@ fn thumbnail(path: &Path) -> Option<egui::ColorImage> {
 enum Tab {
     Backup,
     Restore,
+    Transfer,
     Settings,
+}
+
+/// What the running (or last) job is.
+#[derive(Clone, Copy, PartialEq)]
+enum Job {
+    Backup,
+    /// Restores, checks and phone-to-phone transfers: they all end in a restore.
+    Restore,
+    /// Copying files from one backup into another.
+    Copy,
+    /// Moving a backup to the Recycle Bin; it cannot be stopped.
+    Delete,
+    /// Re-hashing a backup against its checksums.
+    Verify,
+    /// Exporting a backup to files other apps open.
+    Export,
+}
+
+/// A dialog about the chosen backup.
+enum Ask {
+    Delete(PathBuf),
+    /// The folder, the name being typed, and why the last try was refused.
+    Rename(PathBuf, String, Option<String>),
+    /// The backup to copy from, and the one chosen to copy into.
+    Copy(PathBuf, Option<PathBuf>),
 }
 
 /// The main action of a page: accent when it can run, a quiet field otherwise.
@@ -504,6 +530,41 @@ fn dialog(
     modal.inner || modal.should_close()
 }
 
+/// A dialog that asks before doing something: a title, a body that scrolls when the window is
+/// short, the button that does it (first, as on Windows) and Cancel. Some(true) for the button,
+/// Some(false) for Cancel, Esc or a click outside; None while it stays open.
+fn confirm(
+    ctx: &egui::Context,
+    title: &str,
+    yes: &str,
+    can: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) -> Option<bool> {
+    let modal = egui::Modal::new(egui::Id::unique("confirm"))
+        .frame(dialog_frame(ctx))
+        .show(ctx, |ui| {
+            let room = ctx.content_rect();
+            ui.set_width(440f32.min(room.width() - 72.0));
+            ui.add(egui::Label::new(RichText::new(title).font(semibold(20.0))).wrap());
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical()
+                .max_height(room.height() - 160.0)
+                .auto_shrink([false, true])
+                .show(ui, body);
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                if ui.button("Cancel").clicked() {
+                    return Some(false);
+                }
+                ui.add_enabled(can, egui::Button::new(yes))
+                    .clicked()
+                    .then_some(true)
+            })
+            .inner
+        });
+    modal.inner.or(modal.should_close().then_some(false))
+}
+
 /// Windows 11 dialogs: 24 px from the edge to the content; egui's popup margin is 6.
 fn dialog_frame(ctx: &egui::Context) -> egui::Frame {
     egui::Frame::popup(&ctx.global_style()).inner_margin(20)
@@ -597,15 +658,10 @@ struct App {
     sound: bool,
     /// The report of the last restore, for its Open report button.
     restore_report: Option<PathBuf>,
-    /// The busy job is a restore, not a backup.
-    restoring: bool,
-    /// The busy job is a backup check.
-    verifying: bool,
+    job: Job,
     /// The backup last checked and what the check found.
     verified: Option<(PathBuf, Result<String, String>)>,
     restore_msg: Option<Result<String, String>>,
-    /// The busy job is an export of the chosen backup.
-    exporting: bool,
     /// What the last export made, and its folder for the Open folder button.
     export_msg: Option<(PathBuf, Result<String, String>)>,
     /// The running restore is only a check; holds what it checks.
@@ -621,6 +677,16 @@ struct App {
     /// Files chosen in the picker for one backup folder: (folder, chosen, files it holds).
     only: Option<(PathBuf, Arc<HashSet<PathBuf>>, usize)>,
     picker: Option<Picker>,
+    /// Phone to phone: the serials of the phone to copy from and the one to copy to.
+    from: Option<String>,
+    to: Option<String>,
+    /// Back up the phone copied to before anything changes on it.
+    safety: bool,
+    /// The source phone's serial and the backup folder its last transfer check made.
+    source: Option<(String, PathBuf)>,
+    ask: Option<Ask>,
+    /// What the last copy between backups or delete said.
+    tidy_msg: Option<Result<String, String>>,
     /// Debug builds only: which test data is shown instead of the real phones and backups.
     fixture: Fixture,
     /// Debug builds only: scroll position to open at, for screenshots.
@@ -786,11 +852,9 @@ impl App {
             tab: Tab::Backup,
             sound: cc.storage.and_then(|s| s.get_string("sound")).as_deref() == Some("1"),
             restore_report: None,
-            restoring: false,
-            verifying: false,
+            job: Job::Backup,
             verified: None,
             restore_msg: None,
-            exporting: false,
             export_msg: None,
             checking: None,
             preview: None,
@@ -801,13 +865,19 @@ impl App {
             restore_apps: true,
             only: None,
             picker: None,
+            from: None,
+            to: None,
+            safety: true,
+            source: None,
+            ask: None,
+            tidy_msg: None,
             fixture: Fixture::Real,
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many [restore] [settings] [light|dark] [wifi] [busy]
+        // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [settings] [delete|rename|copy] [light|dark] [wifi] [busy]
         // [choose] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>] [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; pick= opens the file picker on a real folder; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; pick= opens the file picker on a real folder; shot= saves a
         // picture of the window and closes.
         if cfg!(debug_assertions) {
             let spec = env::var("PB_FIXTURE").unwrap_or_default();
@@ -818,6 +888,25 @@ impl App {
                     "one" => app.load_fixture(Fixture::One),
                     "many" => app.load_fixture(Fixture::Many),
                     "restore" => app.tab = Tab::Restore,
+                    "transfer" => app.tab = Tab::Transfer,
+                    "delete" | "rename" | "copy" => {
+                        app.tab = Tab::Restore;
+                        let b = app
+                            .backups
+                            .first()
+                            .map(|b| b.path.clone())
+                            .unwrap_or_default();
+                        let into = app.backups.get(1).map(|b| b.path.clone());
+                        app.ask = Some(match word {
+                            "delete" => Ask::Delete(b),
+                            "rename" => Ask::Rename(
+                                b,
+                                "Mum's old phone: before the reset".into(),
+                                Some("Windows does not allow that name.".into()),
+                            ),
+                            _ => Ask::Copy(b, into),
+                        });
+                    }
                     "settings" => app.tab = Tab::Settings,
                     "light" => ctx.set_theme(egui::Theme::Light),
                     "dark" => ctx.set_theme(egui::Theme::Dark),
@@ -865,15 +954,8 @@ impl App {
             ctx.clone(),
             self.busy.clone(),
         );
-        busy.store(true, Ordering::Relaxed);
-        backup::STOP.store(false, Ordering::Relaxed);
-        self.restoring = false;
-        self.verifying = false;
-        self.exporting = false;
+        self.begin(Job::Backup);
         self.result = None;
-        self.status = "Starting…".into();
-        self.now.clear();
-        self.fraction = None;
         thread::spawn(move || {
             backup::keep_awake(true);
             let report = |m: Msg| {
@@ -922,59 +1004,62 @@ impl App {
         });
     }
 
-    /// Restores photos and files first, then apps, from one backup folder.
-    /// With `check`, changes nothing on the phone and reports what a restore would do.
-    fn restore(&mut self, ctx: &egui::Context, plan: Plan, check: bool) {
-        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
-        busy.store(true, Ordering::Relaxed);
+    /// Marks a job as running, before its worker starts.
+    fn begin(&mut self, job: Job) {
+        self.busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
-        self.restoring = true;
-        self.verifying = false;
-        self.exporting = false;
-        self.restore_msg = None;
-        self.preview = None;
-        self.checking = check.then(|| plan.clone());
-        let (serial, folder, files, apps, only) = plan;
-        let phone = self
-            .phones
+        self.job = job;
+        self.status = "Starting…".into();
+        self.now.clear();
+        self.fraction = None;
+    }
+
+    /// The model of the ADB phone with this serial, or the serial when it is gone.
+    fn model_of(&self, serial: &str) -> String {
+        self.phones
             .iter()
             .flatten()
             .find_map(|p| match p {
                 Phone::Adb {
                     serial: s, model, ..
-                } if *s == serial => Some(model.clone()),
+                } if s == serial => Some(model.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| serial.clone());
-        let report_path = (!check).then(|| folder.join(backup::RESTORE_REPORT));
-        self.restore_report = report_path.clone();
-        self.status = "Starting…".into();
-        self.now.clear();
-        self.fraction = None;
+            .unwrap_or_else(|| serial.to_string())
+    }
+
+    /// Restores photos and files first, then apps, from one backup folder.
+    /// With `check`, changes nothing on the phone and reports what a restore would do.
+    fn restore(&mut self, ctx: &egui::Context, plan: Plan, check: bool) {
+        self.begin(Job::Restore);
+        self.restore_msg = None;
+        self.preview = None;
+        self.checking = check.then(|| plan.clone());
+        let (serial, folder, files, apps, only) = plan;
+        let phone = self.model_of(&serial);
+        self.restore_report = (!check).then(|| folder.join(backup::RESTORE_REPORT));
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
         thread::spawn(move || {
             backup::keep_awake(true);
             let report = |m: Msg| {
                 let _ = tx.send(m);
                 ctx.request_repaint();
             };
-            let mut said = Vec::new();
-            let mut result = Ok(());
-            if files {
-                result = backup::restore_files(&serial, &folder, only.as_deref(), check, &report)
-                    .map(|m| said.push(m));
-            }
-            if apps && result.is_ok() {
-                result =
-                    backup::restore_apps(&serial, &folder, check, &report).map(|m| said.push(m));
-            }
-            let result = match result {
-                Ok(()) => Ok(said.join("\n")),
-                Err(e) => Err(said.into_iter().chain([e]).collect::<Vec<_>>().join("\n")),
+            let pick = Pick {
+                files,
+                apps,
+                data: false,
+                ..Pick::default()
             };
-            if let Some(path) = report_path {
-                let (Ok(text) | Err(text)) = &result;
-                backup::save_report(&path, &format!("Restore to {phone}"), text);
-            }
+            let result = backup::restore(
+                &serial,
+                &phone,
+                &folder,
+                pick,
+                only.as_deref(),
+                check,
+                &report,
+            );
             backup::keep_awake(false);
             busy.store(false, Ordering::Relaxed);
             report(Msg::Restored(result));
@@ -983,16 +1068,9 @@ impl App {
 
     /// Re-hashes a backup's files in a worker and compares them with its checksums.
     fn verify(&mut self, ctx: &egui::Context, folder: PathBuf) {
-        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
-        busy.store(true, Ordering::Relaxed);
-        backup::STOP.store(false, Ordering::Relaxed);
-        self.restoring = false;
-        self.verifying = true;
+        self.begin(Job::Verify);
         self.verified = None;
-        self.exporting = false;
-        self.status = "Starting…".into();
-        self.now.clear();
-        self.fraction = None;
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
         thread::spawn(move || {
             backup::keep_awake(true);
             let report = |m: Msg| {
@@ -1009,16 +1087,9 @@ impl App {
     /// Exports the backup's contacts, calls, messages, calendar and photos to its exports folder,
     /// then opens that folder.
     fn export(&mut self, ctx: &egui::Context, folder: PathBuf) {
-        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
-        busy.store(true, Ordering::Relaxed);
-        backup::STOP.store(false, Ordering::Relaxed);
-        self.restoring = false;
-        self.verifying = false;
-        self.exporting = true;
+        self.begin(Job::Export);
         self.export_msg = None;
-        self.status = "Starting…".into();
-        self.now.clear();
-        self.fraction = None;
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
         thread::spawn(move || {
             let report = |m: Msg| {
                 let _ = tx.send(m);
@@ -1031,6 +1102,91 @@ impl App {
             }
             busy.store(false, Ordering::Relaxed);
             report(Msg::Exported(out, result));
+        });
+    }
+
+    /// Phone to phone. Without a checked plan: backs up the first phone and checks what
+    /// restoring it to the second would do. With one: the safety backup, then the restore.
+    fn transfer(&mut self, ctx: &egui::Context, plan: Option<(Plan, bool)>) {
+        let (Some(from), Some(to)) = (self.from.clone(), self.to.clone()) else {
+            return;
+        };
+        let (from_model, to_model) = (self.model_of(&from), self.model_of(&to));
+        let pick = Pick {
+            files: self.restore_files,
+            apps: self.restore_apps,
+            data: false,
+            ..Pick::default()
+        };
+        self.begin(Job::Restore);
+        self.restore_msg = None;
+        self.preview = None;
+        let (tx, ctx, busy, dest, safety) = (
+            self.tx.clone(),
+            ctx.clone(),
+            self.busy.clone(),
+            self.dest.clone(),
+            self.safety,
+        );
+        let report = move |m: Msg| {
+            let _ = tx.send(m);
+            ctx.request_repaint();
+        };
+        match plan {
+            Some(((_, folder, ..), false)) => {
+                self.checking = None;
+                self.restore_report = Some(folder.join(backup::RESTORE_REPORT));
+                thread::spawn(move || {
+                    let r = backup::transfer_now(
+                        (&to, &to_model),
+                        &dest,
+                        &folder,
+                        pick,
+                        safety,
+                        &report,
+                    );
+                    busy.store(false, Ordering::Relaxed);
+                    report(Msg::Restored(r));
+                });
+            }
+            _ => {
+                // The folder is filled in when the backup of the first phone has made it.
+                self.checking = Some((to.clone(), PathBuf::new(), pick.files, pick.apps, None));
+                self.restore_report = None;
+                thread::spawn(move || {
+                    let (folder, r) = backup::transfer_check(
+                        (&from, &from_model),
+                        (&to, &to_model),
+                        &dest,
+                        pick,
+                        &report,
+                    );
+                    busy.store(false, Ordering::Relaxed);
+                    report(Msg::Transferred(folder.map(|f| (from, f)), r));
+                });
+            }
+        }
+    }
+
+    /// Copies one backup into another, or deletes one, on a worker.
+    fn tidy(&mut self, ctx: &egui::Context, job: Job, from: PathBuf, into: Option<PathBuf>) {
+        self.begin(job);
+        self.tidy_msg = None;
+        if job == Job::Delete {
+            self.status = "Moving the backup to the Recycle Bin…".into();
+        }
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
+        thread::spawn(move || {
+            let report = |m: Msg| {
+                let _ = tx.send(m);
+                ctx.request_repaint();
+            };
+            let r = match into {
+                Some(into) => backup::merge_backups(&from, &into, &report),
+                None => backup::delete_backup(&from),
+            };
+            busy.store(false, Ordering::Relaxed);
+            report(Msg::Tidied(r));
         });
     }
 
@@ -1339,6 +1495,22 @@ impl App {
         }
         self.backups = backup::saved_backups(folder);
         self.scanned = folder.to_path_buf();
+        let (tx, paths): (_, Vec<PathBuf>) = (
+            self.tx.clone(),
+            self.backups.iter().map(|b| b.path.clone()).collect(),
+        );
+        // Adding up 100,000 files takes seconds, so off the window's thread. The phone check
+        // repaints every 2 seconds, which shows the sizes.
+        thread::spawn(move || {
+            let sizes = paths
+                .into_iter()
+                .map(|p| {
+                    let n = backup::folder_size(&p);
+                    (p, n)
+                })
+                .collect();
+            let _ = tx.send(Msg::FolderSizes(sizes));
+        });
         if !self
             .backups
             .iter()
@@ -1357,6 +1529,7 @@ impl App {
         }
         let job = |app: &mut Self, ui: &mut egui::Ui| match app.tab {
             Tab::Backup => app.backup_tab(ui, t),
+            Tab::Transfer => app.transfer_tab(ui, t),
             _ => app.restore_tab(ui, t),
         };
         let cmd = if ui.available_width() >= 640.0 {
@@ -1395,6 +1568,7 @@ impl App {
         let title = match self.tab {
             Tab::Backup => "Back up your phone",
             Tab::Restore => "Restore a backup",
+            Tab::Transfer => "Copy one phone to another",
             Tab::Settings => "Settings",
         };
         let head = egui::Frame::new()
@@ -1468,6 +1642,7 @@ impl App {
             if side {
                 item(self, ui, Tab::Backup, "Back up");
                 item(self, ui, Tab::Restore, "Restore");
+                item(self, ui, Tab::Transfer, "Transfer");
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     item(self, ui, Tab::Settings, "Settings")
                 });
@@ -1475,6 +1650,7 @@ impl App {
                 ui.horizontal(|ui| {
                     item(self, ui, Tab::Backup, "Back up");
                     item(self, ui, Tab::Restore, "Restore");
+                    item(self, ui, Tab::Transfer, "Transfer");
                     item(self, ui, Tab::Settings, "Settings");
                 });
             }
@@ -1494,11 +1670,15 @@ impl App {
                         let stopping = backup::STOP.load(Ordering::Relaxed);
                         let stop = egui::Button::new(if stopping { "Stopping…" } else { "Stop" })
                             .min_size(vec2(120.0, 32.0));
-                        if ui.add_enabled(!stopping, stop).clicked() {
+                        if ui
+                            .add_enabled(!stopping && self.job != Job::Delete, stop)
+                            .clicked()
+                        {
                             backup::STOP.store(true, Ordering::Relaxed);
                         }
                     } else if primary(ui, t, cmd.label, cmd.enabled) {
                         match cmd.plan {
+                            _ if self.tab == Tab::Transfer => self.transfer(ui.ctx(), cmd.plan),
                             Some((plan, check)) => self.restore(ui.ctx(), plan, check),
                             None => self.start(ui.ctx()),
                         }
@@ -1511,8 +1691,10 @@ impl App {
                         );
                         if !cmd.note.is_empty() {
                             ui.add(
-                                egui::Label::new(RichText::new(cmd.note).color(t.muted).size(12.0))
-                                    .wrap(),
+                                egui::Label::new(
+                                    RichText::new(&cmd.note).color(t.muted).size(12.0),
+                                )
+                                .wrap(),
                             );
                         }
                     });
@@ -2008,9 +2190,9 @@ impl App {
                 format!("Ready to back up {name}")
             },
             note: if busy {
-                "Keep the phone plugged in and unlocked."
+                "Keep the phone plugged in and unlocked.".into()
             } else {
-                ""
+                String::new()
             },
             label: if self.result.is_some() {
                 "Back up again"
@@ -2303,23 +2485,7 @@ impl App {
                     .show_rows(ui, ROW, self.backups.len(), |ui, rows| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         for b in &self.backups[rows] {
-                            // Two phones of the same model: tell them apart by the end of the ID in "<model>_<id>".
-                            let twin = self.backups.iter().filter(|o| o.name == b.name).count() > 1;
-                            let id = b
-                                .path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .and_then(|n| n.rsplit_once('_'))
-                                .map(|(_, id)| id)
-                                .filter(|_| twin);
-                            let label = match id {
-                                Some(id) => format!(
-                                    "{} (ID {})",
-                                    b.name,
-                                    id.char_indices().rev().nth(3).map_or(id, |(i, _)| &id[i..])
-                                ),
-                                None => b.name.clone(),
-                            };
+                            let label = Self::label(&self.backups, b);
                             let holds = match (b.files, b.apps) {
                                 (true, true) => "Photos, files and apps",
                                 (true, false) => "Photos and files",
@@ -2347,10 +2513,18 @@ impl App {
                                             ui.spacing().icon_width + ui.spacing().icon_spacing,
                                         );
                                         ui.label(
-                                            RichText::new(format!(
-                                                "{holds}, backed up {}.",
-                                                days_ago(b.age_days)
-                                            ))
+                                            // Size and date first: on a narrow window the end is cut.
+                                            RichText::new(match b.bytes {
+                                                Some(n) => format!(
+                                                    "{}, backed up {}. {holds}.",
+                                                    size(n),
+                                                    days_ago(b.age_days)
+                                                ),
+                                                None => format!(
+                                                    "Backed up {}. {holds}.",
+                                                    days_ago(b.age_days)
+                                                ),
+                                            })
                                             .color(t.muted)
                                             .size(12.0),
                                         );
@@ -2361,6 +2535,24 @@ impl App {
                     });
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
+                    if let Some(path) = self.chosen.clone().filter(|_| !self.backups.is_empty()) {
+                        if ui.button("Open folder").clicked() {
+                            let _ = Command::new("explorer").arg(&path).spawn();
+                        }
+                        if ui.button("Rename…").clicked() {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            self.ask = Some(Ask::Rename(path.clone(), name, None));
+                        }
+                        if self.backups.len() > 1 && ui.button("Copy into…").clicked() {
+                            self.ask = Some(Ask::Copy(path.clone(), None));
+                        }
+                        if ui.button("Delete…").clicked() {
+                            self.ask = Some(Ask::Delete(path));
+                        }
+                    }
                     if ui.button("Find another backup").clicked()
                         && let Some(dir) = rfd::FileDialog::new()
                             .set_directory(&self.dest)
@@ -2454,9 +2646,11 @@ impl App {
         // Any change to the phone, backup or ticks after a check means checking again.
         let checked = matches!(self.preview_for(plan.as_ref()), Some(Ok(_)));
         let title = match &phone {
-            _ if busy && self.verifying => "Checking the backup…".into(),
+            _ if busy && self.job == Job::Verify => "Checking the backup…".into(),
+            _ if busy && self.job == Job::Copy => "Copying between backups…".into(),
+            _ if busy && self.job == Job::Delete => "Deleting the backup…".into(),
             _ if busy && self.checking.is_some() => "Checking…".into(),
-            _ if busy && self.exporting => "Exporting…".into(),
+            _ if busy && self.job == Job::Export => "Exporting…".into(),
             _ if busy => "Restoring…".into(),
             None => "Connect the phone with USB debugging on to restore to it".into(),
             _ if path.is_none() => "Choose a backup to restore".into(),
@@ -2465,16 +2659,16 @@ impl App {
         };
         Cmd {
             title,
-            note: if busy && self.verifying {
-                "Nothing in the backup or on the phone changes."
-            } else if busy && self.exporting {
-                "The backup itself is not changed."
-            } else if busy {
-                "Keep the phone plugged in and unlocked."
-            } else if plan.is_some() {
-                "Nothing changes on the phone until you press Restore now."
+            note: if busy && self.job == Job::Verify {
+                "Nothing in the backup or on the phone changes.".into()
+            } else if busy && self.job == Job::Export {
+                "The backup itself is not changed.".into()
+            } else if busy && self.job == Job::Restore {
+                "Keep the phone plugged in and unlocked.".into()
+            } else if plan.is_some() && !busy {
+                "Nothing changes on the phone until you press Restore now.".into()
             } else {
-                ""
+                String::new()
             },
             label: if checked {
                 "Restore now"
@@ -2482,6 +2676,174 @@ impl App {
                 "Check restore"
             },
             enabled: plan.is_some(),
+            plan: plan.map(|p| (p, !checked)),
+        }
+    }
+
+    /// Phone to phone: which phone to copy from and to, and what to copy.
+    fn transfer_tab(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Cmd {
+        let busy = self.busy.load(Ordering::Relaxed);
+        let muted = |s: &str| RichText::new(s).color(t.muted);
+        let adb: Vec<(String, String)> = self
+            .phones
+            .iter()
+            .flatten()
+            .filter_map(|p| match p {
+                Phone::Adb { serial, model, .. } => Some((serial.clone(), model.clone())),
+                _ => None,
+            })
+            .collect();
+        // Two phones of the same model: their serials tell them apart.
+        let name = |serial: &Option<String>| {
+            let Some((s, m)) = adb.iter().find(|p| Some(&p.0) == serial.as_ref()) else {
+                return String::new();
+            };
+            match adb.iter().filter(|p| p.1 == *m).count() {
+                1 => m.clone(),
+                _ => format!("{m} ({s})"),
+            }
+        };
+        // Keep both choices on connected, different phones as phones come and go.
+        let here = |s: &Option<String>| adb.iter().any(|p| Some(&p.0) == s.as_ref());
+        if !here(&self.from) {
+            self.from = adb.first().map(|p| p.0.clone());
+        }
+        if !here(&self.to) || self.to == self.from {
+            self.to = adb
+                .iter()
+                .find(|p| Some(&p.0) != self.from.as_ref())
+                .map(|p| p.0.clone());
+        }
+        let ready = adb.len() >= 2;
+
+        panel(ui, t, "Phones", "", |ui| {
+            if !ready {
+                ui.label("Connect both phones with USB debugging on.");
+                ui.label(muted(
+                    "Each one shows up here a moment after you tap Allow on it.",
+                ));
+                return;
+            }
+            ui.add_enabled_ui(!busy, |ui| {
+                let (from, to) = (self.from.clone(), self.to.clone());
+                for (label, slot) in [("From", &mut self.from), ("To", &mut self.to)] {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([40.0, 32.0], egui::Label::new(label));
+                        let shown = name(slot);
+                        egui::ComboBox::from_id_salt(label)
+                            .width(ui.available_width())
+                            .truncate()
+                            .selected_text(shown)
+                            .show_ui(ui, |ui| {
+                                for (s, _) in &adb {
+                                    ui.selectable_value(
+                                        slot,
+                                        Some(s.clone()),
+                                        name(&Some(s.clone())),
+                                    );
+                                }
+                            });
+                    });
+                }
+                // Choosing the other phone on one side swaps the two.
+                if self.from == self.to {
+                    if self.from != from {
+                        self.to = from;
+                    } else {
+                        self.from = to;
+                    }
+                }
+                if ui.button("Swap").clicked() {
+                    std::mem::swap(&mut self.from, &mut self.to);
+                }
+            });
+            ui.label(muted(
+                "The first phone is backed up into its own folder, then copied to the second.",
+            ));
+        });
+
+        ui.add_space(8.0);
+        let to_name = name(&self.to);
+        panel(ui, t, "What to copy", "", |ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                choice(
+                    ui,
+                    t,
+                    true,
+                    &mut self.restore_files,
+                    "Photos, videos and files",
+                    "Files the second phone already has are skipped, never replaced.",
+                    None,
+                );
+                choice(
+                    ui,
+                    t,
+                    true,
+                    &mut self.restore_apps,
+                    "Apps",
+                    "Installs the apps it does not have. Their logins and data do not move.",
+                    None,
+                );
+                choice(
+                    ui,
+                    t,
+                    true,
+                    &mut self.safety,
+                    "Back up the second phone first",
+                    "A safety copy in its own backup folder, before anything changes on it.",
+                    None,
+                );
+            });
+            ui.label(muted(
+                "Contacts and messages cannot be copied to a phone yet.",
+            ));
+        });
+
+        let picked = self.restore_files || self.restore_apps;
+        let folder = self
+            .source
+            .as_ref()
+            .filter(|(s, _)| Some(s) == self.from.as_ref())
+            .map(|(_, f)| f.clone());
+        let plan: Option<Plan> = match (&self.to, folder) {
+            (Some(to), Some(folder)) if ready && picked => Some((
+                to.clone(),
+                folder,
+                self.restore_files,
+                self.restore_apps,
+                None,
+            )),
+            _ => None,
+        };
+        let checked = matches!(self.preview_for(plan.as_ref()), Some(Ok(_)));
+        let from_name = name(&self.from);
+        Cmd {
+            title: if busy && self.checking.is_some() {
+                format!("Backing up {from_name} and checking…")
+            } else if busy {
+                format!("Copying to {to_name}…")
+            } else if !ready {
+                "Connect two phones to start".into()
+            } else if !picked {
+                "Tick at least one thing to copy".into()
+            } else {
+                format!("Copies {from_name} to {to_name}")
+            },
+            note: if busy {
+                "Keep both phones plugged in and unlocked.".into()
+            } else if !ready || !picked {
+                String::new()
+            } else if checked {
+                format!("Nothing changes on {to_name} until you press Transfer now.")
+            } else {
+                "The check backs up the first phone and changes nothing on either.".into()
+            },
+            label: if checked {
+                "Transfer now"
+            } else {
+                "Check transfer"
+            },
+            enabled: ready && picked,
             plan: plan.map(|p| (p, !checked)),
         }
     }
@@ -2513,6 +2875,23 @@ impl App {
                 ui.label(text.as_str());
             });
         }
+        if self.tab == Tab::Restore
+            && let Some(r) = &self.tidy_msg
+            && !self.busy.load(Ordering::Relaxed)
+        {
+            ui.add_space(16.0);
+            result_box(t).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let (title, color, text) = match (r, self.job) {
+                    (Ok(m), Job::Delete) => ("Backup deleted", t.ink, m),
+                    (Ok(m), _) => ("Copy finished", t.ink, m),
+                    (Err(e), Job::Delete) => ("Backup not deleted", t.error, e),
+                    (Err(e), _) => ("Copy stopped", t.error, e),
+                };
+                ui.label(RichText::new(title).font(semibold(16.0)).color(color));
+                ui.label(text.as_str());
+            });
+        }
         if let Some(r) = self
             .preview_for(plan)
             .filter(|_| !self.busy.load(Ordering::Relaxed))
@@ -2522,6 +2901,7 @@ impl App {
                 ui.set_width(ui.available_width());
                 let (title, color, text) = match r {
                     Ok(m) => ("What will happen", t.ink, m),
+                    Err(e) if self.tab == Tab::Transfer => ("Cannot transfer", t.error, e),
                     Err(e) => ("Cannot restore", t.error, e),
                 };
                 ui.label(RichText::new(title).font(semibold(16.0)).color(color));
@@ -2549,7 +2929,14 @@ impl App {
                 ui.add_space(16.0);
                 result_box(t).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Restore finished").font(semibold(16.0)));
+                    ui.label(
+                        RichText::new(if self.tab == Tab::Transfer {
+                            "Transfer finished"
+                        } else {
+                            "Restore finished"
+                        })
+                        .font(semibold(16.0)),
+                    );
                     ui.label(m);
                     self.open_restore_report(ui);
                 });
@@ -2559,14 +2946,138 @@ impl App {
                 result_box(t).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(
-                        RichText::new("Restore stopped")
-                            .font(semibold(16.0))
-                            .color(t.error),
+                        RichText::new(if self.tab == Tab::Transfer {
+                            "Transfer stopped"
+                        } else {
+                            "Restore stopped"
+                        })
+                        .font(semibold(16.0))
+                        .color(t.error),
                     );
                     ui.label(e);
                     self.open_restore_report(ui);
                 });
             }
+            None => {}
+        }
+    }
+
+    /// A backup's name in lists. Two phones of the same model: told apart by the end of the ID
+    /// in "<model>_<id>".
+    fn label(all: &[backup::Saved], b: &backup::Saved) -> String {
+        let twin = all.iter().filter(|o| o.name == b.name).count() > 1;
+        let id = b
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.rsplit_once('_'))
+            .map(|(_, id)| id)
+            .filter(|_| twin);
+        match id {
+            Some(id) => format!(
+                "{} (ID {})",
+                b.name,
+                id.char_indices().rev().nth(3).map_or(id, |(i, _)| &id[i..])
+            ),
+            None => b.name.clone(),
+        }
+    }
+
+    /// The dialog about the chosen backup: delete, rename or copy into another.
+    fn ask_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some(ask) = &mut self.ask else { return };
+        let label_of = |path: &Path| {
+            self.backups
+                .iter()
+                .find(|b| b.path == path)
+                .map(|b| (Self::label(&self.backups, b), b.bytes))
+                .unwrap_or_else(|| (path.display().to_string(), None))
+        };
+        let muted = |s: &str| RichText::new(s).color(t.muted);
+        let answer = match ask {
+            Ask::Delete(path) => {
+                let (name, bytes) = label_of(path);
+                let full = match bytes {
+                    Some(n) => format!("{} ({})", path.display(), size(n)),
+                    None => path.display().to_string(),
+                };
+                confirm(
+                    ctx,
+                    &format!("Delete the backup of {name}?"),
+                    "Delete",
+                    true,
+                    |ui| {
+                        ui.label("This moves the whole folder to the Recycle Bin:");
+                        ui.label(RichText::new(full).font(semibold(14.0)));
+                        ui.label(muted("You can bring it back from the Recycle Bin. If the folder is too big for it, Windows asks before deleting it for good."));
+                    },
+                )
+            }
+            Ask::Rename(_, name, err) => confirm(ctx, "Rename backup", "Rename", true, |ui| {
+                let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+                r.request_focus();
+                if let Some(e) = err {
+                    ui.label(RichText::new(e.as_str()).color(t.error));
+                }
+                ui.label(muted(
+                    "The next backup of this phone starts a new folder with its usual name.",
+                ));
+            }),
+            Ask::Copy(from, into) => {
+                let (name, _) = label_of(from);
+                let others: Vec<_> = self
+                    .backups
+                    .iter()
+                    .filter(|b| b.path != *from)
+                    .map(|b| {
+                        (
+                            b.path.clone(),
+                            Self::label(&self.backups, b),
+                            days_ago(b.age_days),
+                        )
+                    })
+                    .collect();
+                confirm(
+                    ctx,
+                    "Copy files into another backup",
+                    "Copy files",
+                    into.is_some(),
+                    |ui| {
+                        ui.label(format!(
+                            "Copies every file of {name} into the backup you choose."
+                        ));
+                        ui.label(muted("Files already there are kept. A file with the same name but different contents is saved as name (2)."));
+                        ui.add_space(4.0);
+                        for (path, other, age) in others {
+                            let on = into.as_ref() == Some(&path);
+                            if ui.radio(on, format!("{other}, backed up {age}")).clicked() {
+                                *into = Some(path);
+                            }
+                        }
+                    },
+                )
+            }
+        };
+        match answer {
+            Some(false) => self.ask = None,
+            Some(true) => match self.ask.take() {
+                Some(Ask::Delete(path)) => self.tidy(ctx, Job::Delete, path, None),
+                Some(Ask::Copy(from, into)) => self.tidy(ctx, Job::Copy, from, into),
+                Some(Ask::Rename(path, name, _)) => match backup::rename_backup(&path, &name) {
+                    Ok(new) => {
+                        self.chosen = Some(new.clone());
+                        // A backup folder chosen on its own is listed under its new name.
+                        let dir = if self.scanned == path {
+                            new
+                        } else {
+                            self.scanned.clone()
+                        };
+                        self.scan(&dir);
+                    }
+                    Err(e) => self.ask = Some(Ask::Rename(path, name, Some(e))),
+                },
+                None => {}
+            },
             None => {}
         }
     }
@@ -2606,6 +3117,8 @@ impl App {
             files,
             apps,
             age_days: age,
+            // A size not added up yet, on the backup of unknown date.
+            bytes: age.map(|a| 2_147_483_648 + a * 937_000_123),
         };
         let adb = |model: &str, wifi: bool, battery: Option<u8>| Phone::Adb {
             serial: format!("{model}-serial"),
@@ -2772,7 +3285,7 @@ impl eframe::App for App {
                 Msg::Progress { done, total, now } => {
                     self.now = now;
                     if total > 0 {
-                        let verb = if self.verifying {
+                        let verb = if self.job == Job::Verify {
                             "Checking"
                         } else {
                             "Copying"
@@ -2791,6 +3304,30 @@ impl eframe::App for App {
                     self.wifi_working = false;
                     self.qr = None;
                     self.wifi_msg = Some(r);
+                }
+                Msg::Transferred(folder, r) => {
+                    if let Some((from, folder)) = folder {
+                        if let Some(plan) = &mut self.checking {
+                            plan.1 = folder.clone();
+                        }
+                        self.source = Some((from, folder));
+                    }
+                    if let Some(plan) = self.checking.take() {
+                        self.preview = Some((plan, r));
+                    }
+                }
+                Msg::Tidied(r) => {
+                    self.tidy_msg = Some(r);
+                    self.finished(ui.ctx());
+                    let dir = self.scanned.clone();
+                    self.scan(&dir);
+                }
+                Msg::FolderSizes(sizes) => {
+                    for (path, n) in sizes {
+                        if let Some(b) = self.backups.iter_mut().find(|b| b.path == path) {
+                            b.bytes = Some(n);
+                        }
+                    }
                 }
                 Msg::Restored(r) => match self.checking.take() {
                     Some(plan) => self.preview = Some((plan, r)),
@@ -2831,35 +3368,31 @@ impl eframe::App for App {
         if self.confirm_close {
             let modal = egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
                 ui.set_max_width(ui.available_width().min(320.0));
-                if self.verifying {
-                    ui.label(RichText::new("Stop checking the backup?").font(semibold(16.0)));
-                    ui.label("The backup is not changed. You can check it again later.");
-                } else if self.exporting {
-                    ui.label(RichText::new("Stop exporting?").font(semibold(16.0)));
-                    ui.label("Files exported so far are kept. The backup itself is not changed.");
-                } else if self.restoring {
-                    ui.label(RichText::new("Stop restoring?").font(semibold(16.0)));
-                    ui.label("Everything restored so far stays on the phone.");
-                } else {
-                    ui.label(RichText::new("Stop the backup?").font(semibold(16.0)));
-                    ui.label("Files copied so far are kept. The next backup continues where this one stopped.");
-                }
+                let (title, body) = match self.job {
+                    Job::Restore => ("Stop restoring?", "Everything restored so far stays on the phone."),
+                    Job::Backup => ("Stop the backup?", "Files copied so far are kept. The next backup continues where this one stopped."),
+                    Job::Copy => ("Stop copying?", "Files copied so far stay in the backup."),
+                    Job::Verify => ("Stop checking the backup?", "The backup is not changed. You can check it again later."),
+                    Job::Export => ("Stop exporting?", "Files exported so far are kept. The backup itself is not changed."),
+                    Job::Delete => ("Close when the delete ends?", "Windows is moving the backup to the Recycle Bin. The window closes when it has finished."),
+                };
+                ui.label(RichText::new(title).font(semibold(16.0)));
+                ui.label(body);
                 ui.horizontal(|ui| {
-                    if ui.button("Stop and close").clicked() {
+                    let (go, stay) = match self.job {
+                        Job::Restore => ("Stop and close", "Keep restoring"),
+                        Job::Backup => ("Stop and close", "Keep backing up"),
+                        Job::Copy => ("Stop and close", "Keep copying"),
+                        Job::Delete => ("Close when done", "Keep open"),
+                        Job::Verify => ("Stop and close", "Keep checking"),
+                        Job::Export => ("Stop and close", "Keep exporting"),
+                    };
+                    if ui.button(go).clicked() {
                         backup::STOP.store(true, Ordering::Relaxed);
                         self.closing = true;
                         self.confirm_close = false;
                     }
-                    let keep = if self.verifying {
-                        "Keep checking"
-                    } else if self.exporting {
-                        "Keep exporting"
-                    } else if self.restoring {
-                        "Keep restoring"
-                    } else {
-                        "Keep backing up"
-                    };
-                    if ui.button(keep).clicked() {
+                    if ui.button(stay).clicked() {
                         self.confirm_close = false;
                     }
                 });
@@ -2877,6 +3410,7 @@ impl eframe::App for App {
         if self.choosing {
             self.choose_dialog(ui.ctx(), &t);
         }
+        self.ask_dialog(ui.ctx(), &t);
 
         // The page list down the left, or on narrow windows a strip over the page.
         let side = ui.available_width() >= 640.0;

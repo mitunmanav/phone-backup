@@ -13,6 +13,8 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Back up contacts, call history, messages, picture messages (MMS) with their attachments, and the calendar over USB on phones that allow it. Contacts are also saved as `contacts.vcf`.
 - Export a backup's contacts, call history and messages as CSV and as pages that open offline and print (messages also as text, with a search box on the page), the calendar as an `.ics` file, and its photos and videos sorted into year and month folders. Exports go to the backup's `exports` folder; the backup itself is not changed.
 - Restore photos and files, all of them or only the ones you pick from a list with previews, and reinstall apps from a backup. The list marks large files, duplicates, files over 3 years old, and empty files, so you can untick them in one click.
+- Copy one phone to another in one go: the app backs up the first phone, shows what will change, optionally backs up the second phone first, then restores to it. Both phones need USB debugging.
+- See each backup's size and date; open, rename or delete it (deleting moves it to the Recycle Bin), or copy its files into another backup without replacing anything.
 - Keep a separate folder for each phone; later backups copy only new or changed files.
 - Save a report after every backup and restore: what was copied and what failed. Optionally play a sound when a job ends.
 - Save a SHA-256 checksum of every file (`checksums.sha256`, which `sha256sum -c` also reads), and check a backup with **Verify backup** on the Restore page.
