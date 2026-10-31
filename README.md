@@ -13,7 +13,7 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Back up contacts, call history, and messages over USB on phones that allow it. Contacts are also saved as `contacts.vcf`.
 - Restore photos and files, all of them or only the ones you pick from a list with previews, and reinstall apps from a backup.
 - Keep a separate folder for each phone; later backups copy only new or changed files.
-- Choose the backup folder and a light or dark theme (or follow Windows) under Settings, the gear at the top right.
+- Choose the backup folder and a light or dark theme (or follow Windows) under Settings, at the bottom of the page list.
 
 ## Download
 
