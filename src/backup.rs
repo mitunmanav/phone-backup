@@ -1,7 +1,7 @@
 //! Copies an Android phone to this computer over ADB (USB or Wi-Fi) or MTP.
 //! Everything runs locally; nothing is sent to any server.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -30,6 +30,8 @@ pub enum Msg {
     Phones(Vec<Phone>),
     Wifi(Result<String, String>),
     Done(Result<Vec<Summary>, String>),
+    /// What `measure` found on the phone with this serial.
+    Sizes(String, Vec<(String, u64)>, u64),
     Restored(Result<String, String>),
     /// The backup folder checked and what the check found.
     Verified(PathBuf, Result<String, String>),
@@ -57,7 +59,7 @@ pub struct Summary {
     pub files: usize,
     pub copied: usize,
     pub errors: Vec<String>,
-    /// (what, saved?) for contacts, call history and messages. Empty for MTP.
+    /// (what, saved?) for contacts, call history, messages and the calendar. Empty for MTP.
     pub data: Vec<(&'static str, bool)>,
     pub full: bool,
     /// What was asked for.
@@ -65,11 +67,140 @@ pub struct Summary {
 }
 
 /// What the user chose to back up.
-#[derive(Clone, Copy)]
+#[derive(Clone, PartialEq)]
 pub struct Pick {
     pub files: bool,
     pub apps: bool,
     pub data: bool,
+    /// Top-level folders to copy, matched on the phone and its SD cards; empty copies them all.
+    /// "" stands for files that are not in any folder.
+    pub folders: BTreeSet<String>,
+    /// Which of `KINDS` to copy.
+    pub kinds: [bool; 5],
+    /// Files bigger than this many bytes are skipped.
+    pub max_size: Option<u64>,
+}
+
+impl Default for Pick {
+    fn default() -> Self {
+        Pick {
+            files: true,
+            apps: true,
+            data: true,
+            folders: BTreeSet::new(),
+            kinds: [true; 5],
+            max_size: None,
+        }
+    }
+}
+
+impl Pick {
+    /// True when the file at `rel` (its path inside the phone's storage) is to be copied.
+    pub fn wants(&self, rel: &str, size: u64) -> bool {
+        self.kinds[kind(rel)] && self.max_size.is_none_or(|m| size <= m) && self.in_folders(rel)
+    }
+
+    /// The folder, type and size choices in words, or "" when they copy everything.
+    pub fn limits(&self) -> String {
+        let and = |items: Vec<String>| match items.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
+        };
+        let mut said = Vec::new();
+        if !self.folders.is_empty() {
+            let mut names: Vec<_> = self.folders.iter().collect();
+            names.sort_by_key(|f| f.is_empty());
+            let names = names
+                .into_iter()
+                .map(|f| {
+                    if f.is_empty() {
+                        "files not in a folder".into()
+                    } else {
+                        f.clone()
+                    }
+                })
+                .collect();
+            said.push(format!("Only {}.", and(names)));
+        }
+        if self.kinds != [true; 5] {
+            let kinds = (0..5)
+                .filter(|&k| self.kinds[k])
+                .map(|k| KINDS[k].to_lowercase())
+                .collect();
+            said.push(format!("Only {}.", and(kinds)));
+        }
+        if let Some(max) = self.max_size {
+            said.push(format!("Skips files over {}.", size(max)));
+        }
+        said.join(" ")
+    }
+
+    fn in_folders(&self, rel: &str) -> bool {
+        let top = rel.split_once('/').map_or("", |(top, _)| top);
+        self.folders.is_empty() || self.folders.contains(top)
+    }
+}
+
+pub const KINDS: [&str; 5] = ["Photos", "Videos", "Music", "Documents", "Other files"];
+
+/// Which of `KINDS` a file is, by its extension.
+pub fn kind(path: &str) -> usize {
+    let ext = path
+        .rsplit_once('.')
+        .map_or("", |(_, e)| e)
+        .to_ascii_lowercase();
+    [
+        &[
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "bmp", "dng", "tif", "tiff", "raw",
+        ][..],
+        &["mp4", "mkv", "mov", "3gp", "webm", "avi", "m4v", "ts"],
+        &[
+            "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "amr", "wma", "mid",
+        ],
+        &[
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "odt", "ods", "odp", "rtf",
+            "csv", "epub", "md",
+        ],
+    ]
+    .iter()
+    .position(|list| list.contains(&ext.as_str()))
+    .unwrap_or(4)
+}
+
+/// Sizes of each choice, for the files on the phone: (path inside its storage, size).
+/// A folder's size counts the chosen types; a type's size counts the chosen folders.
+pub struct Tally {
+    pub folders: BTreeMap<String, u64>,
+    pub kinds: [u64; 5],
+    pub total: u64,
+    pub count: usize,
+}
+
+pub fn tally(files: &[(String, u64)], pick: &Pick) -> Tally {
+    let mut t = Tally {
+        folders: BTreeMap::new(),
+        kinds: [0; 5],
+        total: 0,
+        count: 0,
+    };
+    for (rel, size) in files {
+        let k = kind(rel);
+        let fits = pick.max_size.is_none_or(|m| *size <= m);
+        let top = rel.split_once('/').map_or("", |(top, _)| top);
+        let folder = t.folders.entry(top.to_string()).or_default();
+        if fits && pick.kinds[k] {
+            *folder += size;
+        }
+        if fits && pick.in_folders(rel) {
+            t.kinds[k] += size;
+        }
+        if pick.wants(rel, *size) {
+            t.total += size;
+            t.count += 1;
+        }
+    }
+    t
 }
 
 /// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
@@ -219,12 +350,16 @@ pub fn wifi_result(cmd: &str, out: &str) -> Result<String, String> {
     }
 }
 
-// Paths in the listing that are caches or trash, not user data.
+// Paths in the listing that are caches, trash or copies, not user data: app caches, picture
+// previews, WhatsApp stickers and the copies WhatsApp keeps of media you sent.
 fn is_junk(path: &str) -> bool {
     path.contains("/.thumbnails/")
         || path.contains("/.trashed-")
         || path.contains("/.pending-")
+        || path.contains("/.cache/")
         || (path.contains("/Android/data/") && path.contains("/cache/"))
+        || (path.contains("/WhatsApp/Media/")
+            && (path.contains("/WhatsApp Stickers/") || path.contains("/Sent/")))
 }
 
 /// Runs a shell command on the phone and returns its stdout. Stderr (e.g. "Permission denied"
@@ -305,6 +440,59 @@ fn parse_stat(line: &str) -> Option<(u64, i64, &str)> {
     ))
 }
 
+/// Lists every installed app's installer files as `size mtime package path`.
+const APPS: &str = r#"for p in $(pm list packages -3 | cut -d: -f2); do for a in $(pm path $p | cut -d: -f2); do stat -c "%s %Y $p %n" $a; done; done"#;
+
+/// The phone's shared storage and any SD cards: (folder on the phone, folder in the backup).
+fn storages(serial: &str) -> Vec<(String, String)> {
+    let mut all = vec![("/sdcard".to_string(), "files".to_string())];
+    for vol in shell(serial, "ls /storage").split_whitespace() {
+        if !["emulated", "self"].contains(&vol) {
+            all.push((
+                format!("/storage/{vol}"),
+                format!("sdcard_{}", safe_name(vol)),
+            ));
+        }
+    }
+    all
+}
+
+/// Every file under `remote_root` that is not junk: (size, mtime, path on the phone).
+fn listing(serial: &str, remote_root: &str) -> Vec<(u64, i64, String)> {
+    let out = shell(
+        serial,
+        &format!("find {remote_root}/ -type f -exec stat -c '%s %Y %n' {{}} +"),
+    );
+    // shortcut: file names containing a newline are skipped; rare, would need find -print0.
+    out.lines()
+        .filter_map(parse_stat)
+        .filter(|(.., path)| !is_junk(path))
+        .map(|(size, mtime, path)| (size, mtime, path.to_string()))
+        .collect()
+}
+
+/// What the phone holds, to show the size of each choice before a backup: every file as
+/// (path inside its storage, size), and the total size of the installed apps.
+pub fn measure(serial: &str) -> (Vec<(String, u64)>, u64) {
+    let mut files = Vec::new();
+    for (remote_root, _) in storages(serial) {
+        let prefix = format!("{remote_root}/");
+        files.extend(
+            listing(serial, &remote_root)
+                .into_iter()
+                .filter_map(|(size, _, path)| {
+                    Some((path.strip_prefix(&prefix)?.to_string(), size))
+                }),
+        );
+    }
+    let apps = shell(serial, APPS)
+        .lines()
+        .filter_map(parse_stat)
+        .map(|(size, ..)| size)
+        .sum();
+    (files, apps)
+}
+
 pub fn adb_backup(
     serial: &str,
     model: &str,
@@ -322,40 +510,28 @@ pub fn adb_backup(
     let mut jobs = Vec::new();
 
     // Shared storage (photos, videos, downloads, documents, app media) plus any SD cards.
-    let mut storages = Vec::new();
-    if pick.files {
-        storages.push(("/sdcard".to_string(), root.join("files")));
-    }
-    for vol in shell(serial, "ls /storage")
-        .split_whitespace()
-        .filter(|_| pick.files)
-    {
-        if !["emulated", "self"].contains(&vol) {
-            storages.push((
-                format!("/storage/{vol}"),
-                root.join(format!("sdcard_{}", safe_name(vol))),
-            ));
-        }
-    }
+    let storages: Vec<(String, PathBuf)> = if pick.files {
+        storages(serial)
+            .into_iter()
+            .map(|(remote, name)| (remote, root.join(name)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     for (remote_root, local_root) in &storages {
         status(format!("Reading the file list on {model}…"));
-        let listing = shell(
-            serial,
-            &format!("find {remote_root}/ -type f -exec stat -c '%s %Y %n' {{}} +"),
-        );
-        for (size, mtime, path) in listing.lines().filter_map(parse_stat) {
-            // shortcut: file names containing a newline are skipped; rare, would need find -print0.
+        for (size, mtime, path) in listing(serial, remote_root) {
             let Some(rel) = path.strip_prefix(&format!("{remote_root}/")) else {
                 continue;
             };
-            if is_junk(path) {
+            if !pick.wants(rel, size) {
                 continue;
             }
             let local = rel
                 .split('/')
                 .fold(local_root.clone(), |p, part| p.join(safe_name(part)));
             jobs.push(Job {
-                remote: path.to_string(),
+                remote: path,
                 size,
                 mtime,
                 local,
@@ -367,10 +543,7 @@ pub fn adb_backup(
     // readable without root on Android 12+, so this restores the apps, not their logins/settings.
     let apps = if pick.apps {
         status("Reading the list of installed apps…".into());
-        shell(
-            serial,
-            r#"for p in $(pm list packages -3 | cut -d: -f2); do for a in $(pm path $p | cut -d: -f2); do stat -c "%s %Y $p %n" $a; done; done"#,
-        )
+        shell(serial, APPS)
     } else {
         String::new()
     };
@@ -449,7 +622,7 @@ pub fn adb_backup(
     }
 
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
-    status("Saving contacts, call history and messages…".into());
+    status("Saving contacts, calls, messages and calendar…".into());
     let data_dir = root.join("data");
     let _ = fs::create_dir_all(if pick.data { &data_dir } else { &root });
     let mut data = Vec::new();
@@ -458,6 +631,9 @@ pub fn adb_backup(
         ("Contacts", "contacts.txt", "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1"),
         ("Call history", "call_log.txt", "content query --uri content://call_log/calls --projection number:name:date:duration:type"),
         ("Messages", "sms.txt", "content query --uri content://sms --projection address:date:type:body"),
+        ("Calendar", "calendar.txt", "content query --uri content://com.android.calendar/events --projection title:dtstart:dtend:allDay:eventLocation:description:rrule"),
+        // Senders live under each message (mms/<id>/addr), so one loop on the phone reads them all.
+        ("Picture messages", "mms.txt", "content query --uri content://mms --projection _id:date:msg_box:sub; echo; echo Parts:; content query --uri content://mms/part --projection mid:ct:cl:text; echo; echo Addresses:; for id in $(content query --uri content://mms --projection _id | grep _id= | sed 's/.*_id=//'); do content query --uri content://mms/$id/addr --projection msg_id:address:type; done"),
     ]
     .into_iter()
     .filter(|_| pick.data)
@@ -468,6 +644,9 @@ pub fn adb_backup(
             if file == "contacts.txt" {
                 let _ = fs::write(data_dir.join("contacts.vcf"), vcard(&out));
                 written.push(data_dir.join("contacts.vcf"));
+            }
+            if file == "mms.txt" {
+                mms_attachments(serial, &data_dir.join("mms"));
             }
             let _ = fs::write(data_dir.join(file), out);
             written.push(data_dir.join(file));
@@ -494,6 +673,39 @@ pub fn adb_backup(
     };
     write_report(&s, &copied);
     Ok(s)
+}
+
+/// Saves the pictures, videos and other files sent in picture messages as `<part id>_<name>`.
+fn mms_attachments(serial: &str, dir: &Path) {
+    let parts = shell(
+        serial,
+        "content query --uri content://mms/part --projection _id:ct:cl",
+    );
+    for (id, name) in parts.lines().filter_map(mms_part) {
+        let _ = fs::create_dir_all(dir);
+        let mut c = adb();
+        c.args([
+            "-s",
+            serial,
+            "exec-out",
+            &format!("content read --uri content://mms/part/{id}"),
+        ]);
+        let _ = fs::write(dir.join(safe_name(&format!("{id}_{name}"))), run(c));
+    }
+}
+
+/// Reads `Row: 2 _id=3, ct=image/jpeg, cl=pic.jpg` into (3, "pic.jpg"). Message text and
+/// layout parts are skipped: their text is already in mms.txt.
+fn mms_part(row: &str) -> Option<(u64, &str)> {
+    let (id, rest) = row.split_once("_id=")?.1.split_once(", ct=")?;
+    let (ct, cl) = rest.split_once(", cl=")?;
+    if ["NULL", "text/plain", "application/smil"].contains(&ct) {
+        return None;
+    }
+    Some((
+        id.parse().ok()?,
+        if cl == "NULL" { "part" } else { cl.trim() },
+    ))
 }
 
 /// Rewritten by every backup; also tells the Restore tab when the last backup ran.
@@ -528,6 +740,10 @@ fn write_report(s: &Summary, copied: &[PathBuf]) {
             "the phone did not allow reading it"
         };
         body += &format!("{what}: {state}\n");
+    }
+    let limits = s.pick.limits();
+    if s.pick.files && !limits.is_empty() {
+        body += &format!("Files chosen: {limits}\n");
     }
     let list = |head: &str, items: Vec<String>| match items.len() {
         0 => String::new(),
@@ -1075,10 +1291,15 @@ fn saved_files(folder: &Path, volumes: Option<&str>) -> Result<(Vec<Job>, Vec<St
                         .get(&key)
                         .cloned()
                         .unwrap_or_else(|| format!("{remote_root}/{rel}"));
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_secs() as i64);
                     jobs.push(Job {
                         remote,
                         size: meta.len(),
-                        mtime: 0,
+                        mtime,
                         local: path,
                     });
                 }
@@ -1089,13 +1310,46 @@ fn saved_files(folder: &Path, volumes: Option<&str>) -> Result<(Vec<Job>, Vec<St
     Ok((jobs, missing))
 }
 
-/// Every file a backup could restore, with its size, in phone-path order.
-pub fn backup_files(folder: &Path) -> Result<Vec<(PathBuf, u64)>, String> {
+/// Every file a backup could restore, with its size and time (Unix seconds), in phone-path order.
+pub fn backup_files(folder: &Path) -> Result<Vec<(PathBuf, u64, i64)>, String> {
     Ok(saved_files(folder, None)?
         .0
         .into_iter()
-        .map(|j| (j.local, j.size))
+        .map(|j| (j.local, j.size, j.mtime))
         .collect())
+}
+
+/// Reasons a file may not be worth restoring, as bits of `flags`; also the button and row words.
+pub const FLAGS: [(u8, &str); 4] = [
+    (1, "large"),
+    (2, "duplicate"),
+    (4, "over 3 years old"),
+    (8, "empty"),
+];
+
+/// For each file: 1 over 1 GB, 2 the same name and size as an earlier file, 4 not changed in
+/// over 3 years before `now`, 8 zero bytes.
+pub fn flags(list: &[(PathBuf, u64, i64)], now: i64) -> Vec<u8> {
+    let mut seen = HashSet::new();
+    list.iter()
+        .map(|(path, size, mtime)| {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
+            let mut f = 0;
+            if *size >= 1_000_000_000 {
+                f |= 1;
+            }
+            if !seen.insert((name, *size)) {
+                f |= 2;
+            }
+            if *mtime > 0 && now - mtime > 3 * 365 * 86_400 {
+                f |= 4;
+            }
+            if *size == 0 {
+                f |= 8;
+            }
+            f
+        })
+        .collect()
 }
 
 /// Wraps a path in single quotes for the phone's shell.
@@ -1522,7 +1776,7 @@ fn safe_name(name: &str) -> String {
 }
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, String> {
+pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Result<Summary, String> {
     use mtp_rs::mtp::{ByteRange, MtpDevice};
     use std::io::Write;
 
@@ -1547,8 +1801,9 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
         } else {
             root.join(format!("storage_{}", safe_name(desc)))
         };
-        let mut stack = vec![(None, base)];
-        while let Some((parent, dir)) = stack.pop() {
+        // The folder's path inside the storage goes along, for the folder and type choices.
+        let mut stack = vec![(None, base, String::new())];
+        while let Some((parent, dir, rel)) = stack.pop() {
             if stopped() {
                 // Copied files may replace older ones whose sums no longer match.
                 update_sums(&root, &copied, &[], report);
@@ -1574,10 +1829,18 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
             };
             for obj in objects {
                 let local = dir.join(safe_name(&obj.filename));
+                let path = if rel.is_empty() {
+                    obj.filename.clone()
+                } else {
+                    format!("{rel}/{}", obj.filename)
+                };
                 if obj.is_folder() {
                     if obj.filename != ".thumbnails" {
-                        stack.push((Some(obj.handle), local));
+                        stack.push((Some(obj.handle), local, path));
                     }
+                    continue;
+                }
+                if is_junk(&format!("/sdcard/{path}")) || !pick.wants(&path, obj.size) {
                     continue;
                 }
                 files += 1;
@@ -1631,6 +1894,7 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
             files: true,
             apps: false,
             data: false,
+            ..pick.clone()
         },
     };
     write_report(&s, &copied);
@@ -1791,6 +2055,57 @@ mod tests {
         assert!(is_junk("/sdcard/Android/data/com.x/cache/a"));
         assert!(!is_junk("/sdcard/Documents/cache/notes.txt"));
         assert!(!is_junk("/sdcard/DCIM/Camera/IMG_1.jpg"));
+        assert!(is_junk("/sdcard/Movies/.cache/x.bin"));
+        let wa = "/sdcard/Android/media/com.whatsapp/WhatsApp/Media";
+        assert!(is_junk(&format!("{wa}/WhatsApp Stickers/s.webp")));
+        assert!(is_junk(&format!("{wa}/WhatsApp Images/Sent/IMG-1.jpg")));
+        assert!(!is_junk(&format!("{wa}/WhatsApp Images/IMG-2.jpg")));
+        assert!(!is_junk("/sdcard/Documents/Sent/letter.pdf"));
+    }
+
+    #[test]
+    fn flags_files_before_restore() {
+        let now = 2_000_000_000;
+        let list = [
+            (PathBuf::from("a/IMG.jpg"), 5, now),
+            (PathBuf::from("b/img.JPG"), 5, now),
+            (PathBuf::from("b/img.JPG"), 6, now - 4 * 365 * 86_400),
+            (PathBuf::from("big.mp4"), 2_000_000_000, 0),
+            (PathBuf::from("e.txt"), 0, now),
+        ];
+        assert_eq!(flags(&list, now), [0, 2, 4, 1, 8]);
+    }
+
+    #[test]
+    fn picks_folders_types_and_sizes() {
+        let files: Vec<(String, u64)> = [
+            ("DCIM/Camera/a.JPG", 10),
+            ("DCIM/b.mp4", 2000),
+            ("Music/s.mp3", 30),
+            ("notes.txt", 5),
+        ]
+        .iter()
+        .map(|(p, s)| (p.to_string(), *s))
+        .collect();
+        let mut pick = Pick::default();
+        assert_eq!(pick.limits(), "");
+        assert_eq!(tally(&files, &pick).total, 2045);
+        pick.folders = BTreeSet::from(["DCIM".to_string(), String::new()]);
+        pick.kinds[1] = false;
+        pick.max_size = Some(1000);
+        assert!(pick.wants("DCIM/x/y.png", 1000) && !pick.wants("DCIM/y.png", 1001));
+        assert!(!pick.wants("DCIM/v.mp4", 1) && !pick.wants("Music/s.mp3", 1));
+        assert!(pick.wants("notes.txt", 1));
+        let t = tally(&files, &pick);
+        // Unchosen folders still show their size, so the user sees what ticking them adds.
+        assert_eq!(t.folders["Music"], 30);
+        assert_eq!(t.folders["DCIM"], 10);
+        assert_eq!(t.kinds, [10, 0, 0, 5, 0]);
+        assert_eq!((t.total, t.count), (15, 2));
+        assert_eq!(
+            pick.limits(),
+            "Only DCIM and files not in a folder. Only photos, music, documents and other files. Skips files over 1 KB."
+        );
     }
 
     #[test]
@@ -1873,6 +2188,7 @@ mod tests {
         assert_eq!(missing, ["9999-ZZ"]);
         assert_eq!(again.len(), 2);
         assert_eq!(all.len(), 4);
+        assert!(all[0].2 > 0, "file times are read for the restore filter");
         assert!(saved_files(&root, None).is_err());
     }
 
@@ -1915,15 +2231,20 @@ mod tests {
             data: vec![("Contacts", true), ("Messages", false)],
             full: true,
             pick: Pick {
-                files: true,
                 apps: false,
-                data: true,
+                folders: BTreeSet::from(["DCIM".to_string()]),
+                max_size: Some(1_000_000_000),
+                ..Pick::default()
             },
         };
         write_report(&s, &[root.join("files").join("a.jpg")]);
         let text = fs::read_to_string(root.join(REPORT)).unwrap();
         fs::remove_dir_all(&root).unwrap();
         assert!(text.contains("Backup of Pixel 8, "));
+        assert!(
+            text.contains("Files chosen: Only DCIM. Skips files over 1.0 GB."),
+            "{text}"
+        );
         assert!(text.contains("Copied 1 file this time. The backup holds 2 files."));
         assert!(text.contains("Messages: the phone did not allow reading it"));
         assert!(text.contains("Could not copy (1):\n/sdcard/b.jpg"));
@@ -1977,9 +2298,10 @@ mod tests {
             files: true,
             apps: true,
             data: true,
+            ..Pick::default()
         };
         let quiet = |_: Msg| {};
-        let first = adb_backup(&serial, "E2E", &dest, all, &quiet).unwrap();
+        let first = adb_backup(&serial, "E2E", &dest, all.clone(), &quiet).unwrap();
         println!(
             "first: files {} copied {} errors {:?} data {:?}",
             first.files, first.copied, first.errors, first.data
@@ -2031,12 +2353,57 @@ mod tests {
         let vcf = fs::read_to_string(first.root.join("data").join("contacts.vcf")).unwrap();
         println!("{vcf}");
         assert!(vcf.contains("TEL:+1 555 0100"));
+        let data = first.root.join("data");
+        let read = |name: &str| fs::read_to_string(data.join(name)).unwrap_or_default();
+        assert!(read("calendar.txt").contains("title=E2E dentist"));
+        let mms = read("mms.txt");
+        assert!(
+            mms.contains("text=Hello from MMS") && mms.contains("address=+15550100"),
+            "{mms}"
+        );
+        let pic = fs::read_dir(data.join("mms"))
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().ends_with("_e2e.jpg"))
+            .expect("the picture of the picture message");
+        assert_eq!(fs::read_to_string(pic.path()).unwrap(), "JPEGDATA\n");
+        let wa = e2e.join("WhatsApp/Media/WhatsApp Images");
+        assert!(wa.join("IMG-received.jpg").exists());
+        assert!(!wa.join("Sent").exists() && !e2e.join(".cache").exists());
+        assert!(!e2e.join("WhatsApp/Media/WhatsApp Stickers").exists());
 
         let sums = fs::read_to_string(first.root.join(CHECKSUMS)).unwrap();
         assert!(sums.contains("  files/E2E/Docs/_CON.txt\n"), "{sums}");
         assert!(sums.contains("  data/contacts.vcf\n"), "{sums}");
         assert!(!sums.contains(REPORT));
-        let again = adb_backup(&serial, "E2E", &dest, all, &quiet).unwrap();
+
+        // Sizes before a backup see the same files, without the junk.
+        let (sizes, apps) = measure(&serial);
+        assert!(apps > 0);
+        assert!(sizes.contains(&("E2E/Camera/big.bin".into(), 20 << 20)));
+        assert!(!sizes.iter().any(|(p, _)| p.starts_with("E2E/.cache/")));
+
+        // Only one folder, only documents, nothing over 1 MB.
+        let some = Pick {
+            apps: false,
+            data: false,
+            folders: BTreeSet::from(["E2E".to_string()]),
+            kinds: [false, false, false, true, false],
+            max_size: Some(1_000_000),
+            ..Pick::default()
+        };
+        let dest2 = dest.join("some");
+        let part = adb_backup(&serial, "E2E", &dest2, some, &quiet).unwrap();
+        let held = backup_files(&part.root).unwrap();
+        assert!(held.iter().all(|(p, ..)| {
+            p.starts_with(part.root.join("files").join("E2E"))
+                && p.extension().is_some_and(|e| e == "txt")
+        }));
+        assert_eq!(held.len(), part.files);
+        assert!(part.root.join("files/E2E/Docs/a_b.txt").exists());
+        let _ = fs::remove_dir_all(&dest2);
+
+        let again = adb_backup(&serial, "E2E", &dest, all.clone(), &quiet).unwrap();
         assert_eq!(
             (again.copied, again.files, again.errors.len()),
             (0, first.files, 0)
@@ -2117,6 +2484,7 @@ mod tests {
             files: true,
             apps: false,
             data: false,
+            ..Pick::default()
         };
         let quiet = |_: Msg| {};
         // Interrupt after the first folder is copied, not after a fixed time: a fast phone
@@ -2133,7 +2501,13 @@ mod tests {
             }
         }
         let stop = || STOP.store(true, Ordering::Relaxed);
-        let r = adb_backup(&serial, "E2E", &dest, pick, &after_first_folder(stop));
+        let r = adb_backup(
+            &serial,
+            "E2E",
+            &dest,
+            pick.clone(),
+            &after_first_folder(stop),
+        );
         assert_eq!(r.err().as_deref(), Some(STOPPED));
         // The phone list keeps working after a stopped job.
         assert_eq!(adb_count(), 1, "still listed once after Stop");
@@ -2143,16 +2517,30 @@ mod tests {
             let _ = adb().args(["disconnect", tcp]).output();
         };
         let _ = fs::remove_dir_all(&dest);
-        let r = adb_backup(tcp, "E2E", &dest, pick, &after_first_folder(unplug));
+        let r = adb_backup(tcp, "E2E", &dest, pick.clone(), &after_first_folder(unplug));
         assert_eq!(r.err().as_deref(), Some(DISCONNECTED));
         // Interrupted copies are never mistaken for finished ones.
-        let again = adb_backup(&serial, "E2E", &dest, pick, &quiet).unwrap();
+        let again = adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
         assert!(
             again.errors.is_empty() && again.copied > 0,
             "{:?}",
             again.errors
         );
         let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn reads_mms_parts() {
+        assert_eq!(
+            mms_part("Row: 2 _id=3, ct=image/jpeg, cl=pic.jpg"),
+            Some((3, "pic.jpg"))
+        );
+        assert_eq!(
+            mms_part("Row: 3 _id=4, ct=video/mp4, cl=NULL"),
+            Some((4, "part"))
+        );
+        assert_eq!(mms_part("Row: 1 _id=2, ct=text/plain, cl=NULL"), None);
+        assert_eq!(mms_part("Row: 0 _id=1, ct=NULL, cl=NULL"), None);
     }
 
     #[test]

@@ -38,7 +38,6 @@ Ordered from cheapest to largest. Each feature, and each nice-to-have inside it,
 
 | # | Feature | Also includes | Size |
 |---|---|---|---|
-| V4 | Back up the calendar and MMS messages. | Pick single folders (for example only DCIM); skip junk such as cache, stickers and sent-media copies; show the size of each choice before starting; skip files over a chosen size. | Small |
 | V5 | Export contacts and messages as CSV, the calendar as ICS, and messages as a self-contained HTML page that opens offline. | Search messages inside a backup; print or save messages as PDF; HEIC to JPG keeping date and location; sort photos into year and month folders. | Medium |
 | V6 | Wi-Fi pairing by QR code instead of typing the pairing code. | USB debugging steps per brand (Samsung, Xiaomi and others); ignore USB devices that are not phones; a "Phone not showing up?" helper. | Medium |
 | V7 | Phone to phone: back up one phone and restore it to another in one flow. | Backup list with size and date; delete (asks first), rename and browse a backup in the app. | Medium |

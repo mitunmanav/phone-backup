@@ -8,10 +8,10 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 
 ## Features
 
-- Back up photos, videos, and files from phone storage and SD cards.
+- Back up photos, videos, and files from phone storage and SD cards. Choose single folders (for example only DCIM), types (photos, videos, music, documents), and skip files over a size, with the size of each choice shown first. Caches, picture previews, WhatsApp stickers, and WhatsApp's copies of sent media are skipped.
 - Save installed apps as APK files. App logins and private app data are not included.
-- Back up contacts, call history, and messages over USB on phones that allow it. Contacts are also saved as `contacts.vcf`.
-- Restore photos and files, all of them or only the ones you pick from a list with previews, and reinstall apps from a backup.
+- Back up contacts, call history, messages, picture messages (MMS) with their attachments, and the calendar over USB on phones that allow it. Contacts are also saved as `contacts.vcf`.
+- Restore photos and files, all of them or only the ones you pick from a list with previews, and reinstall apps from a backup. The list marks large files, duplicates, files over 3 years old, and empty files, so you can untick them in one click.
 - Keep a separate folder for each phone; later backups copy only new or changed files.
 - Save a report after every backup and restore: what was copied and what failed. Optionally play a sound when a job ends.
 - Save a SHA-256 checksum of every file (`checksums.sha256`, which `sha256sum -c` also reads), and check a backup with **Verify backup** on the Restore page.
@@ -26,7 +26,7 @@ Download `PhoneBackup-<version>-windows-x64.exe` from [GitHub Releases](https://
 ## Connect a phone
 
 - **MTP:** Unlock the phone, connect it by USB, then choose **File transfer** in the phone's USB notification. This supports photos and files.
-- **USB debugging:** Enable USB debugging in Developer options. This is needed for apps, contacts, call history, and messages. Accept the authorization prompt on the phone.
+- **USB debugging:** Enable USB debugging in Developer options. This is needed for apps, contacts, call history, messages, the calendar, and choosing folders by size. Accept the authorization prompt on the phone.
 - **Wi-Fi:** Pair through Android's Wireless debugging screen, then connect using the address shown by the phone.
 
 Some Android versions and manufacturers restrict access to personal data over ADB. The app reports when a selected data type is unavailable.
