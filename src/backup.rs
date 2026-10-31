@@ -2375,13 +2375,7 @@ mod tests {
         let sums = fs::read_to_string(first.root.join(CHECKSUMS)).unwrap();
         assert!(sums.contains("  files/E2E/Docs/_CON.txt\n"), "{sums}");
         assert!(sums.contains("  data/contacts.vcf\n"), "{sums}");
-        assert!(
-            !sums.contains(&format!(
-                "  {REPORT}
-"
-            )),
-            "{sums}"
-        );
+        assert!(!sums.contains(&format!("  {REPORT}\n")), "{sums}");
 
         // Sizes before a backup see the same files, without the junk.
         let (sizes, apps) = measure(&serial);
