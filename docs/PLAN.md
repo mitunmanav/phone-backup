@@ -38,10 +38,9 @@ Ordered from cheapest to largest. Each feature, and each nice-to-have inside it,
 
 | # | Feature | Also includes | Size |
 |---|---|---|---|
-| V5 | Export contacts and messages as CSV, the calendar as ICS, and messages as a self-contained HTML page that opens offline. | Search messages inside a backup; print or save messages as PDF; HEIC to JPG keeping date and location; sort photos into year and month folders. | Medium |
 | V6 | Wi-Fi pairing by QR code instead of typing the pairing code. | USB debugging steps per brand (Samsung, Xiaomi and others); ignore USB devices that are not phones; a "Phone not showing up?" helper. | Medium |
 | V7 | Phone to phone: back up one phone and restore it to another in one flow. | Backup list with size and date; delete (asks first), rename and browse a backup in the app. | Medium |
-| V8 | Tools: HEIC to JPG, duplicate finder, launch scrcpy if it is installed. | Merge duplicate contacts with undo. | Medium |
+| V8 | Tools: HEIC to JPG keeping date and location, duplicate finder, launch scrcpy if it is installed. | Merge duplicate contacts with undo. | Medium |
 | V9 | Optional password-protected backups (AES-256-GCM, Argon2id key). | A plain list of what the app never does; keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. | Medium |
 | V10 | Read WhatsApp backups with the user's own key: view, search and export. | | Large |
 | V11 | Restore contacts, messages, call history and calendar to a phone. Messages and call history need a small companion Android app, so this may slip to v1.5. | | Large |

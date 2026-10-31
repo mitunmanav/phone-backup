@@ -11,6 +11,7 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Back up photos, videos, and files from phone storage and SD cards. Choose single folders (for example only DCIM), types (photos, videos, music, documents), and skip files over a size, with the size of each choice shown first. Caches, picture previews, WhatsApp stickers, and WhatsApp's copies of sent media are skipped.
 - Save installed apps as APK files. App logins and private app data are not included.
 - Back up contacts, call history, messages, picture messages (MMS) with their attachments, and the calendar over USB on phones that allow it. Contacts are also saved as `contacts.vcf`.
+- Export a backup's contacts, call history and messages as CSV and as pages that open offline and print (messages also as text, with a search box on the page), the calendar as an `.ics` file, and its photos and videos sorted into year and month folders. Exports go to the backup's `exports` folder; the backup itself is not changed.
 - Restore photos and files, all of them or only the ones you pick from a list with previews, and reinstall apps from a backup. The list marks large files, duplicates, files over 3 years old, and empty files, so you can untick them in one click.
 - Keep a separate folder for each phone; later backups copy only new or changed files.
 - Save a report after every backup and restore: what was copied and what failed. Optionally play a sound when a job ends.

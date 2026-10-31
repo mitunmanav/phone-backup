@@ -2,6 +2,7 @@
 #![windows_subsystem = "windows"]
 
 mod backup;
+mod export;
 
 use backup::{FLAGS, KINDS, Msg, Phone, Pick, Summary, Tally, count, files, or_list, size};
 use eframe::egui::{
@@ -516,6 +517,10 @@ struct App {
     /// The backup last checked and what the check found.
     verified: Option<(PathBuf, Result<String, String>)>,
     restore_msg: Option<Result<String, String>>,
+    /// The busy job is an export of the chosen backup.
+    exporting: bool,
+    /// What the last export made, and its folder for the Open folder button.
+    export_msg: Option<(PathBuf, Result<String, String>)>,
     /// The running restore is only a check; holds what it checks.
     checking: Option<Plan>,
     /// The last check and what it found. Restore now is offered only while the choices still match.
@@ -696,6 +701,8 @@ impl App {
             verifying: false,
             verified: None,
             restore_msg: None,
+            exporting: false,
+            export_msg: None,
             checking: None,
             preview: None,
             backups: Vec::new(),
@@ -766,6 +773,7 @@ impl App {
         backup::STOP.store(false, Ordering::Relaxed);
         self.restoring = false;
         self.verifying = false;
+        self.exporting = false;
         self.result = None;
         self.status = "Starting…".into();
         self.now.clear();
@@ -826,6 +834,7 @@ impl App {
         backup::STOP.store(false, Ordering::Relaxed);
         self.restoring = true;
         self.verifying = false;
+        self.exporting = false;
         self.restore_msg = None;
         self.preview = None;
         self.checking = check.then(|| plan.clone());
@@ -884,6 +893,7 @@ impl App {
         self.restoring = false;
         self.verifying = true;
         self.verified = None;
+        self.exporting = false;
         self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
@@ -897,6 +907,34 @@ impl App {
             backup::keep_awake(false);
             busy.store(false, Ordering::Relaxed);
             report(Msg::Verified(folder, result));
+        });
+    }
+
+    /// Exports the backup's contacts, calls, messages, calendar and photos to its exports folder,
+    /// then opens that folder.
+    fn export(&mut self, ctx: &egui::Context, folder: PathBuf) {
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
+        busy.store(true, Ordering::Relaxed);
+        backup::STOP.store(false, Ordering::Relaxed);
+        self.restoring = false;
+        self.verifying = false;
+        self.exporting = true;
+        self.export_msg = None;
+        self.status = "Starting…".into();
+        self.now.clear();
+        self.fraction = None;
+        thread::spawn(move || {
+            let report = |m: Msg| {
+                let _ = tx.send(m);
+                ctx.request_repaint();
+            };
+            let result = export::export(&folder, &report);
+            let out = folder.join(export::EXPORTS);
+            if result.is_ok() {
+                let _ = Command::new("explorer").arg(&out).spawn();
+            }
+            busy.store(false, Ordering::Relaxed);
+            report(Msg::Exported(out, result));
         });
     }
 
@@ -2178,6 +2216,16 @@ impl App {
                     {
                         self.verify(ui.ctx(), path);
                     }
+                    let chosen = self.chosen.clone().filter(|c| self.backups.iter().any(|b| &b.path == c));
+                    if ui
+                        .add_enabled(chosen.is_some(), egui::Button::new("Export"))
+                        .on_hover_text("Saves contacts, calls and messages as files you can open, print or import, and sorts photos into year and month folders. The backup itself is not changed.")
+                        .on_disabled_hover_text("Choose a backup first")
+                        .clicked()
+                        && let Some(folder) = chosen
+                    {
+                        self.export(ui.ctx(), folder);
+                    }
                 });
             });
         });
@@ -2250,6 +2298,7 @@ impl App {
         let title = match &phone {
             _ if busy && self.verifying => "Checking the backup…".into(),
             _ if busy && self.checking.is_some() => "Checking…".into(),
+            _ if busy && self.exporting => "Exporting…".into(),
             _ if busy => "Restoring…".into(),
             None => "Connect the phone with USB debugging on to restore to it".into(),
             _ if path.is_none() => "Choose a backup to restore".into(),
@@ -2260,6 +2309,8 @@ impl App {
             title,
             note: if busy && self.verifying {
                 "Nothing in the backup or on the phone changes."
+            } else if busy && self.exporting {
+                "The backup itself is not changed."
             } else if busy {
                 "Keep the phone plugged in and unlocked."
             } else if plan.is_some() {
@@ -2317,6 +2368,22 @@ impl App {
                 };
                 ui.label(RichText::new(title).font(semibold(16.0)).color(color));
                 ui.label(text.as_str());
+            });
+        }
+        if let Some((folder, r)) = &self.export_msg {
+            ui.add_space(16.0);
+            result_box(t).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let (title, color, text) = match r {
+                    Ok(m) => ("Export finished", t.ink, m),
+                    Err(e) => ("Export stopped", t.error, e),
+                };
+                ui.label(RichText::new(title).font(semibold(16.0)).color(color));
+                ui.label(text.as_str());
+                ui.add_space(4.0);
+                if ui.button("Open folder").clicked() {
+                    let _ = Command::new("explorer").arg(folder).spawn();
+                }
             });
         }
         match &self.restore_msg {
@@ -2389,6 +2456,7 @@ impl App {
             battery,
         };
         self.restore_msg = None;
+        self.export_msg = None;
         self.result = None;
         self.wifi_msg = None;
         self.verified = None;
@@ -2420,6 +2488,17 @@ impl App {
                 self.verified = Some((
                     self.backups[0].path.clone(),
                     Err("1,284 files are changed, for example files/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4, files/DCIM/Camera/PXL_20240817_183455123.NIGHT.jpg, files/Download/bartholomew.fitzgerald@northwind-industries-holdings.example.com_invoice.pdf.\n3 files are missing, for example data/sms.txt, apps/com.whatsapp/base.apk, files/ünïcødé 日本.txt.\nBack up again to copy them from the phone, if it still has them.".into()),
+                ));
+                let exports = self
+                    .dest
+                    .join("Redmi Note 13 Pro+ 5G_R5CT0000")
+                    .join("exports");
+                self.export_msg = Some((
+                    exports.clone(),
+                    Ok(format!(
+                        "Exported contacts, call history, messages, calendar, photos and videos to {}.",
+                        exports.display()
+                    )),
                 ));
                 self.restore_msg = Some(Err("Copied 1 file back to the phone. 1,284 files were already there. 3 files could not be copied, for example /sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4, /sdcard/DCIM/Camera/PXL_20240817_183455123.NIGHT.jpg, /sdcard/Download/bartholomew.fitzgerald@northwind-industries-holdings.example.com_invoice.pdf. Restore again to retry.\nThe phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.".into()));
                 self.result = Some(Ok(vec![Summary {
@@ -2565,6 +2644,10 @@ impl eframe::App for App {
                     self.sizes = Some((serial, Some((list, apps))));
                     self.tally = None;
                 }
+                Msg::Exported(folder, r) => {
+                    self.export_msg = Some((folder, r));
+                    self.finished(ui.ctx());
+                }
                 Msg::Done(r) => {
                     self.result = Some(r);
                     self.finished(ui.ctx());
@@ -2592,6 +2675,9 @@ impl eframe::App for App {
                 if self.verifying {
                     ui.label(RichText::new("Stop checking the backup?").font(semibold(16.0)));
                     ui.label("The backup is not changed. You can check it again later.");
+                } else if self.exporting {
+                    ui.label(RichText::new("Stop exporting?").font(semibold(16.0)));
+                    ui.label("Files exported so far are kept. The backup itself is not changed.");
                 } else if self.restoring {
                     ui.label(RichText::new("Stop restoring?").font(semibold(16.0)));
                     ui.label("Everything restored so far stays on the phone.");
@@ -2607,6 +2693,8 @@ impl eframe::App for App {
                     }
                     let keep = if self.verifying {
                         "Keep checking"
+                    } else if self.exporting {
+                        "Keep exporting"
                     } else if self.restoring {
                         "Keep restoring"
                     } else {

@@ -35,6 +35,8 @@ pub enum Msg {
     Restored(Result<String, String>),
     /// The backup folder checked and what the check found.
     Verified(PathBuf, Result<String, String>),
+    /// An export ended: its folder, and what it made or why it stopped.
+    Exported(PathBuf, Result<String, String>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -1014,56 +1016,12 @@ fn unclash(jobs: &mut [Job]) {
 /// Turns `content query` rows of contact_id, mimetype, display_name, data1 into a vCard 3.0
 /// file that Google Contacts and phones can import. Only names, phone numbers and emails.
 fn vcard(rows: &str) -> String {
-    let mut contacts: BTreeMap<u64, (String, Vec<String>)> = BTreeMap::new();
-    for line in rows.lines() {
-        // Row: 3 contact_id=12, mimetype=vnd.android.cursor.item/phone_v2, display_name=Ann, data1=+1 555
-        let Some(rest) = line
-            .strip_prefix("Row: ")
-            .and_then(|r| r.split_once(" contact_id="))
-            .map(|r| r.1)
-        else {
-            continue;
-        };
-        let Some((id, rest)) = rest.split_once(", mimetype=") else {
-            continue;
-        };
-        let Some((mime, rest)) = rest.split_once(", display_name=") else {
-            continue;
-        };
-        let Some((name, value)) = rest.split_once(", data1=") else {
-            continue;
-        };
-        let Ok(id) = id.parse() else { continue };
-        let field = match mime {
-            "vnd.android.cursor.item/phone_v2" => "TEL",
-            "vnd.android.cursor.item/email_v2" => "EMAIL",
-            _ => continue,
-        };
-        if value == "NULL" || value.is_empty() {
-            continue;
-        }
-        let entry = contacts.entry(id).or_insert_with(|| {
-            (
-                if name == "NULL" {
-                    String::new()
-                } else {
-                    name.to_string()
-                },
-                Vec::new(),
-            )
-        });
-        let line = format!("{field}:{}", vcard_escape(value));
-        if !entry.1.contains(&line) {
-            entry.1.push(line);
-        }
-    }
     let mut out = String::new();
-    for (name, lines) in contacts.values() {
-        let name = vcard_escape(name);
+    for (name, fields) in crate::export::people(rows) {
+        let name = vcard_escape(&name);
         out += &format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:{name}\r\nN:;{name};;;\r\n");
-        for l in lines {
-            out += l;
-            out += "\r\n";
+        for (field, value) in fields {
+            out += &format!("{field}:{}\r\n", vcard_escape(&value));
         }
         out += "END:VCARD\r\n";
     }
