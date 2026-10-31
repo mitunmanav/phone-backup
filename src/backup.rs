@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 /// Set by the Stop button; the running adb command is killed and the backup ends.
@@ -277,6 +277,7 @@ pub fn detect() -> Vec<Phone> {
     mtp_rs::mtp::MtpDevice::list_devices()
         .unwrap_or_default()
         .into_iter()
+        .filter(|d| !NOT_PHONES.contains(&d.vendor_id))
         .map(|d| Phone::Mtp {
             name: d
                 .product
@@ -285,6 +286,19 @@ pub fn detect() -> Vec<Phone> {
         })
         .collect()
 }
+
+/// USB makers of cameras and watches, which speak the same file protocol as phones.
+// shortcut: a list of makers that sell no Android phones; add one when its device shows up as a phone.
+const NOT_PHONES: [u16; 8] = [
+    0x04a9, // Canon
+    0x04b0, // Nikon
+    0x04cb, // Fujifilm
+    0x054c, // Sony cameras (Xperia phones use 0x0fce)
+    0x07b4, // Olympus, OM System
+    0x091e, // Garmin
+    0x25fb, // Pentax, Ricoh
+    0x2672, // GoPro
+];
 
 fn parse_adb_devices(text: &str) -> Vec<Phone> {
     let mut phones = Vec::new();
@@ -330,12 +344,99 @@ fn low_battery(dumpsys: &str) -> Option<u8> {
     level.filter(|l| *l < 20)
 }
 
+const NO_ADB: &str = "This computer does not have adb yet. Download Platform Tools and put adb.exe next to this app.";
+
 /// Runs `adb pair` or `adb connect` and returns what adb said.
 pub fn wifi(args: &[&str]) -> Result<String, String> {
     match adb().args(args).output() {
-        Ok(o) => wifi_result(args[0], &format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
-        Err(_) => Err("This computer does not have adb yet. Download Platform Tools and put adb.exe next to this app.".into()),
+        Ok(o) => wifi_result(
+            args[0],
+            &format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            ),
+        ),
+        Err(_) => Err(NO_ADB.into()),
     }
+}
+
+/// The QR code being waited for; bump it to stop that wait.
+pub static QR_WAIT: AtomicUsize = AtomicUsize::new(0);
+
+/// A fresh service name and password, and the QR text Android's "Pair device with QR code"
+/// reads: `WIFI:T:ADB;S:<name>;P:<password>;;`.
+pub fn qr_code() -> (String, String, String) {
+    use std::hash::BuildHasher;
+    // Letters and digits only, so nothing needs escaping in the QR text; no 0/O or 1/l.
+    let word = |n: usize| {
+        let mut r =
+            std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now());
+        (0..n)
+            .map(|_| {
+                let c = b"abcdefghijkmnpqrstuvwxyz23456789"[(r % 32) as usize];
+                r /= 32;
+                c as char
+            })
+            .collect::<String>()
+    };
+    let (name, password) = (format!("phone-backup-{}", word(6)), word(10));
+    let text = format!("WIFI:T:ADB;S:{name};P:{password};;");
+    (name, password, text)
+}
+
+/// Waits for the phone that scanned the QR code to show up on the network, pairs with it and
+/// connects. None when the wait was stopped. `id` is the QR_WAIT value of this code.
+pub fn qr_pair(name: &str, password: &str, id: usize) -> Option<Result<String, String>> {
+    if !adb_installed() {
+        return Some(Err(NO_ADB.into()));
+    }
+    // adb started with mDNS off answers "ERROR: mdns daemon unavailable"; it would never see the phone.
+    let check = adb().args(["mdns", "check"]).output();
+    if check.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("unavailable")) {
+        return Some(Err("adb on this computer cannot look for phones on the Wi-Fi. Pair with a code below instead.".into()));
+    }
+    // Only the wait for the scan can be stopped; once paired, the connect is seen through.
+    let find = |service: &str, secs: u64, stoppable: bool, want: &dyn Fn(&str, &str) -> bool| {
+        let end = std::time::Instant::now() + Duration::from_secs(secs);
+        while std::time::Instant::now() < end
+            && (!stoppable || QR_WAIT.load(Ordering::Relaxed) == id)
+        {
+            let out = adb().args(["mdns", "services"]).output().ok()?;
+            if let Some(addr) = find_service(&String::from_utf8_lossy(&out.stdout), service, want) {
+                return Some(addr);
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        None
+    };
+    let Some(pair) = find("_adb-tls-pairing", 120, true, &|n, _| n == name) else {
+        return (QR_WAIT.load(Ordering::Relaxed) == id).then(|| Err("No phone scanned the code in 2 minutes. Check that both are on the same Wi-Fi, then show a new code or pair with a code below.".into()));
+    };
+    if wifi(&["pair", &pair, password]).is_err() {
+        return Some(Err(
+            "The phone scanned the code but did not pair. Show a new code and scan it again."
+                .into(),
+        ));
+    }
+    // A paired phone announces its connect address on the same IP; adb may also connect by itself.
+    let ip = format!("{}:", pair.rsplit_once(':').map_or("", |(ip, _)| ip));
+    let connect = find("_adb-tls-connect", 20, false, &|_, a| a.starts_with(&ip));
+    Some(match connect {
+        Some(addr) => wifi(&["connect", &addr]),
+        None => Ok("Paired. Now connect with step 2.".into()),
+    })
+}
+
+/// The address of the first `adb mdns services` line for `service` whose name and address pass `want`.
+/// Lines hold a name, a service type and an address, like
+/// `phone-backup-abc _adb-tls-pairing._tcp 192.168.1.5:37145`, split by tabs.
+fn find_service(list: &str, service: &str, want: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+    list.lines().find_map(|line| {
+        let mut w = line.split_whitespace();
+        let (name, kind, addr) = (w.next()?, w.next()?, w.next()?);
+        (kind.starts_with(service) && want(name, addr)).then(|| addr.to_string())
+    })
 }
 
 /// Turns what `adb pair` or `adb connect` printed into plain words. `adb connect` exits 0
@@ -1892,6 +1993,30 @@ mod tests {
         let auth =
             wifi_result("connect", "failed to authenticate to 192.168.1.5:41235").unwrap_err();
         assert!(auth.contains("Pair it first"));
+    }
+
+    #[test]
+    fn finds_qr_pairing_services() {
+        let (name, password, text) = qr_code();
+        assert_eq!(text, format!("WIFI:T:ADB;S:{name};P:{password};;"));
+        assert!(password.len() == 10 && password.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(qr_code().1, password);
+        // Newer adb drops the trailing dot after the service type.
+        let list = "List of discovered mdns services\n\
+            adb-R58M-AbCd\t_adb-tls-connect._tcp\t192.168.1.9:40001\n\
+            phone-backup-other\t_adb-tls-pairing._tcp.\t192.168.1.9:37001\n\
+            phone-backup-abc\t_adb-tls-pairing._tcp.\t192.168.1.5:37145\n\
+            adb-R5CT-XyZw\t_adb-tls-connect._tcp\t192.168.1.5:41235\n";
+        let pair = find_service(list, "_adb-tls-pairing", &|n, _| n == "phone-backup-abc");
+        assert_eq!(pair.as_deref(), Some("192.168.1.5:37145"));
+        let connect = find_service(list, "_adb-tls-connect", &|_, a| {
+            a.starts_with("192.168.1.5:")
+        });
+        assert_eq!(connect.as_deref(), Some("192.168.1.5:41235"));
+        assert_eq!(
+            find_service(list, "_adb-tls-pairing", &|n, _| n == "x"),
+            None
+        );
     }
 
     #[test]

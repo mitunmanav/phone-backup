@@ -13,6 +13,7 @@ rfd = "0.17.2"
 tokio = { version = "1", features = ["rt", "macros"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 sha2 = "0.10"
+qrcodegen = "1.8.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_SystemInformation", "Win32_System_Power", "Win32_System_Time", "Win32_Foundation"] }
