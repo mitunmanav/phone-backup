@@ -120,7 +120,7 @@ The current layout stays; new files are added beside it.
     calendar.ics              new: for other apps
     calendar.json             new: for exact restore
   manifest.json               new: app version, device info, counts, SHA-256 per data file
-  errors.log                  existing
+  report.txt                  existing
 ```
 
 - Human formats (`.vcf`, `.ics`) for people; `.json` for exact restore. Restore prefers `.json`.
