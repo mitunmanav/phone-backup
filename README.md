@@ -16,6 +16,7 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Copy one phone to another in one go: the app backs up the first phone, shows what will change, optionally backs up the second phone first, then restores to it. Both phones need USB debugging.
 - See each backup's size and date; open, rename or delete it (deleting moves it to the Recycle Bin), or copy its files into another backup without replacing anything.
 - Keep a separate folder for each phone; later backups copy only new or changed files.
+- Tools for a backup: find duplicate files, save HEIC photos as JPG with their date and location, merge duplicate contacts into a new file, and delete chosen files from the phone once their backup copy matches. If [scrcpy](https://github.com/Genymobile/scrcpy) is next to the app or on PATH, open the phone's screen from the Tools page.
 - Save a report after every backup and restore: what was copied and what failed. Optionally play a sound when a job ends.
 - Save a SHA-256 checksum of every file (`checksums.sha256`, which `sha256sum -c` also reads), and check a backup with **Verify backup** on the Restore page.
 - Warn when the phone's battery is under 20% and not charging, keep the computer awake while a job runs, and show the time left.

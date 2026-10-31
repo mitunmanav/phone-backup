@@ -3,6 +3,7 @@
 
 mod backup;
 mod export;
+mod tools;
 
 use backup::{FLAGS, KINDS, Msg, Phone, Pick, Summary, Tally, count, files, or_list, size};
 use eframe::egui::{
@@ -367,6 +368,8 @@ struct Picker {
     asked: Vec<PathBuf>,
     ask: mpsc::Sender<Vec<PathBuf>>,
     rx: mpsc::Receiver<Found>,
+    /// Choosing files to delete from the phone, not to restore.
+    delete: bool,
 }
 
 /// An 80 px square preview of a picture, turned the way the camera held it.
@@ -395,6 +398,7 @@ enum Tab {
     Backup,
     Restore,
     Transfer,
+    Tools,
     Settings,
 }
 
@@ -687,6 +691,22 @@ struct App {
     ask: Option<Ask>,
     /// What the last copy between backups or delete said.
     tidy_msg: Option<Result<String, String>>,
+    tool_tx: mpsc::Sender<tools::Done>,
+    tool_rx: mpsc::Receiver<tools::Done>,
+    /// The Tools panel whose job is running, and what it says.
+    tool_busy: Option<&'static str>,
+    tool_status: String,
+    /// What the last tool said, and in which panel.
+    tool_msg: Option<(&'static str, Result<String, String>)>,
+    /// Groups of identical files, and the rows of the list showing them.
+    dupes: Option<(tools::Groups, Rows)>,
+    /// Copies ticked for deleting; the first of each group starts unticked.
+    ticked: HashSet<PathBuf>,
+    /// Files chosen to delete from the phone: (backup folder, files).
+    free_pick: Option<(PathBuf, HashSet<PathBuf>)>,
+    /// A delete waiting for the user's yes.
+    confirm: Option<Confirm>,
+    scrcpy: Option<PathBuf>,
     /// Debug builds only: which test data is shown instead of the real phones and backups.
     fixture: Fixture,
     /// Debug builds only: scroll position to open at, for screenshots.
@@ -697,6 +717,17 @@ struct App {
 
 /// A restore's choices: phone serial, backup folder, files, apps, and the chosen files (None: all).
 type Plan = (String, PathBuf, bool, bool, Option<Arc<HashSet<PathBuf>>>);
+
+/// Rows of the duplicate list: (group, file in it, or None for the group's heading).
+type Rows = Vec<(usize, Option<usize>)>;
+
+/// A delete that asks first.
+enum Confirm {
+    /// Copies in the backup on this computer.
+    Copies(Vec<(PathBuf, u64)>),
+    /// Files on the phone (serial) whose backup copy matches, and how many chosen ones do not.
+    Phone(String, Vec<(String, u64)>, usize),
+}
 
 /// Test data for checking the layout against realistic worst cases. Never shown in release builds.
 #[derive(Clone, Copy, PartialEq)]
@@ -767,6 +798,7 @@ impl App {
         ctx.set_visuals_of(egui::Theme::Light, visuals(false));
         ctx.set_visuals_of(egui::Theme::Dark, visuals(true));
         let (tx, rx) = mpsc::channel();
+        let (tool_tx, tool_rx) = mpsc::channel();
         let busy = Arc::new(AtomicBool::new(false));
         {
             // Looks for phones every 2 seconds, except while a backup is using the phone.
@@ -871,11 +903,21 @@ impl App {
             source: None,
             ask: None,
             tidy_msg: None,
+            tool_tx,
+            tool_rx,
+            tool_busy: None,
+            tool_status: String::new(),
+            tool_msg: None,
+            dupes: None,
+            ticked: HashSet::new(),
+            free_pick: None,
+            confirm: None,
+            scrcpy: None,
             fixture: Fixture::Real,
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [settings] [delete|rename|copy] [light|dark] [wifi] [busy]
+        // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [delete|rename|copy] [light|dark] [wifi] [busy]
         // [choose] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>] [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; pick= opens the file picker on a real folder; shot= saves a
         // picture of the window and closes.
@@ -907,6 +949,7 @@ impl App {
                             _ => Ask::Copy(b, into),
                         });
                     }
+                    "tools" => app.tab = Tab::Tools,
                     "settings" => app.tab = Tab::Settings,
                     "light" => ctx.set_theme(egui::Theme::Light),
                     "dark" => ctx.set_theme(egui::Theme::Dark),
@@ -929,7 +972,7 @@ impl App {
                     _ if word.starts_with("zoom=") => {
                         ctx.set_zoom_factor(word[5..].parse().unwrap_or(1.0))
                     }
-                    _ if word.starts_with("pick=") => app.open_picker(ctx, word[5..].into()),
+                    _ if word.starts_with("pick=") => app.open_picker(ctx, word[5..].into(), false),
                     _ if word.starts_with("shot=") => app.shot = Some(word[5..].into()),
                     _ if word.starts_with("size=") => {
                         if let Some((w, h)) = word[5..].split_once('x')
@@ -1191,7 +1234,7 @@ impl App {
     }
 
     /// Opens the file picker; a worker lists the backup, then makes previews of the rows in view.
-    fn open_picker(&mut self, ctx: &egui::Context, folder: PathBuf) {
+    fn open_picker(&mut self, ctx: &egui::Context, folder: PathBuf, delete: bool) {
         let (ask, asks) = mpsc::channel::<Vec<PathBuf>>();
         let (tx, rx) = mpsc::channel();
         let (ctx, dir) = (ctx.clone(), folder.clone());
@@ -1232,6 +1275,7 @@ impl App {
             asked: Vec::new(),
             ask,
             rx,
+            delete,
         });
     }
 
@@ -1241,8 +1285,15 @@ impl App {
             match found {
                 Found::List(list) => {
                     if let Ok(list) = &list {
-                        p.chosen = match &self.only {
-                            Some((folder, chosen, _)) if *folder == p.folder => (**chosen).clone(),
+                        p.chosen = match (&self.only, &self.free_pick) {
+                            // Nothing is chosen for deleting until the user ticks it.
+                            (_, Some((folder, chosen))) if p.delete && *folder == p.folder => {
+                                chosen.clone()
+                            }
+                            _ if p.delete => HashSet::new(),
+                            (Some((folder, chosen, _)), _) if *folder == p.folder => {
+                                (**chosen).clone()
+                            }
                             _ => list.iter().map(|(f, ..)| f.clone()).collect(),
                         };
                         let now = std::time::SystemTime::now()
@@ -1264,7 +1315,11 @@ impl App {
         let close = dialog(
             ctx,
             "picker",
-            "Choose files to restore",
+            if p.delete {
+                "Choose files to delete from the phone"
+            } else {
+                "Choose files to restore"
+            },
             520.0,
             "Done",
             |ui| {
@@ -1450,6 +1505,10 @@ impl App {
             && let Some(p) = self.picker.take()
             && let Some(Ok(list)) = p.files
         {
+            if p.delete {
+                self.free_pick = Some((p.folder, p.chosen));
+                return;
+            }
             self.only =
                 (p.chosen.len() < list.len()).then(|| (p.folder, Arc::new(p.chosen), list.len()));
         }
@@ -1527,6 +1586,10 @@ impl App {
             self.settings_page(ui, t);
             return None;
         }
+        if self.tab == Tab::Tools {
+            self.tools_page(ui, t);
+            return None;
+        }
         let job = |app: &mut Self, ui: &mut egui::Ui| match app.tab {
             Tab::Backup => app.backup_tab(ui, t),
             Tab::Transfer => app.transfer_tab(ui, t),
@@ -1569,6 +1632,7 @@ impl App {
             Tab::Backup => "Back up your phone",
             Tab::Restore => "Restore a backup",
             Tab::Transfer => "Copy one phone to another",
+            Tab::Tools => "Tools",
             Tab::Settings => "Settings",
         };
         let head = egui::Frame::new()
@@ -1592,7 +1656,7 @@ impl App {
         ui.painter()
             .hline(all.x_range(), head.bottom(), Stroke::new(1.0, t.line));
         let rest = Rect::from_x_y_ranges(all.x_range(), head.bottom()..=all.bottom());
-        let bar = if self.tab == Tab::Settings {
+        let bar = if matches!(self.tab, Tab::Settings | Tab::Tools) {
             0.0
         } else {
             self.bar_h
@@ -1632,9 +1696,12 @@ impl App {
             let item = |app: &mut Self, ui: &mut egui::Ui, tab: Tab, label: &str| {
                 if nav_item(ui, t, label, app.tab == tab, side) && app.tab != tab {
                     app.tab = tab;
-                    if tab == Tab::Restore {
+                    if matches!(tab, Tab::Restore | Tab::Tools) {
                         let dest = app.dest.clone();
                         app.scan(&dest);
+                    }
+                    if tab == Tab::Tools {
+                        app.scrcpy = tools::scrcpy_path();
                     }
                 }
             };
@@ -1643,6 +1710,7 @@ impl App {
                 item(self, ui, Tab::Backup, "Back up");
                 item(self, ui, Tab::Restore, "Restore");
                 item(self, ui, Tab::Transfer, "Transfer");
+                item(self, ui, Tab::Tools, "Tools");
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     item(self, ui, Tab::Settings, "Settings")
                 });
@@ -1651,6 +1719,7 @@ impl App {
                     item(self, ui, Tab::Backup, "Back up");
                     item(self, ui, Tab::Restore, "Restore");
                     item(self, ui, Tab::Transfer, "Transfer");
+                    item(self, ui, Tab::Tools, "Tools");
                     item(self, ui, Tab::Settings, "Settings");
                 });
             }
@@ -2629,7 +2698,7 @@ impl App {
         let picked = files_on || (self.restore_apps && has_apps);
         let path = chosen.map(|b| b.path.clone());
         if pick && let Some(path) = &path {
-            self.open_picker(ui.ctx(), path.clone());
+            self.open_picker(ui.ctx(), path.clone(), false);
         }
 
         // A ticked box the chosen backup has nothing for is ignored, not run.
@@ -3213,6 +3282,21 @@ impl App {
                 self.pick.folders = ["DCIM".to_string(), long.to_string(), String::new()].into();
                 self.pick.kinds = [true, true, false, true, false];
                 self.pick.max_size = Some(4_000_000_000);
+                let root = self.backups[0].path.join("files");
+                let at = |p: &str, n: u64| (root.join(p), n);
+                self.show_dupes(vec![
+                    vec![
+                        at(r"DCIM\Camera\VID_20240817_183455123_HDR_ultra_long_name.mp4", 1_284_000_000),
+                        at(r"Android\media\com.whatsapp\WhatsApp\Media\WhatsApp Video\Sent\VID-20240817-WA0007.mp4", 1_284_000_000),
+                    ],
+                    vec![
+                        at(r"DCIM\Camera\IMG_1.jpg", 3_400_000),
+                        at(r"Pictures\Telegram\IMG_1.jpg", 3_400_000),
+                        at(r"Download\ünïcødé 日本 IMG_1.jpg", 3_400_000),
+                    ],
+                ]);
+                self.tool_msg = Some(("contacts", Ok("Merged 1,284 contacts into 1,190, saved as contacts-merged.vcf next to contacts.vcf. The original is unchanged.".into())));
+                self.free_pick = Some((self.backups[0].path.clone(), [root.join("x")].into()));
             }
             Fixture::Empty => {
                 self.phones = Some(Vec::new());
@@ -3244,6 +3328,446 @@ impl App {
         });
         if f != Fixture::Real {
             self.scanned = self.dest.clone();
+        }
+    }
+}
+
+/// The Tools page: each tool works on the backup chosen at the top.
+impl App {
+    fn adb_serial(&self) -> Option<String> {
+        self.phones.iter().flatten().find_map(|p| match p {
+            Phone::Adb { serial, .. } => Some(serial.clone()),
+            _ => None,
+        })
+    }
+
+    /// Runs a tool on a worker thread; `which` is the panel that shows its progress and result.
+    fn run_tool(
+        &mut self,
+        ctx: &egui::Context,
+        which: &'static str,
+        job: impl FnOnce(&dyn Fn(String)) -> tools::Done + Send + 'static,
+    ) {
+        tools::STOP.store(false, Ordering::Relaxed);
+        self.tool_busy = Some(which);
+        self.tool_status = "Working…".into();
+        self.tool_msg = None;
+        let (tx, ctx) = (self.tool_tx.clone(), ctx.clone());
+        thread::spawn(move || {
+            let say = |s: String| {
+                let _ = tx.send(tools::Done::Status(s));
+                ctx.request_repaint();
+            };
+            let done = job(&say);
+            let _ = tx.send(done);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Lists the groups found; every copy but the first of each group starts ticked.
+    fn show_dupes(&mut self, groups: Vec<Vec<(PathBuf, u64)>>) {
+        self.ticked = groups
+            .iter()
+            .flat_map(|g| g.iter().skip(1).map(|(p, _)| p.clone()))
+            .collect();
+        let rows = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(i, g)| {
+                std::iter::once((i, None)).chain((0..g.len()).map(move |f| (i, Some(f))))
+            })
+            .collect();
+        self.dupes = Some((groups, rows));
+    }
+
+    /// The running job's progress and Stop, or what the panel's last job said.
+    fn tool_note(&mut self, ui: &mut egui::Ui, t: &Tokens, which: &'static str) {
+        if self.tool_busy == Some(which) {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(16.0));
+                ui.add(egui::Label::new(&self.tool_status).wrap());
+            });
+            let stopping = tools::STOP.load(Ordering::Relaxed);
+            if which != "phone"
+                && ui
+                    .add_enabled(
+                        !stopping,
+                        egui::Button::new(if stopping { "Stopping…" } else { "Stop" }),
+                    )
+                    .clicked()
+            {
+                tools::STOP.store(true, Ordering::Relaxed);
+            }
+        } else if let Some((w, r)) = &self.tool_msg
+            && *w == which
+        {
+            match r {
+                Ok(m) => ui.label(m.as_str()),
+                Err(e) => ui.label(RichText::new(e.as_str()).color(t.error)),
+            };
+        }
+    }
+
+    fn tools_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let muted = |s: &str| RichText::new(s).color(t.muted);
+        ui.set_max_width(ui.available_width().min(640.0));
+        let running = self.tool_busy.is_some();
+        let label = |b: &backup::Saved| format!("{}, backed up {}", b.name, days_ago(b.age_days));
+        panel(ui, t, "Backup", "", |ui| {
+            if self.backups.is_empty() {
+                ui.label(format!("No backups in {} yet.", self.scanned.display()));
+            } else {
+                let shown = self
+                    .backups
+                    .iter()
+                    .find(|b| Some(&b.path) == self.chosen.as_ref())
+                    .map_or("Choose a backup".into(), label);
+                ui.add_enabled_ui(!running, |ui| {
+                    egui::ComboBox::from_id_salt("tool_backup")
+                        .width(ui.available_width())
+                        .truncate()
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            for b in &self.backups {
+                                let on = Some(&b.path) == self.chosen.as_ref();
+                                if ui.selectable_label(on, label(b)).clicked() && !on {
+                                    self.chosen = Some(b.path.clone());
+                                    self.dupes = None;
+                                    self.tool_msg = None;
+                                }
+                            }
+                        });
+                });
+            }
+            ui.label(muted("The tools below work on this backup."));
+            if ui
+                .add_enabled(!running, egui::Button::new("Find another backup"))
+                .clicked()
+                && let Some(dir) = rfd::FileDialog::new()
+                    .set_directory(&self.dest)
+                    .pick_folder()
+            {
+                self.chosen = Some(dir.clone());
+                self.scan(&dir);
+                self.dupes = None;
+                self.tool_msg = None;
+            }
+        });
+        let folder = self.chosen.clone().filter(|_| !self.backups.is_empty());
+        let can = folder.is_some() && !running;
+
+        ui.add_space(8.0);
+        panel(ui, t, "Duplicate files", "", |ui| {
+            ui.label(muted("Finds photos and files saved more than once in this backup, such as pictures shared in several chats."));
+            if ui
+                .add_enabled(can, egui::Button::new("Find duplicates"))
+                .clicked()
+                && let Some(f) = folder.clone()
+            {
+                self.dupes = None;
+                self.run_tool(ui.ctx(), "dupes", move |say| {
+                    tools::Done::Dupes(tools::duplicates(&f, say))
+                });
+            }
+            self.tool_note(ui, t, "dupes");
+            let Some((groups, rows)) = &self.dupes else {
+                return;
+            };
+            if groups.is_empty() {
+                ui.label("No duplicates found.");
+                return;
+            }
+            let ticked: Vec<(PathBuf, u64)> = groups
+                .iter()
+                .flatten()
+                .filter(|(p, _)| self.ticked.contains(p))
+                .cloned()
+                .collect();
+            let bytes: u64 = ticked.iter().map(|(_, n)| n).sum();
+            ui.label(format!(
+                "{} files are saved more than once. {} ticked to delete ({}); one copy of each stays.",
+                count(groups.len()),
+                count(ticked.len()),
+                size(bytes)
+            ));
+            // Rows of 22 px with 4 px between; show_rows takes the height without the gap.
+            const ROW: f32 = 26.0;
+            let height = (rows.len() as f32 * ROW - 4.0).min(320.0);
+            egui::ScrollArea::vertical()
+                .id_salt("dupes")
+                .max_height(height)
+                .min_scrolled_height(height)
+                .auto_shrink([false, true])
+                .show_rows(ui, ROW - 4.0, rows.len(), |ui, range| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    ui.spacing_mut().interact_size.y = ROW - 4.0;
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for &(g, f) in &rows[range] {
+                        let group = &groups[g];
+                        match f {
+                            None => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} copies, {} each",
+                                        group.len(),
+                                        size(group[0].1)
+                                    ))
+                                    .font(semibold(14.0)),
+                                );
+                            }
+                            Some(f) => {
+                                let path = &group[f].0;
+                                let shown = path
+                                    .strip_prefix(folder.as_deref().unwrap_or(path))
+                                    .unwrap_or(path);
+                                let mut on = self.ticked.contains(path);
+                                if ui
+                                    .add_enabled(
+                                        !running,
+                                        egui::Checkbox::new(&mut on, shown.display().to_string()),
+                                    )
+                                    .on_hover_text(path.display().to_string())
+                                    .changed()
+                                {
+                                    if on {
+                                        self.ticked.insert(path.clone());
+                                    } else {
+                                        self.ticked.remove(path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            // Every copy of a file ticked would delete it from the backup altogether.
+            let all_gone = groups
+                .iter()
+                .any(|g| g.iter().all(|(p, _)| self.ticked.contains(p)));
+            if ui
+                .add_enabled(
+                    can && !ticked.is_empty() && !all_gone,
+                    egui::Button::new("Delete ticked copies…"),
+                )
+                .on_disabled_hover_text(if all_gone {
+                    "Leave at least one copy of each file unticked."
+                } else {
+                    "Tick the copies to delete."
+                })
+                .clicked()
+            {
+                self.confirm = Some(Confirm::Copies(ticked));
+            }
+        });
+
+        ui.add_space(8.0);
+        panel(ui, t, "HEIC photos to JPG", "", |ui| {
+            ui.label(muted("Saves a JPG copy of each HEIC photo in the backup's jpg folder, keeping its date and location. Many Windows apps cannot open HEIC."));
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(can, egui::Button::new("Convert to JPG"))
+                    .clicked()
+                    && let Some(f) = folder.clone()
+                {
+                    self.run_tool(ui.ctx(), "heic", move |say| {
+                        tools::Done::Text(tools::heic_to_jpg(&f, say))
+                    });
+                }
+                if let Some(f) = &folder
+                    && matches!(&self.tool_msg, Some(("heic", Ok(_))))
+                    && ui.button("Open jpg folder").clicked()
+                {
+                    let _ = Command::new("explorer").arg(f.join("jpg")).spawn();
+                }
+            });
+            self.tool_note(ui, t, "heic");
+        });
+
+        ui.add_space(8.0);
+        panel(ui, t, "Duplicate contacts", "", |ui| {
+            ui.label(muted(&format!("Merges contacts with the same name, phone number or email into {}. Your contacts.vcf stays as it was.", tools::MERGED)));
+            let merged = matches!(&self.tool_msg, Some(("contacts", Ok(_))));
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(can, egui::Button::new("Merge duplicates"))
+                    .clicked()
+                    && let Some(f) = folder.clone()
+                {
+                    self.run_tool(ui.ctx(), "contacts", move |_| {
+                        tools::Done::Text(tools::merge_contacts(&f))
+                    });
+                }
+                if let Some(f) = &folder
+                    && merged
+                {
+                    let data = f.join("data");
+                    if ui.button("Open folder").clicked() {
+                        let _ = Command::new("explorer").arg(&data).spawn();
+                    }
+                    if ui.button("Undo").clicked() {
+                        self.tool_msg = Some((
+                            "contacts",
+                            match fs::remove_file(data.join(tools::MERGED)) {
+                                Ok(()) => Ok(format!(
+                                    "Removed {}. contacts.vcf was never changed.",
+                                    tools::MERGED
+                                )),
+                                Err(e) => Err(format!("Cannot remove {}: {e}", tools::MERGED)),
+                            },
+                        ));
+                    }
+                }
+            });
+            self.tool_note(ui, t, "contacts");
+        });
+
+        let serial = self.adb_serial();
+        ui.add_space(8.0);
+        panel(ui, t, "Free up space on the phone", "", |ui| {
+            ui.label(muted("Deletes files from the phone that are safely in this backup. Only files whose backup copy has the same size are deleted, and the app asks first."));
+            let chosen = self
+                .free_pick
+                .as_ref()
+                .filter(|(f, _)| Some(f) == folder.as_ref())
+                .map(|(_, c)| c.clone())
+                .unwrap_or_default();
+            ui.label(if chosen.is_empty() {
+                "No files chosen yet.".to_string()
+            } else {
+                format!("{} chosen.", files(chosen.len()))
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(can, egui::Button::new("Choose files…"))
+                    .clicked()
+                    && let Some(f) = folder.clone()
+                {
+                    self.open_picker(ui.ctx(), f, true);
+                }
+                let ready = can && serial.is_some() && !chosen.is_empty();
+                if ui
+                    .add_enabled(ready, egui::Button::new("Delete from phone…"))
+                    .on_disabled_hover_text(if serial.is_none() {
+                        "Connect the phone with USB debugging on."
+                    } else {
+                        "Choose the files first."
+                    })
+                    .clicked()
+                    && let (Some(f), Some(serial)) = (folder.clone(), serial.clone())
+                {
+                    self.run_tool(ui.ctx(), "phone", move |say| {
+                        say("Checking the files on the phone…".into());
+                        tools::Done::Matched(
+                            tools::chosen_on_phone(&f, &chosen)
+                                .and_then(|wanted| tools::match_on_phone(&serial, &wanted)),
+                        )
+                    });
+                }
+            });
+            self.tool_note(ui, t, "phone");
+        });
+
+        ui.add_space(8.0);
+        panel(ui, t, "See the phone's screen", "", |ui| {
+            ui.label(muted("scrcpy, a free app by Genymobile, shows the phone's screen on this computer and lets you use it with the mouse and keyboard."));
+            match &self.scrcpy {
+                Some(exe) => {
+                    if ui
+                        .add_enabled(serial.is_some(), egui::Button::new("Open scrcpy"))
+                        .on_disabled_hover_text("Connect the phone with USB debugging on.")
+                        .clicked()
+                    {
+                        let mut c = Command::new(exe);
+                        c.args(["-s", serial.as_deref().unwrap_or_default()]);
+                        // One adb for both apps: two different versions stop each other's server.
+                        if let Some(adb) = backup::adb_path() {
+                            c.env("ADB", adb);
+                        }
+                        #[cfg(windows)]
+                        std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000);
+                        self.tool_msg = c
+                            .spawn()
+                            .err()
+                            .map(|e| ("scrcpy", Err(format!("scrcpy did not start: {e}"))));
+                    }
+                }
+                None => {
+                    ui.label("scrcpy is not on this computer. Unzip it next to this app to use it from here.");
+                    ui.hyperlink_to(
+                        "Get scrcpy on GitHub",
+                        "https://github.com/Genymobile/scrcpy",
+                    );
+                }
+            }
+            self.tool_note(ui, t, "scrcpy");
+        });
+    }
+
+    /// Asks before a tool deletes anything; Esc or a click outside keeps the files.
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(c) = &self.confirm else { return };
+        let (title, body, yes) = match c {
+            Confirm::Copies(list) => (
+                format!("Delete {} from the backup?", files(list.len())),
+                format!(
+                    "This frees {} on this computer. One copy of each file stays in the backup. While the phone still has these files, the next backup copies them again.",
+                    size(list.iter().map(|(_, n)| n).sum())
+                ),
+                format!("Delete {}", files(list.len())),
+            ),
+            Confirm::Phone(_, list, left) => {
+                let mut body = format!(
+                    "This frees {} on the phone. Their copies in the backup have the same size and stay on this computer. Deleted files cannot be brought back on the phone except by restoring them.",
+                    size(list.iter().map(|(_, n)| n).sum())
+                );
+                if *left > 0 {
+                    body += &format!(
+                        " {} chosen are left alone: they are not on the phone or differ from the backup.",
+                        files(*left)
+                    );
+                }
+                (
+                    format!("Delete {} from the phone?", files(list.len())),
+                    body,
+                    format!("Delete {}", files(list.len())),
+                )
+            }
+        };
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::unique("confirm_delete"))
+            .frame(dialog_frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_max_width(ui.available_width().min(360.0));
+                ui.label(RichText::new(title).font(semibold(16.0)));
+                ui.label(body);
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(yes).clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Keep them").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if modal.should_close() {
+            answer = Some(false);
+        }
+        let Some(yes) = answer else { return };
+        match self.confirm.take() {
+            Some(Confirm::Copies(list)) if yes => {
+                self.dupes = None;
+                self.run_tool(ctx, "dupes", move |_| {
+                    tools::Done::Text(tools::delete_copies(&list))
+                });
+            }
+            Some(Confirm::Phone(serial, list, _)) if yes => {
+                self.free_pick = None;
+                self.run_tool(ctx, "phone", move |say| {
+                    say("Deleting from the phone…".into());
+                    tools::Done::Text(tools::delete_from_phone(&serial, &list))
+                });
+            }
+            _ => {}
         }
     }
 }
@@ -3355,6 +3879,36 @@ impl eframe::App for App {
             }
         }
 
+        while let Ok(done) = self.tool_rx.try_recv() {
+            let which = if matches!(done, tools::Done::Status(_)) {
+                self.tool_busy
+            } else {
+                self.tool_busy.take()
+            }
+            .unwrap_or("");
+            match done {
+                tools::Done::Status(s) => self.tool_status = s,
+                tools::Done::Dupes(Ok(groups)) => self.show_dupes(groups),
+                tools::Done::Dupes(Err(e)) | tools::Done::Matched(Err(e)) => {
+                    self.tool_msg = Some((which, Err(e)))
+                }
+                tools::Done::Matched(Ok((list, left))) if list.is_empty() => {
+                    self.tool_msg = Some((
+                        which,
+                        Err(format!(
+                            "None of the {} chosen match their backup copy on the phone, so nothing was deleted.",
+                            files(left)
+                        )),
+                    ))
+                }
+                tools::Done::Matched(Ok((list, left))) => {
+                    let serial = self.adb_serial().unwrap_or_default();
+                    self.confirm = Some(Confirm::Phone(serial, list, left));
+                }
+                tools::Done::Text(r) => self.tool_msg = Some((which, r)),
+            }
+        }
+
         // Closing mid-backup asks first, then stops adb cleanly instead of leaving it running.
         let busy = self.busy.load(Ordering::Relaxed);
         if ui.ctx().input(|i| i.viewport().close_requested()) && busy {
@@ -3411,6 +3965,7 @@ impl eframe::App for App {
             self.choose_dialog(ui.ctx(), &t);
         }
         self.ask_dialog(ui.ctx(), &t);
+        self.confirm_dialog(ui.ctx());
 
         // The page list down the left, or on narrow windows a strip over the page.
         let side = ui.available_width() >= 640.0;
