@@ -213,7 +213,7 @@ pub fn tally(files: &[(String, u64)], pick: &Pick) -> Tally {
 
 /// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
 /// Most people never install the SDK, so shipping adb.exe beside the app is the normal case.
-fn adb_path() -> Option<PathBuf> {
+pub(crate) fn adb_path() -> Option<PathBuf> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(Path::to_path_buf));
@@ -236,7 +236,7 @@ pub fn adb_installed() -> bool {
 }
 
 /// adb without a console window flashing up on every call.
-fn adb() -> Command {
+pub(crate) fn adb() -> Command {
     let mut c = Command::new(adb_path().unwrap_or_else(|| "adb".into()));
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
@@ -507,7 +507,7 @@ fn run(mut c: Command) -> Vec<u8> {
 }
 
 /// True while adb still sees the phone. Listing commands just return nothing when it is gone.
-fn connected(serial: &str) -> bool {
+pub(crate) fn connected(serial: &str) -> bool {
     adb()
         .args(["-s", serial, "get-state"])
         .output()
@@ -532,11 +532,11 @@ fn phone_id(serial: &str) -> String {
 
 /// One file to copy: remote path, its size and mtime (Unix seconds), and where it goes locally.
 #[derive(Clone)]
-struct Job {
-    remote: String,
-    size: u64,
+pub(crate) struct Job {
+    pub(crate) remote: String,
+    pub(crate) size: u64,
     mtime: i64,
-    local: PathBuf,
+    pub(crate) local: PathBuf,
 }
 
 /// Parses a `stat -c '%s %Y %n'` line into (size, mtime, rest).
@@ -1303,7 +1303,10 @@ fn saved(path: &Path) -> Option<Saved> {
 /// /sdcard, `sdcard_<card>` to that SD card when the phone has it. Also returns the cards the
 /// phone lacks. App folders (Android/data, Android/obb) are left out: the apps own those.
 /// `volumes` lists the phone's cards (`ls /storage`); None keeps every card.
-fn saved_files(folder: &Path, volumes: Option<&str>) -> Result<(Vec<Job>, Vec<String>), String> {
+pub(crate) fn saved_files(
+    folder: &Path,
+    volumes: Option<&str>,
+) -> Result<(Vec<Job>, Vec<String>), String> {
     // The `files` folder itself works as well as the phone's folder.
     let folder = if folder.file_name().is_some_and(|n| n == "files") {
         folder.parent().unwrap_or(folder)
@@ -1427,7 +1430,7 @@ fn sh_quote(s: &str) -> String {
 
 /// Runs `<cmd> 'path' 'path' ...` on the phone in batches that fit one command line, to the
 /// end even after Stop (cleanup must finish), and returns everything it printed.
-fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
+pub(crate) fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
     let mut out = String::new();
     for batch in paths.chunks(100) {
         let line = std::iter::once(cmd.to_string())

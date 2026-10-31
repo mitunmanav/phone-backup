@@ -38,7 +38,6 @@ Ordered from cheapest to largest. Each feature, and each nice-to-have inside it,
 
 | # | Feature | Also includes | Size |
 |---|---|---|---|
-| V8 | Tools: HEIC to JPG keeping date and location, duplicate finder, launch scrcpy if it is installed. | Merge duplicate contacts with undo. | Medium |
 | V9 | Optional password-protected backups (AES-256-GCM, Argon2id key). | A plain list of what the app never does; keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. | Medium |
 | V10 | Read WhatsApp backups with the user's own key: view, search and export. | | Large |
 | V11 | Restore contacts, messages, call history and calendar to a phone. Messages and call history need a small companion Android app, so this may slip to v1.5. | | Large |
