@@ -167,45 +167,136 @@ fn result_box(t: &Tokens) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(16, 12))
 }
 
-/// One page in the page list: a hover fill, and on the current page a fill, semibold text and an
-/// accent pill, left of the row in the side list and under it in the narrow top strip.
-fn nav_item(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool, side: bool) -> bool {
-    let font = if on {
-        semibold(14.0)
+/// One page tab: ink text on the current tab, muted on the others, and a fill on hover. The
+/// accent pill under the current tab is drawn by the top bar, so it can slide.
+fn nav_item(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool) -> egui::Response {
+    let color = if on && ui.is_enabled() {
+        t.ink
     } else {
-        FontId::proportional(14.0)
+        t.muted
     };
-    let color = if ui.is_enabled() { t.ink } else { t.muted };
-    let galley = ui.painter().layout_no_wrap(label.into(), font, color);
-    let width = if side {
-        ui.available_width()
-    } else {
-        galley.size().x + 24.0
-    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.into(), FontId::proportional(14.0), color);
+    let width = galley.size().x
+        + if ui.available_width() < 400.0 {
+            16.0
+        } else {
+            24.0
+        };
     let (rect, r) = ui.allocate_exact_size(vec2(width, 34.0), egui::Sense::click());
     r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, ui.is_enabled(), on, label));
-    if on || r.hovered() {
+    if r.hovered() {
         ui.painter().rect_filled(rect, 4, t.hover);
     }
-    if on {
-        let pill = if side {
-            Rect::from_min_size(rect.min + vec2(0.0, 9.0), vec2(3.0, 16.0))
-        } else {
-            Rect::from_center_size(
-                egui::pos2(rect.center().x, rect.max.y - 1.5),
-                vec2(16.0, 3.0),
-            )
-        };
-        ui.painter().rect_filled(pill, 2, t.accent);
-    }
-    let text_at = egui::pos2(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0);
-    ui.painter().galley(text_at, galley, color);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
     // egui draws no focus for a hand-made widget.
     if r.has_focus() {
         ui.painter()
             .rect_stroke(rect, 4, Stroke::new(2.0, t.ink), StrokeKind::Inside);
     }
+    r
+}
+
+/// A settings row: its name, and a note under it, on the left; its control on the right; a
+/// hairline under it.
+fn row(ui: &mut egui::Ui, t: &Tokens, name: &str, note: &str, control: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(4.0);
+    let text = |ui: &mut egui::Ui| {
+        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add(egui::Label::new(name).wrap());
+            if !note.is_empty() {
+                ui.add(egui::Label::new(RichText::new(note).color(t.muted).size(12.0)).wrap());
+            }
+        });
+    };
+    // Starts 0 tall and grows to its content; with_layout would take the whole page height.
+    let size = vec2(ui.available_width(), 0.0);
+    let controls = Layout::right_to_left(Align::Min);
+    if size.x < 480.0 {
+        // Narrow: the text gets the full width, the control goes under it.
+        ui.allocate_ui_with_layout(size, Layout::top_down(Align::Min), text);
+        ui.allocate_ui_with_layout(size, controls, control);
+    } else {
+        ui.allocate_ui_with_layout(size, controls, |ui| {
+            control(ui);
+            ui.add_space(8.0);
+            text(ui);
+        });
+    }
+    ui.add_space(4.0);
+    let x = ui.max_rect().x_range();
+    ui.painter()
+        .hline(x, ui.cursor().top(), Stroke::new(1.0, t.line));
+    ui.add_space(1.0);
+}
+
+/// A settings row that opens a page: the whole row is the button, with a chevron at its right.
+fn link_row(ui: &mut egui::Ui, t: &Tokens, name: &str, note: &str) -> bool {
+    let width = ui.available_width();
+    let text = |s: &str, size: f32, color: Color32| {
+        ui.painter()
+            .layout(s.into(), FontId::proportional(size), color, width - 48.0)
+    };
+    let (name_g, note_g) = (text(name, 14.0, t.ink), text(note, 12.0, t.muted));
+    let h = name_g.size().y + 2.0 + note_g.size().y + 20.0;
+    let (rect, r) = ui.allocate_exact_size(vec2(width, h), egui::Sense::click());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, name));
+    let p = ui.painter();
+    // The fill and focus ring reach 8 px past the text, so the text lines up with plain rows.
+    let fill = rect.expand2(vec2(8.0, 0.0));
+    if r.hovered() {
+        p.rect_filled(fill, 4, t.hover);
+    }
+    let at = rect.min + vec2(0.0, 10.0);
+    let below = at + vec2(0.0, name_g.size().y + 2.0);
+    p.galley(at, name_g, t.ink);
+    p.galley(below, note_g, t.muted);
+    // The chevron nudges right on hover: this row leads somewhere.
+    let nudge = ui.ctx().animate_bool_with_time(r.id, r.hovered(), 0.15) * 3.0;
+    p.text(
+        egui::pos2(rect.max.x - 16.0 + nudge, rect.center().y),
+        Align2::CENTER_CENTER,
+        "›",
+        FontId::proportional(18.0),
+        t.muted,
+    );
+    p.hline(rect.x_range(), rect.max.y, Stroke::new(1.0, t.line));
+    if r.has_focus() {
+        p.rect_stroke(fill, 4, Stroke::new(2.0, t.ink), StrokeKind::Inside);
+    }
     r.clicked()
+}
+
+/// A Settings section's heading.
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(20.0);
+    ui.label(RichText::new(title).font(semibold(14.0)));
+}
+
+/// Windows' "Animation effects" setting. Off: pages and the tab pill change at once.
+fn motion_on() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+        };
+        let mut on = 1i32;
+        // SAFETY: this action writes one BOOL through the pointer, which outlives the call.
+        unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                (&mut on as *mut i32).cast(),
+                0,
+            )
+        };
+        on != 0
+    }
+    #[cfg(not(windows))]
+    true
 }
 
 /// What the bar at the foot of the Back up and Restore pages says and offers.
@@ -400,6 +491,9 @@ enum Tab {
     Transfer,
     Tools,
     Settings,
+    /// Pages opened from Settings.
+    Privacy,
+    License,
 }
 
 /// What the running (or last) job is.
@@ -658,6 +752,14 @@ struct App {
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
     tab: Tab,
+    /// When the page (or intro step) last changed, for its fade and the tab pill's slide.
+    tab_at: Instant,
+    /// Where the tab pill was drawn last frame, and where its current slide started.
+    pill: (f32, f32),
+    /// Windows' "Animation effects" setting.
+    motion: bool,
+    /// The first-run step on screen; None once it is done or skipped.
+    intro: Option<usize>,
     /// Play the Windows sound when a backup or restore ends.
     sound: bool,
     /// The report of the last restore, for its Open report button.
@@ -882,6 +984,14 @@ impl App {
             confirm_close: false,
             closing: false,
             tab: Tab::Backup,
+            tab_at: Instant::now(),
+            pill: (0.0, 0.0),
+            motion: motion_on(),
+            // A first run has no saved backup folder yet.
+            intro: cc
+                .storage
+                .is_some_and(|s| s.get_string("dest").is_none())
+                .then_some(0),
             sound: cc.storage.and_then(|s| s.get_string("sound")).as_deref() == Some("1"),
             restore_report: None,
             job: Job::Backup,
@@ -917,14 +1027,21 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [delete|rename|copy] [light|dark] [wifi] [busy]
-        // [choose] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>] [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; pick= opens the file picker on a real folder; shot= saves a
+        // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
+        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // [size=<w>x<h>] [shot=<file.png>]" opens
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
-        if cfg!(debug_assertions) {
+        if cfg!(debug_assertions) && test_run() {
+            app.intro = None;
             let spec = env::var("PB_FIXTURE").unwrap_or_default();
             for word in spec.split_whitespace() {
                 match word {
+                    "privacy" => app.tab = Tab::Privacy,
+                    "license" => app.tab = Tab::License,
+                    _ if word.starts_with("intro") => {
+                        app.intro = Some(word.get(6..).and_then(|n| n.parse().ok()).unwrap_or(0))
+                    }
                     "worst" => app.load_fixture(Fixture::Worst),
                     "empty" => app.load_fixture(Fixture::Empty),
                     "one" => app.load_fixture(Fixture::One),
@@ -1590,6 +1707,10 @@ impl App {
             self.tools_page(ui, t);
             return None;
         }
+        if matches!(self.tab, Tab::Privacy | Tab::License) {
+            self.doc_page(ui, t);
+            return None;
+        }
         let job = |app: &mut Self, ui: &mut egui::Ui| match app.tab {
             Tab::Backup => app.backup_tab(ui, t),
             Tab::Transfer => app.transfer_tab(ui, t),
@@ -1626,45 +1747,54 @@ impl App {
         Some(cmd)
     }
 
-    /// The page's title, its scrolling body and, on Back up and Restore, the command bar.
-    fn page(&mut self, ui: &mut egui::Ui, t: &Tokens, side: bool, pad: i8) {
-        let title = match self.tab {
-            Tab::Backup => "Back up your phone",
-            Tab::Restore => "Restore a backup",
-            Tab::Transfer => "Copy one phone to another",
-            Tab::Tools => "Tools",
-            Tab::Settings => "Settings",
+    /// 0 to 1 over `secs` since the page changed, eased out; 1 at once with animations off.
+    fn since_switch(&self, ctx: &egui::Context, secs: f32) -> f32 {
+        let p = if self.motion {
+            self.tab_at.elapsed().as_secs_f32() / secs
+        } else {
+            1.0
         };
-        let head = egui::Frame::new()
-            .inner_margin(egui::Margin {
-                left: pad,
-                right: pad,
-                top: if side { 18 } else { 8 },
-                bottom: 14,
-            })
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                if !side {
-                    self.nav(ui, t, false);
-                    ui.add_space(4.0);
-                }
-                ui.label(RichText::new(title).font(semibold(22.0)));
-            })
-            .response
-            .rect;
-        let all = ui.max_rect();
-        ui.painter()
-            .hline(all.x_range(), head.bottom(), Stroke::new(1.0, t.line));
-        let rest = Rect::from_x_y_ranges(all.x_range(), head.bottom()..=all.bottom());
-        let bar = if matches!(self.tab, Tab::Settings | Tab::Tools) {
+        if p < 1.0 {
+            ctx.request_repaint();
+        }
+        egui::emath::easing::cubic_out(p.min(1.0))
+    }
+
+    /// Opens a page, reading the backup folder for the pages that list its backups.
+    fn go(&mut self, tab: Tab) {
+        if matches!(tab, Tab::Restore | Tab::Tools) {
+            let dest = self.dest.clone();
+            self.scan(&dest);
+        }
+        if tab == Tab::Tools {
+            self.scrcpy = tools::scrcpy_path();
+        }
+        self.tab = tab;
+        self.tab_at = Instant::now();
+        self.pill.1 = self.pill.0;
+    }
+
+    /// The page's scrolling body, fading in when the page changes, and on Back up, Restore and
+    /// Transfer the command bar.
+    fn page(&mut self, ui: &mut egui::Ui, t: &Tokens, pad: i8) {
+        let rest = ui.max_rect();
+        let bar = if self.intro.is_some()
+            || matches!(
+                self.tab,
+                Tab::Settings | Tab::Tools | Tab::Privacy | Tab::License
+            ) {
             0.0
         } else {
             self.bar_h
         };
         let body = rest.with_max_y(rest.bottom() - bar);
+        let fade = self.since_switch(ui.ctx(), 0.15);
         let cmd = ui
             .scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
-                let mut area = egui::ScrollArea::vertical().auto_shrink(false);
+                ui.multiply_opacity(fade);
+                let mut area = egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .id_salt((self.tab as u8, self.intro.is_some()));
                 // Held every frame: the first frames do not know the content height yet.
                 if let Some(y) = self.scroll {
                     area = area.vertical_scroll_offset(y);
@@ -1674,7 +1804,13 @@ impl App {
                         .inner_margin(egui::Margin::symmetric(pad, 16))
                         .show(ui, |ui| {
                             ui.set_max_width(ui.available_width().min(1040.0));
-                            self.content(ui, t)
+                            match self.intro {
+                                Some(step) => {
+                                    self.intro_page(ui, t, step);
+                                    None
+                                }
+                                None => self.content(ui, t),
+                            }
                         })
                         .inner
                 })
@@ -1689,40 +1825,56 @@ impl App {
         }
     }
 
-    /// The page list: down the left side, or a strip over the page on narrow windows.
-    fn nav(&mut self, ui: &mut egui::Ui, t: &Tokens, side: bool) {
-        // The page cannot change while a job runs: its progress and Stop are on it.
-        ui.add_enabled_ui(!self.busy.load(Ordering::Relaxed), |ui| {
-            let item = |app: &mut Self, ui: &mut egui::Ui, tab: Tab, label: &str| {
-                if nav_item(ui, t, label, app.tab == tab, side) && app.tab != tab {
-                    app.tab = tab;
-                    if matches!(tab, Tab::Restore | Tab::Tools) {
-                        let dest = app.dest.clone();
-                        app.scan(&dest);
-                    }
-                    if tab == Tab::Tools {
-                        app.scrcpy = tools::scrcpy_path();
-                    }
-                }
-            };
-            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            if side {
-                item(self, ui, Tab::Backup, "Back up");
-                item(self, ui, Tab::Restore, "Restore");
-                item(self, ui, Tab::Transfer, "Transfer");
-                item(self, ui, Tab::Tools, "Tools");
-                ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    item(self, ui, Tab::Settings, "Settings")
-                });
-            } else {
-                ui.horizontal(|ui| {
-                    item(self, ui, Tab::Backup, "Back up");
-                    item(self, ui, Tab::Restore, "Restore");
-                    item(self, ui, Tab::Transfer, "Transfer");
-                    item(self, ui, Tab::Tools, "Tools");
-                    item(self, ui, Tab::Settings, "Settings");
-                });
+    /// The app's name and the page tabs, with an accent pill that slides to the current tab.
+    /// The intro shows the name only.
+    fn top_bar(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        ui.horizontal(|ui| {
+            ui.set_min_height(34.0);
+            // The tabs need all the room on narrow windows.
+            if ui.available_width() >= 560.0 || self.intro.is_some() {
+                ui.label(RichText::new("Phone Backup").font(semibold(14.0)));
             }
+            if self.intro.is_some() {
+                return;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                // The page cannot change while a job runs: its progress and Stop are on it.
+                ui.add_enabled_ui(!self.busy.load(Ordering::Relaxed), |ui| {
+                    let mut current = None;
+                    // Right to left, so the last tab comes first.
+                    for (tab, label) in [
+                        (Tab::Settings, "Settings"),
+                        (Tab::Tools, "Tools"),
+                        (Tab::Transfer, "Transfer"),
+                        (Tab::Restore, "Restore"),
+                        (Tab::Backup, "Back up"),
+                    ] {
+                        let on = self.tab == tab
+                            || (tab == Tab::Settings
+                                && matches!(self.tab, Tab::Privacy | Tab::License));
+                        let r = nav_item(ui, t, label, on);
+                        if on {
+                            current = Some(r.rect);
+                        }
+                        if r.clicked() && self.tab != tab {
+                            self.go(tab);
+                        }
+                    }
+                    if let Some(rect) = current {
+                        let to = rect.center().x;
+                        // 0 until the tabs are first drawn: start in place, not at the left edge.
+                        let from = if self.pill.1 == 0.0 { to } else { self.pill.1 };
+                        let x = from + (to - from) * self.since_switch(ui.ctx(), 0.25);
+                        self.pill = (x, from);
+                        let pill = Rect::from_center_size(
+                            egui::pos2(x, rect.max.y - 1.5),
+                            vec2(16.0, 3.0),
+                        );
+                        ui.painter().rect_filled(pill, 2, t.accent);
+                    }
+                });
+            });
         });
     }
 
@@ -1927,16 +2079,7 @@ impl App {
         ui.add_space(4.0);
         egui::CollapsingHeader::new("How to turn on USB debugging")
             .default_open(open)
-            .show(ui, |ui| {
-                egui::ComboBox::from_label("Phone brand")
-                    .selected_text(BRANDS[self.brand].0)
-                    .show_ui(ui, |ui| {
-                        for (i, (name, _)) in BRANDS.iter().enumerate() {
-                            ui.selectable_value(&mut self.brand, i, *name);
-                        }
-                    });
-                steps(ui, t, BRANDS[self.brand].1);
-            });
+            .show(ui, |ui| self.brand_steps(ui, t));
         egui::CollapsingHeader::new("Phone not showing up?")
             .default_open(open)
             .show(ui, |ui| {
@@ -1957,6 +2100,18 @@ impl App {
             });
     }
 
+    /// The phone maker picker and its steps to turn on USB debugging.
+    fn brand_steps(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        egui::ComboBox::from_label("Phone brand")
+            .selected_text(BRANDS[self.brand].0)
+            .show_ui(ui, |ui| {
+                for (i, (name, _)) in BRANDS.iter().enumerate() {
+                    ui.selectable_value(&mut self.brand, i, *name);
+                }
+            });
+        steps(ui, t, BRANDS[self.brand].1);
+    }
+
     fn wifi_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         if dialog(ctx, "wifi", "Connect over Wi-Fi", 400.0, "Close", |ui| {
             self.wifi(ui, t)
@@ -1966,82 +2121,373 @@ impl App {
         }
     }
 
-    fn settings_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+    /// The backup folder in a read-only box, with Change… beside it.
+    fn folder_row(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let busy = self.busy.load(Ordering::Relaxed);
-        let muted = |s: &str| RichText::new(s).color(t.muted);
+        if ui
+            .add_enabled(!busy, egui::Button::new("Change…"))
+            .on_disabled_hover_text("Wait for the job to finish")
+            .clicked()
+            && let Some(dir) = rfd::FileDialog::new()
+                .set_directory(&self.dest)
+                .pick_folder()
+        {
+            self.dest = dir.clone();
+            self.scan(&dir);
+        }
+        egui::Frame::new()
+            .fill(t.field)
+            .stroke(Stroke::new(1.0, t.line))
+            .corner_radius(4)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(280.0));
+                let full = self.dest.display().to_string();
+                ui.add(egui::Label::new(short_path(ui, &full)).truncate())
+                    .on_hover_text(&full);
+            });
+    }
+
+    fn settings_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         // egui sets this width outright, even past the window, so it is capped by the room left.
         ui.set_max_width(ui.available_width().min(640.0));
-        panel(ui, t, "Backup folder", "", |ui| {
-            ui.horizontal(|ui| {
-                // The path sits in a read-only box with Change right beside it.
-                let width = ui.available_width() - 100.0;
-                egui::Frame::new()
-                    .fill(t.field)
-                    .stroke(Stroke::new(1.0, t.line))
-                    .corner_radius(4)
-                    .inner_margin(egui::Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.set_width(width - 22.0);
-                        let full = self.dest.display().to_string();
-                        ui.add(egui::Label::new(short_path(ui, &full)).truncate())
-                            .on_hover_text(&full);
-                    });
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Change…"))
-                    .clicked()
-                    && let Some(dir) = rfd::FileDialog::new()
-                        .set_directory(&self.dest)
-                        .pick_folder()
-                {
-                    self.dest = dir.clone();
-                    self.scan(&dir);
-                }
-            });
-            ui.label(muted(
-                "New backups go here. Restore lists the backups in it.",
-            ));
+        ui.label(RichText::new("Where backups go").font(semibold(14.0)));
+        row(
+            ui,
+            t,
+            "Backup folder",
+            "New backups are saved here. Restore lists the backups in it.",
+            |ui| self.folder_row(ui, t),
+        );
+
+        section(ui, "Phone connection");
+        let note = if self.adb_ok {
+            "Found. Apps, contacts and messages can be backed up over USB debugging."
+        } else {
+            "Not found. Photos and files still back up in File transfer mode. For apps, contacts and messages, put adb.exe from Google's free Platform Tools next to this app."
+        };
+        row(ui, t, "adb", note, |ui| {
+            if ui.button("Check again").clicked() {
+                self.adb_ok = backup::adb_installed();
+            }
         });
-        ui.add_space(8.0);
-        panel(ui, t, "Theme", "", |ui| {
+        if !self.adb_ok {
+            ui.hyperlink_to(
+                "Download Platform Tools",
+                "https://developer.android.com/tools/releases/platform-tools",
+            );
+        }
+
+        section(ui, "Look and sound");
+        row(ui, t, "Theme", "", |ui| {
             let mut theme = ui.ctx().options(|o| o.theme_preference);
+            // Right to left, so the last choice comes first.
             for (value, label) in [
-                (egui::ThemePreference::System, "Follow Windows"),
-                (egui::ThemePreference::Light, "Light"),
                 (egui::ThemePreference::Dark, "Dark"),
+                (egui::ThemePreference::Light, "Light"),
+                (egui::ThemePreference::System, "Follow Windows"),
             ] {
                 ui.radio_value(&mut theme, value, label);
             }
             // egui saves this with the window size, so it is remembered.
             ui.ctx().set_theme(theme);
         });
-        ui.add_space(8.0);
-        panel(ui, t, "When a backup or restore ends", "", |ui| {
-            ui.checkbox(&mut self.sound, "Play a sound");
-            ui.label(muted(
-                "The taskbar button flashes when the window is in the background.",
-            ));
-        });
-        ui.add_space(8.0);
-        panel(ui, t, "Help", "", |ui| {
-            if ui.button("Save diagnostics…").clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .set_file_name("phone-backup-diagnostics.txt")
-                    .save_file()
-            {
-                let _ = fs::write(&path, backup::diagnostics(&self.dest));
-                let _ = Command::new("explorer").arg(&path).spawn();
+        row(
+            ui,
+            t,
+            "Sound",
+            "When a backup or restore ends. The taskbar button also flashes when the window is in the background.",
+            |ui| {
+                ui.checkbox(&mut self.sound, "Play a sound");
+            },
+        );
+
+        section(ui, "Help");
+        row(
+            ui,
+            t,
+            "Save diagnostics",
+            "A text file with the app, Windows and adb versions and the phones adb sees. Read it before you share it.",
+            |ui| {
+                if ui.button("Save…").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("phone-backup-diagnostics.txt")
+                        .save_file()
+                {
+                    let _ = fs::write(&path, backup::diagnostics(&self.dest));
+                    let _ = Command::new("explorer").arg(&path).spawn();
+                }
+            },
+        );
+        if link_row(
+            ui,
+            t,
+            "Show the intro again",
+            "The first-run steps: what the app does, adb, USB debugging and the backup folder.",
+        ) {
+            self.intro = Some(0);
+            self.tab_at = Instant::now();
+        }
+
+        section(ui, "About");
+        row(
+            ui,
+            t,
+            &format!("Phone Backup {}", env!("CARGO_PKG_VERSION")),
+            "Free software. No account, and nothing is sent online.",
+            |ui| {
+                ui.hyperlink_to("Source code on GitHub", env!("CARGO_PKG_REPOSITORY"));
+            },
+        );
+        if link_row(
+            ui,
+            t,
+            "Privacy",
+            "What the app reads, where it saves, and what it never does.",
+        ) {
+            self.go(Tab::Privacy);
+        }
+        if link_row(
+            ui,
+            t,
+            "License",
+            "GNU General Public License, version 3 or later: what you may do, and the warranty.",
+        ) {
+            self.go(Tab::License);
+        }
+    }
+
+    /// Privacy or License, opened from Settings: a trail back, a heading, then short sections.
+    fn doc_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        ui.set_max_width(ui.available_width().min(600.0));
+        let (title, lede, parts): (&str, &str, &[(&str, &str)]) = if self.tab == Tab::Privacy {
+            (
+                "Privacy",
+                "Phone Backup keeps everything on your computer.",
+                &[
+                    (
+                        "What it reads",
+                        "The phone you connect, to show what is on it. It copies only what you choose, and only when you start a backup, restore or tool.",
+                    ),
+                    (
+                        "Where your backups go",
+                        "Into the backup folder you choose, as ordinary files. They are not encrypted, so anyone who can open that folder can read them. Keep it on a drive only you use.",
+                    ),
+                    (
+                        "The internet",
+                        "No account, ads, tracking or update check: the app sends nothing online. Wi-Fi pairing talks only to your phone, on your own network. Links such as Download Platform Tools open in your browser, and only when you click them.",
+                    ),
+                    (
+                        "Diagnostics",
+                        "Save diagnostics writes a text file where you choose. Nothing is sent. Read it before you share it.",
+                    ),
+                    (
+                        "Removing your data",
+                        "Deleting the app does not delete your backups: delete the backup folder to remove them. The app's settings are kept in your Windows user folder (AppData).",
+                    ),
+                ],
+            )
+        } else {
+            (
+                "License",
+                "Phone Backup is free software under the GNU General Public License, version 3 or later. These are its only terms.",
+                &[
+                    (
+                        "You may",
+                        "Use it for anything, at home or at work. Read and change its source code. Share copies, changed or not.",
+                    ),
+                    (
+                        "If you share it",
+                        "Include the source code or say where to get it, keep the same license, and mark what you changed.",
+                    ),
+                    (
+                        "No warranty",
+                        "It comes as is, without any warranty, and the authors are not liable for lost data or other damage. Keep a second copy of anything you cannot lose.",
+                    ),
+                    (
+                        "Other tools",
+                        "adb comes from Google under its own terms, which you accept when you download Platform Tools. Screen mirroring uses scrcpy, under the Apache License 2.0.",
+                    ),
+                ],
+            )
+        };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if ui.link("Settings").clicked() {
+                self.go(Tab::Settings);
             }
-            ui.label(muted(
-                "Saves the app, Windows and adb versions and the phones adb sees to a text file. Read it before you share it.",
-            ));
+            ui.label(RichText::new("›").color(t.muted));
+            ui.label(title);
         });
-        ui.add_space(8.0);
-        panel(ui, t, "About", "", |ui| {
-            ui.label(format!("Phone Backup {}", env!("CARGO_PKG_VERSION")));
-            ui.label(muted(
-                "Free software under the GNU General Public License, version 3 or later.",
-            ));
-            ui.hyperlink_to("Source code on GitHub", env!("CARGO_PKG_REPOSITORY"));
+        ui.add_space(4.0);
+        ui.label(RichText::new(title).font(semibold(20.0)));
+        ui.add(egui::Label::new(RichText::new(lede).color(t.muted)).wrap());
+        for (head, body) in parts {
+            ui.add_space(12.0);
+            ui.label(RichText::new(*head).font(semibold(14.0)));
+            ui.add(egui::Label::new(*body).wrap());
+        }
+        if self.tab == Tab::License {
+            ui.add_space(12.0);
+            ui.hyperlink_to(
+                "Read the full license text",
+                "https://www.gnu.org/licenses/gpl-3.0.html",
+            );
+        }
+    }
+
+    /// The first-run steps: what the app does, adb, USB debugging and the backup folder. Each
+    /// step fades in; the first one's shelf of backups rises once.
+    fn intro_page(&mut self, ui: &mut egui::Ui, t: &Tokens, step: usize) {
+        const LAST: usize = 3;
+        let muted = |s: &str| RichText::new(s).color(t.muted);
+        let big = |s: &str| {
+            RichText::new(s)
+                .font(semibold(28.0))
+                .extra_letter_spacing(-0.5)
+        };
+        ui.set_max_width(ui.available_width().min(560.0));
+        ui.horizontal(|ui| {
+            for i in 0..=LAST {
+                let w = if i == step { 32.0 } else { 16.0 };
+                let (r, _) = ui.allocate_exact_size(vec2(w, 4.0), egui::Sense::hover());
+                let fill = if i <= step { t.accent } else { t.line };
+                ui.painter().rect_filled(r, 2, fill);
+            }
+            ui.add_space(8.0);
+            ui.label(muted(&format!("Step {} of {}", step + 1, LAST + 1)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.link("Skip intro").clicked() {
+                    self.intro = None;
+                    self.go(Tab::Backup);
+                }
+            });
+        });
+        ui.add_space(24.0);
+        match step {
+            0 => {
+                // Five spines on a shelf, rising one after another; the newest is accent.
+                let (shelf, _) = ui.allocate_exact_size(vec2(160.0, 96.0), egui::Sense::hover());
+                let spent = if self.motion {
+                    self.tab_at.elapsed().as_secs_f32()
+                } else {
+                    9.0
+                };
+                for (i, h) in [56.0, 74.0, 66.0, 84.0, 90.0].into_iter().enumerate() {
+                    let p = ((spent - 0.12 - i as f32 * 0.07) / 0.5).clamp(0.0, 1.0);
+                    if p < 1.0 {
+                        ui.ctx().request_repaint();
+                    }
+                    let e = egui::emath::easing::cubic_out(p);
+                    let x = shelf.min.x + 4.0 + i as f32 * 26.0;
+                    let r = Rect::from_min_max(
+                        egui::pos2(x, shelf.max.y - 3.0 - h + 32.0 * (1.0 - e)),
+                        egui::pos2(x + 22.0, shelf.max.y - 3.0),
+                    );
+                    let (fill, edge) = if i == 4 {
+                        (t.accent, t.accent)
+                    } else {
+                        (t.surface, t.border)
+                    };
+                    let p = ui.painter().with_clip_rect(shelf);
+                    p.rect(
+                        r,
+                        egui::CornerRadius {
+                            nw: 3,
+                            ne: 3,
+                            ..Default::default()
+                        },
+                        fill.gamma_multiply(e),
+                        Stroke::new(1.0, edge.gamma_multiply(e)),
+                        StrokeKind::Inside,
+                    );
+                }
+                ui.painter().hline(
+                    shelf.x_range(),
+                    shelf.max.y - 1.5,
+                    Stroke::new(3.0, t.border),
+                );
+                ui.add_space(20.0);
+                ui.add(egui::Label::new(big("Back up your Android phone to this PC")).wrap());
+                ui.add(egui::Label::new("Photos, videos and files, and with USB debugging also apps, contacts, messages and the calendar. Next time, only what changed is copied.").wrap());
+                ui.add(
+                    egui::Label::new(muted(
+                        "No account and no cloud. Your backups stay on this computer.",
+                    ))
+                    .wrap(),
+                );
+            }
+            1 => {
+                ui.add(egui::Label::new(big("Apps and messages need adb")).wrap());
+                ui.add(egui::Label::new("Photos, videos and files back up without it. For apps, contacts, messages and the calendar, the app uses adb, Google's free tool for Android phones.").wrap());
+                ui.add_space(4.0);
+                if self.adb_ok {
+                    result_box(t).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label("adb is ready on this computer.");
+                    });
+                } else {
+                    adb_missing(ui, t);
+                    if ui.button("Check again").clicked() {
+                        self.adb_ok = backup::adb_installed();
+                    }
+                }
+            }
+            2 => {
+                ui.add(egui::Label::new(big("Connect your phone")).wrap());
+                steps(
+                    ui,
+                    t,
+                    &[
+                        "Plug it into this computer with a USB cable.",
+                        "Unlock it, tap the USB notification and choose File transfer.",
+                        "For apps, contacts and messages, also turn on USB debugging:",
+                    ],
+                );
+                ui.add_space(4.0);
+                self.brand_steps(ui, t);
+                ui.add(
+                    egui::Label::new(muted(
+                        "Rather not use a cable? Connect over Wi-Fi from the Back up page later.",
+                    ))
+                    .wrap(),
+                );
+            }
+            _ => {
+                ui.add(egui::Label::new(big("Where should backups go?")).wrap());
+                row(
+                    ui,
+                    t,
+                    "Backup folder",
+                    "A first backup is about as big as what is on the phone.",
+                    |ui| self.folder_row(ui, t),
+                );
+                ui.add(egui::Label::new(muted("Backups are ordinary files and are not encrypted. Privacy and the license are in Settings.")).wrap());
+            }
+        }
+        ui.add_space(24.0);
+        ui.horizontal(|ui| {
+            if step > 0 && ui.button("Back").clicked() {
+                self.intro = Some(step - 1);
+                self.tab_at = Instant::now();
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let label = match step {
+                    0 => "Get started",
+                    1 if !self.adb_ok => "Set up adb later",
+                    LAST => "Start using Phone Backup",
+                    _ => "Next",
+                };
+                if primary(ui, t, label, true) {
+                    if step == LAST {
+                        self.intro = None;
+                        self.go(Tab::Backup);
+                    } else {
+                        self.intro = Some(step + 1);
+                        self.tab_at = Instant::now();
+                    }
+                }
+            });
         });
     }
 
@@ -2236,7 +2682,7 @@ impl App {
                         .on_hover_text(&full);
                 });
                 if ui.add_enabled(!busy, egui::Link::new("Change…")).clicked() {
-                    self.tab = Tab::Settings;
+                    self.go(Tab::Settings);
                 }
             });
         });
@@ -3967,40 +4413,45 @@ impl eframe::App for App {
         self.ask_dialog(ui.ctx(), &t);
         self.confirm_dialog(ui.ctx());
 
-        // The page list down the left, or on narrow windows a strip over the page.
-        let side = ui.available_width() >= 640.0;
-        if side {
-            egui::Panel::left("nav")
-                .exact_size(200.0)
-                .resizable(false)
-                .show_separator_line(false)
-                .frame(egui::Frame::new().fill(t.bg).inner_margin(8))
-                .show(ui, |ui| self.nav(ui, &t, true));
+        // Esc leaves Privacy and License for Settings, where they open from.
+        if matches!(self.tab, Tab::Privacy | Tab::License)
+            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.go(Tab::Settings);
         }
-        let pad: i8 = if side { 28 } else { 16 };
-        let edge: i8 = if side { 0 } else { -1 };
+        let pad: i8 = if ui.available_width() >= 640.0 {
+            28
+        } else {
+            16
+        };
+        egui::Panel::top("bar")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin {
+                left: pad,
+                right: 8,
+                top: 6,
+                bottom: 0,
+            }))
+            .show(ui, |ui| self.top_bar(ui, &t));
         egui::Frame::central_panel(ui.style())
             .fill(t.bg)
             .inner_margin(0)
             .show(ui, |ui| {
-                // A lighter page with a rounded top-left corner; its right and bottom edges sit
-                // just outside the window.
+                // A lighter page under the tabs; its side and bottom edges sit just outside the
+                // window.
                 egui::Frame::new()
                     .fill(t.layer)
                     .stroke(Stroke::new(1.0, t.line))
-                    .corner_radius(egui::CornerRadius {
-                        nw: if side { 8 } else { 0 },
-                        ..Default::default()
-                    })
                     .outer_margin(egui::Margin {
-                        left: edge,
-                        top: edge,
+                        left: -1,
+                        top: 0,
                         right: -1,
                         bottom: -1,
                     })
                     .show(ui, |ui| {
                         ui.set_min_size(ui.available_size());
-                        self.page(ui, &t, side, pad);
+                        self.page(ui, &t, pad);
                     });
             });
     }
