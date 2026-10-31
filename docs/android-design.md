@@ -119,17 +119,17 @@ The current layout stays; new files are added beside it.
     calllog.json              new
     calendar.ics              new: for other apps
     calendar.json             new: for exact restore
-  manifest.json               new: app version, device info, counts, SHA-256 per data file
+  checksums.sha256            existing: SHA-256 of every file, checked by Verify backup
   report.txt                  existing
 ```
 
 - Human formats (`.vcf`, `.ics`) for people; `.json` for exact restore. Restore prefers `.json`.
 - The existing `content query` text files remain the fallback when the companion app is refused.
-- `manifest.json` lets a Backups screen show what a backup holds and verify it.
+- `checksums.sha256` is in `sha256sum` format, so `sha256sum -c` checks a backup without this app.
 
 ### 4.1 Optional encryption
 
-- One password per backup. Derive a key with Argon2id and encrypt each file with AES-256-GCM, a random nonce per file, salt and parameters stored in `manifest.json`.
+- One password per backup. Derive a key with Argon2id and encrypt each file with AES-256-GCM, a random nonce per file, salt and parameters stored in a small `encryption.json` beside `checksums.sha256`.
 - Default: encrypt the `data/` folder only. Media is large and usually not secret; encrypting it is an option.
 - The password is never stored. The UI warns that a lost password means a lost backup.
 
@@ -168,14 +168,14 @@ Only the user's own files and public formats:
 | # | Step | Size | Builds on |
 |---|---|---|---|
 | 1 | File restore (`adb push` + media scan) | S | `pull`, `needs_copy`, `safe_name` |
-| 2 | `manifest.json` and a Backups screen with verify | S | `adb_backup` |
+| 2 | A Backups screen: list, size, date, verify, delete | S | `verify` |
 | 3 | Companion app v1: hello, permissions, list contacts, call history, SMS, calendar | M-L | new Kotlin project |
 | 4 | Use the companion for personal data; keep `content query` as fallback | S | `adb_backup` |
 | 5 | Exports: ICS, CSV, HTML conversations | M | `vcard` |
 | 6 | Contacts, call history and calendar restore | M | companion `insert` |
 | 7 | SMS and MMS restore with the default-SMS switch | M | companion `sms_role` |
 | 8 | Phone-to-phone wizard | S | 1-7 |
-| 9 | Optional encryption | S-M | `manifest.json` |
+| 9 | Optional encryption | S-M | `checksums.sha256` |
 | 10 | WhatsApp folder backup, then the crypt15 viewer | S, then L | |
 
 Each step gets its own branch and pull request, like the items in `PLAN.md`.

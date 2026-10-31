@@ -31,6 +31,8 @@ pub enum Msg {
     Wifi(Result<String, String>),
     Done(Result<Vec<Summary>, String>),
     Restored(Result<String, String>),
+    /// The backup folder checked and what the check found.
+    Verified(PathBuf, Result<String, String>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -39,6 +41,8 @@ pub enum Phone {
         serial: String,
         model: String,
         wifi: bool,
+        /// The battery level, only when it is under 20% and the phone is not charging.
+        battery: Option<u8>,
     },
     /// Plugged in with USB debugging on, but "Allow" not tapped yet.
     Unauthorized,
@@ -120,6 +124,20 @@ pub fn detect() -> Vec<Phone> {
             _ => true,
         });
     }
+    for p in &mut phones {
+        if let Phone::Adb {
+            serial, battery, ..
+        } = p
+        {
+            // Not stoppable like `shell`, for the same reason as phone_id.
+            let out = adb()
+                .args(["-s", serial, "shell", "dumpsys battery"])
+                .output()
+                .map(|o| o.stdout)
+                .unwrap_or_default();
+            *battery = low_battery(&String::from_utf8_lossy(&out));
+        }
+    }
     if !phones.is_empty() {
         return phones;
     }
@@ -153,6 +171,7 @@ fn parse_adb_devices(text: &str) -> Vec<Phone> {
                     serial: serial.into(),
                     model,
                     wifi,
+                    battery: None,
                 });
             }
             // "authorizing" is the moment the Allow prompt is on screen.
@@ -161,6 +180,21 @@ fn parse_adb_devices(text: &str) -> Vec<Phone> {
         }
     }
     phones
+}
+
+/// The level from `dumpsys battery` when it is under 20% and no charger (AC, USB, wireless,
+/// dock) is powering the phone.
+fn low_battery(dumpsys: &str) -> Option<u8> {
+    let mut level = None;
+    for line in dumpsys.lines().map(str::trim) {
+        if line.ends_with("powered: true") {
+            return None;
+        }
+        if let Some(l) = line.strip_prefix("level: ") {
+            level = l.parse().ok();
+        }
+    }
+    level.filter(|l| *l < 20)
 }
 
 /// Runs `adb pair` or `adb connect` and returns what adb said.
@@ -388,6 +422,7 @@ pub fn adb_backup(
         );
     }
     let files = jobs.len();
+    let mut listed: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
     jobs.retain(needs_copy);
     let to_copy = jobs.len();
     let needed: u64 = jobs.iter().map(|j| j.size).sum();
@@ -402,6 +437,9 @@ pub fn adb_backup(
         }
     }
     let tried = jobs.clone();
+    // Old sums of files about to be replaced go first, so a stopped backup leaves no wrong sum.
+    let replaced: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
+    update_sums(&root, &replaced, &[], report);
     let errors = pull(serial, jobs, &root, report);
     if stopped() {
         return Err(STOPPED.into());
@@ -415,6 +453,7 @@ pub fn adb_backup(
     let data_dir = root.join("data");
     let _ = fs::create_dir_all(if pick.data { &data_dir } else { &root });
     let mut data = Vec::new();
+    let mut written = Vec::new();
     for (label, file, query) in [
         ("Contacts", "contacts.txt", "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1"),
         ("Call history", "call_log.txt", "content query --uri content://call_log/calls --projection number:name:date:duration:type"),
@@ -428,11 +467,15 @@ pub fn adb_backup(
         if ok {
             if file == "contacts.txt" {
                 let _ = fs::write(data_dir.join("contacts.vcf"), vcard(&out));
+                written.push(data_dir.join("contacts.vcf"));
             }
             let _ = fs::write(data_dir.join(file), out);
+            written.push(data_dir.join(file));
         }
         data.push((label, ok));
     }
+    listed.extend(written.iter().cloned());
+    update_sums(&root, &written, &listed, report);
 
     let copied: Vec<PathBuf> = tried
         .into_iter()
@@ -570,6 +613,132 @@ fn renamed(root: &Path) -> BTreeMap<String, String> {
                 .map(|(a, b)| (a.to_string(), b.to_string()))
         })
         .collect()
+}
+
+/// SHA-256 of every file in a backup, in `sha256sum` format so `sha256sum -c` can check it too.
+pub const CHECKSUMS: &str = "checksums.sha256";
+
+/// The sums of a backup folder: path inside it (with `/`) to the hex SHA-256.
+fn read_sums(root: &Path) -> BTreeMap<String, String> {
+    fs::read_to_string(root.join(CHECKSUMS))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            l.split_once("  ")
+                .map(|(sum, path)| (path.to_string(), sum.to_string()))
+        })
+        .collect()
+}
+
+/// `path` inside `root`, with `/` as `sha256sum` writes it.
+fn rel(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn sha256(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    std::io::copy(&mut fs::File::open(path)?, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Drops the sums of `fresh` files (just rewritten) and of files gone from the folder, then
+/// hashes each `known` file that has no sum. Old sums of untouched files are kept, so a later
+/// backup hashes only what it copied.
+fn update_sums(root: &Path, fresh: &[PathBuf], known: &[PathBuf], report: &dyn Fn(Msg)) {
+    let old = read_sums(root);
+    let mut sums = old.clone();
+    sums.retain(|path, _| root.join(path).is_file());
+    for p in fresh {
+        sums.remove(&rel(root, p));
+    }
+    let todo: Vec<&PathBuf> = known
+        .iter()
+        .filter(|p| !sums.contains_key(&rel(root, p)))
+        .collect();
+    for (n, p) in todo.iter().enumerate() {
+        if stopped() {
+            break;
+        }
+        if n % 100 == 0 {
+            report(Msg::Status(format!(
+                "Saving checksums: {} of {}…",
+                count(n),
+                files(todo.len())
+            )));
+        }
+        // A file that failed to copy is not there to hash; it gets its sum next time.
+        if let Ok(sum) = sha256(p) {
+            sums.insert(rel(root, p), sum);
+        }
+    }
+    if sums != old {
+        let _ = fs::write(
+            root.join(CHECKSUMS),
+            sums.iter()
+                .map(|(path, sum)| format!("{sum}  {path}\n"))
+                .collect::<String>(),
+        );
+    }
+}
+
+/// Re-hashes every file listed in a backup's checksums and says which changed or went missing.
+pub fn verify(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
+    let sums = read_sums(root);
+    if sums.is_empty() {
+        return Err("This backup has no checksums yet. Back it up again to add them.".into());
+    }
+    let (mut changed, mut missing) = (Vec::new(), Vec::new());
+    for (n, (path, sum)) in sums.iter().enumerate() {
+        if stopped() {
+            return Err("You stopped the check. The backup was not changed.".into());
+        }
+        report(Msg::Progress {
+            done: n,
+            total: sums.len(),
+            now: path.clone(),
+        });
+        match sha256(&root.join(path)) {
+            Ok(s) if s == *sum => {}
+            Ok(_) => changed.push(path.as_str()),
+            Err(_) => missing.push(path.as_str()),
+        }
+    }
+    if changed.is_empty() && missing.is_empty() {
+        return Ok(format!(
+            "All {} match. Nothing has changed since they were backed up.",
+            files(sums.len())
+        ));
+    }
+    let mut msg = String::new();
+    for (list, what) in [(&changed, "changed"), (&missing, "missing")] {
+        if !list.is_empty() {
+            msg += &format!(
+                "{} {} {what}, for example {}.\n",
+                files(list.len()),
+                if list.len() == 1 { "is" } else { "are" },
+                list.iter().take(3).copied().collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+    Err(msg + "Back up again to copy them from the phone, if it still has them.")
+}
+
+/// Keeps Windows from sleeping while this thread runs a job; `false` lets it sleep again.
+pub fn keep_awake(on: bool) {
+    // SAFETY: only sets a flag for the calling thread; no pointers involved.
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Power::*;
+        SetThreadExecutionState(if on {
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        } else {
+            ES_CONTINUOUS
+        });
+    }
 }
 
 /// Bytes the current user may still write on the drive holding `path`.
@@ -1362,6 +1531,7 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
     let name = info.model.clone();
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
     let (mut files, mut copied, mut errors) = (0, Vec::new(), Vec::new());
+    let mut kept = Vec::new();
 
     for (n, storage) in device
         .storages()
@@ -1380,6 +1550,8 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
         let mut stack = vec![(None, base)];
         while let Some((parent, dir)) = stack.pop() {
             if stopped() {
+                // Copied files may replace older ones whose sums no longer match.
+                update_sums(&root, &copied, &[], report);
                 return Err(STOPPED.into());
             }
             let now = dir
@@ -1411,6 +1583,7 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
                 files += 1;
                 // shortcut: MTP compares size only (no file times); a same-size edit is missed.
                 if fs::metadata(&local).is_ok_and(|m| m.len() == obj.size) {
+                    kept.push(local);
                     continue;
                 }
                 let part = local.with_extension("part-download");
@@ -1444,6 +1617,8 @@ pub async fn mtp_backup(dest: &Path, report: &dyn Fn(Msg)) -> Result<Summary, St
         }
     }
     let _ = fs::create_dir_all(&root);
+    kept.extend(copied.iter().cloned());
+    update_sums(&root, &copied, &kept, report);
     let s = Summary {
         name,
         root,
@@ -1521,13 +1696,81 @@ mod tests {
                 == Phone::Adb {
                     serial: "emulator-5554".into(),
                     model: "Pixel 8".into(),
-                    wifi: false
+                    wifi: false,
+                    battery: None
                 }
         );
         assert!(matches!(&phones[1], Phone::Adb { wifi: true, model, .. } if model == "SM G991B"));
         assert!(phones[2] == Phone::Unauthorized);
         assert!(phones[3] == Phone::Unauthorized);
         assert_eq!(phones.len(), 4);
+    }
+
+    #[test]
+    fn warns_only_on_low_battery_without_charger() {
+        let dump = |level: u8, usb: bool| {
+            format!(
+                "Current Battery Service state:\n  AC powered: false\n  USB powered: {usb}\n  Wireless powered: false\n  level: {level}\n"
+            )
+        };
+        assert_eq!(low_battery(&dump(12, false)), Some(12));
+        assert_eq!(low_battery(&dump(12, true)), None);
+        assert_eq!(low_battery(&dump(20, false)), None);
+        assert_eq!(low_battery(""), None);
+    }
+
+    #[test]
+    fn keeps_and_checks_sums() {
+        let root = std::env::temp_dir().join(format!("phone-backup-sums-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (a, b) = (root.join("files/DCIM/a.jpg"), root.join("data/sms.txt"));
+        fs::create_dir_all(a.parent().unwrap()).unwrap();
+        fs::create_dir_all(b.parent().unwrap()).unwrap();
+        fs::write(&a, "abc").unwrap();
+        fs::write(&b, "one").unwrap();
+        fs::write(root.join(REPORT), "r").unwrap();
+        let quiet = |_: Msg| {};
+        let known = [a.clone(), b.clone()];
+        update_sums(&root, &[], &known, &quiet);
+        let first = fs::read_to_string(root.join(CHECKSUMS)).unwrap();
+        // sha256sum format, forward slashes, and the report is left out.
+        assert!(first.contains(
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  files/DCIM/a.jpg\n"
+        ));
+        assert_eq!(first.lines().count(), 2);
+        assert!(
+            verify(&root, &quiet)
+                .unwrap()
+                .starts_with("All 2 files match")
+        );
+
+        // A file not copied again keeps its old sum, even if it changed on disk since.
+        let a_sum = read_sums(&root)["files/DCIM/a.jpg"].clone();
+        fs::write(&a, "abd").unwrap();
+        fs::write(&b, "two").unwrap();
+        update_sums(&root, std::slice::from_ref(&b), &known, &quiet);
+        let second = read_sums(&root);
+        assert_eq!(second["files/DCIM/a.jpg"], a_sum);
+        assert_eq!(second["data/sms.txt"], sha256(&b).unwrap());
+        fs::remove_file(&b).unwrap();
+        let err = verify(&root, &quiet).unwrap_err();
+        assert!(
+            err.contains("1 file is changed, for example files/DCIM/a.jpg."),
+            "{err}"
+        );
+        assert!(
+            err.contains("1 file is missing, for example data/sms.txt."),
+            "{err}"
+        );
+        // A gone file loses its sum on the next backup.
+        update_sums(&root, &[], &[], &quiet);
+        assert_eq!(read_sums(&root).len(), 1);
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            verify(&root, &quiet)
+                .unwrap_err()
+                .contains("no checksums yet")
+        );
     }
 
     #[test]
@@ -1789,11 +2032,21 @@ mod tests {
         println!("{vcf}");
         assert!(vcf.contains("TEL:+1 555 0100"));
 
+        let sums = fs::read_to_string(first.root.join(CHECKSUMS)).unwrap();
+        assert!(sums.contains("  files/E2E/Docs/_CON.txt\n"), "{sums}");
+        assert!(sums.contains("  data/contacts.vcf\n"), "{sums}");
+        assert!(!sums.contains(REPORT));
         let again = adb_backup(&serial, "E2E", &dest, all, &quiet).unwrap();
         assert_eq!(
             (again.copied, again.files, again.errors.len()),
             (0, first.files, 0)
         );
+        assert_eq!(
+            fs::read_to_string(first.root.join(CHECKSUMS)).unwrap(),
+            sums
+        );
+        let msg = verify(&first.root, &quiet).unwrap();
+        assert!(msg.starts_with("All "), "{msg}");
 
         // Restore: delete some files on the phone, then bring them back.
         let deep_remote = (1..=12).fold("/sdcard/E2E/deep".to_string(), |p, i| {

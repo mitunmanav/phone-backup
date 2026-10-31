@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
 /// Windows 11 colours: the window, a lighter page beside the page list, lighter panels on it.
@@ -454,6 +454,16 @@ fn days_ago(days: Option<u64>) -> String {
     }
 }
 
+/// 30 -> "less than a minute left", 690 -> "about 12 min left", 7800 -> "about 2 h 10 min left"
+fn time_left(secs: u64) -> String {
+    let min = secs.div_ceil(60);
+    match min {
+        ..=1 => "less than a minute left".into(),
+        2..=59 => format!("about {min} min left"),
+        _ => format!("about {} h {} min left", min / 60, min % 60),
+    }
+}
+
 struct App {
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
@@ -466,6 +476,8 @@ struct App {
     status: String,
     now: String,
     fraction: Option<f32>,
+    /// When the progress bar last appeared, for the time left.
+    progress_from: Instant,
     result: Option<Result<Vec<Summary>, String>>,
     pair_addr: String,
     pair_code: String,
@@ -486,6 +498,10 @@ struct App {
     restore_report: Option<PathBuf>,
     /// The busy job is a restore, not a backup.
     restoring: bool,
+    /// The busy job is a backup check.
+    verifying: bool,
+    /// The backup last checked and what the check found.
+    verified: Option<(PathBuf, Result<String, String>)>,
     restore_msg: Option<Result<String, String>>,
     /// The running restore is only a check; holds what it checks.
     checking: Option<Plan>,
@@ -631,6 +647,7 @@ impl App {
             status: String::new(),
             now: String::new(),
             fraction: None,
+            progress_from: Instant::now(),
             result: None,
             pair_addr: cc
                 .storage
@@ -651,6 +668,8 @@ impl App {
             sound: cc.storage.and_then(|s| s.get_string("sound")).as_deref() == Some("1"),
             restore_report: None,
             restoring: false,
+            verifying: false,
+            verified: None,
             restore_msg: None,
             checking: None,
             preview: None,
@@ -687,6 +706,7 @@ impl App {
                         app.status = "Copying 48,213 of 128,456 files…".into();
                         app.now = r"/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4".into();
                         app.fraction = Some(0.375);
+                        app.progress_from = Instant::now() - Duration::from_secs(431);
                     }
                     _ if word.starts_with("zoom=") => {
                         ctx.set_zoom_factor(word[5..].parse().unwrap_or(1.0))
@@ -719,11 +739,13 @@ impl App {
         busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
         self.restoring = false;
+        self.verifying = false;
         self.result = None;
         self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
         thread::spawn(move || {
+            backup::keep_awake(true);
             let report = |m: Msg| {
                 let _ = tx.send(m);
                 ctx.request_repaint();
@@ -764,6 +786,7 @@ impl App {
                     Err(failed.join("\n") + &ok)
                 }
             };
+            backup::keep_awake(false);
             busy.store(false, Ordering::Relaxed);
             report(Msg::Done(result));
         });
@@ -776,6 +799,7 @@ impl App {
         busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
         self.restoring = true;
+        self.verifying = false;
         self.restore_msg = None;
         self.preview = None;
         self.checking = check.then(|| plan.clone());
@@ -797,6 +821,7 @@ impl App {
         self.now.clear();
         self.fraction = None;
         thread::spawn(move || {
+            backup::keep_awake(true);
             let report = |m: Msg| {
                 let _ = tx.send(m);
                 ctx.request_repaint();
@@ -819,8 +844,33 @@ impl App {
                 let (Ok(text) | Err(text)) = &result;
                 backup::save_report(&path, &format!("Restore to {phone}"), text);
             }
+            backup::keep_awake(false);
             busy.store(false, Ordering::Relaxed);
             report(Msg::Restored(result));
+        });
+    }
+
+    /// Re-hashes a backup's files in a worker and compares them with its checksums.
+    fn verify(&mut self, ctx: &egui::Context, folder: PathBuf) {
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
+        busy.store(true, Ordering::Relaxed);
+        backup::STOP.store(false, Ordering::Relaxed);
+        self.restoring = false;
+        self.verifying = true;
+        self.verified = None;
+        self.status = "Starting…".into();
+        self.now.clear();
+        self.fraction = None;
+        thread::spawn(move || {
+            backup::keep_awake(true);
+            let report = |m: Msg| {
+                let _ = tx.send(m);
+                ctx.request_repaint();
+            };
+            let result = backup::verify(&folder, &report);
+            backup::keep_awake(false);
+            busy.store(false, Ordering::Relaxed);
+            report(Msg::Verified(folder, result));
         });
     }
 
@@ -1360,6 +1410,33 @@ impl App {
             }
         }
 
+        let low: Vec<(String, u8)> = self
+            .phones
+            .iter()
+            .flatten()
+            .filter_map(|p| match p {
+                Phone::Adb {
+                    model,
+                    battery: Some(b),
+                    ..
+                } => Some((model.clone(), *b)),
+                _ => None,
+            })
+            .collect();
+        for (model, level) in &low {
+            let who = if adb.len() > 1 {
+                format!("{model}: battery")
+            } else {
+                "Battery".into()
+            };
+            ui.label(
+                RichText::new(format!(
+                    "{who} at {level}% and not charging. Charge the phone so it does not switch off mid-backup."
+                ))
+                .color(t.error),
+            );
+        }
+
         // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching this card.
         ui.add_space(12.0);
         if ui
@@ -1561,6 +1638,13 @@ impl App {
             }
             ui.add(egui::Label::new(&self.status).wrap());
         });
+        let spent = self.progress_from.elapsed().as_secs_f32();
+        // A few seconds in, so the first batch does not give a wild guess.
+        if let Some(f) = self.fraction.filter(|f| *f > 0.0 && spent > 5.0) {
+            // shortcut: estimate by file count, not bytes; switch to bytes if users see bad estimates
+            let left = spent * (1.0 - f) / f;
+            ui.label(RichText::new(time_left(left as u64)).color(t.muted));
+        }
         if !self.now.is_empty() {
             ui.add(egui::Label::new(RichText::new(&self.now).color(t.muted)).truncate());
         }
@@ -1821,14 +1905,21 @@ impl App {
                         }
                     });
                 ui.add_space(8.0);
-                if ui.button("Find another backup").clicked()
-                    && let Some(dir) = rfd::FileDialog::new()
-                        .set_directory(&self.dest)
-                        .pick_folder()
-                {
-                    self.chosen = Some(dir.clone());
-                    self.scan(&dir);
-                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Find another backup").clicked()
+                        && let Some(dir) = rfd::FileDialog::new()
+                            .set_directory(&self.dest)
+                            .pick_folder()
+                    {
+                        self.chosen = Some(dir.clone());
+                        self.scan(&dir);
+                    }
+                    if let Some(path) = self.chosen.clone()
+                        && ui.button("Verify backup").clicked()
+                    {
+                        self.verify(ui.ctx(), path);
+                    }
+                });
             });
         });
 
@@ -1898,6 +1989,7 @@ impl App {
         // Any change to the phone, backup or ticks after a check means checking again.
         let checked = matches!(self.preview_for(plan.as_ref()), Some(Ok(_)));
         let title = match &phone {
+            _ if busy && self.verifying => "Checking the backup…".into(),
             _ if busy && self.checking.is_some() => "Checking…".into(),
             _ if busy => "Restoring…".into(),
             None => "Connect the phone with USB debugging on to restore to it".into(),
@@ -1907,7 +1999,9 @@ impl App {
         };
         Cmd {
             title,
-            note: if busy {
+            note: if busy && self.verifying {
+                "Nothing in the backup or on the phone changes."
+            } else if busy {
                 "Keep the phone plugged in and unlocked."
             } else if plan.is_some() {
                 "Nothing changes on the phone until you press Restore now."
@@ -1934,6 +2028,23 @@ impl App {
 
     /// What the last check or restore found.
     fn restore_result(&mut self, ui: &mut egui::Ui, t: &Tokens, plan: Option<&Plan>) {
+        if let Some((_, r)) = self
+            .verified
+            .as_ref()
+            .filter(|(folder, _)| Some(folder) == self.chosen.as_ref())
+            .filter(|_| !self.busy.load(Ordering::Relaxed))
+        {
+            ui.add_space(16.0);
+            result_box(t).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let (title, color, text) = match r {
+                    Ok(m) => ("Backup verified", t.ink, m),
+                    Err(e) => ("Backup not verified", t.error, e),
+                };
+                ui.label(RichText::new(title).font(semibold(16.0)).color(color));
+                ui.label(text.as_str());
+            });
+        }
         if let Some(r) = self
             .preview_for(plan)
             .filter(|_| !self.busy.load(Ordering::Relaxed))
@@ -2012,14 +2123,16 @@ impl App {
             apps,
             age_days: age,
         };
-        let adb = |model: &str, wifi: bool| Phone::Adb {
+        let adb = |model: &str, wifi: bool, battery: Option<u8>| Phone::Adb {
             serial: format!("{model}-serial"),
             model: model.into(),
             wifi,
+            battery,
         };
         self.restore_msg = None;
         self.result = None;
         self.wifi_msg = None;
+        self.verified = None;
         match f {
             Fixture::Real => {
                 self.phones = None;
@@ -2028,7 +2141,7 @@ impl App {
                 self.scan(&dest);
             }
             Fixture::Worst => {
-                self.phones = Some(vec![adb("Redmi Note 13 Pro+ 5G", true)]);
+                self.phones = Some(vec![adb("Redmi Note 13 Pro+ 5G", true, Some(9))]);
                 self.dest = PathBuf::from(
                     r"C:\Users\Aleksandra Wiśniewska-Kowalczyk\OneDrive - Northwind Industries Holdings\Documents\Phone backups",
                 );
@@ -2045,6 +2158,10 @@ impl App {
                     ),
                     saved("Jo", false, true, Some(1)),
                 ];
+                self.verified = Some((
+                    self.backups[0].path.clone(),
+                    Err("1,284 files are changed, for example files/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4, files/DCIM/Camera/PXL_20240817_183455123.NIGHT.jpg, files/Download/bartholomew.fitzgerald@northwind-industries-holdings.example.com_invoice.pdf.\n3 files are missing, for example data/sms.txt, apps/com.whatsapp/base.apk, files/ünïcødé 日本.txt.\nBack up again to copy them from the phone, if it still has them.".into()),
+                ));
                 self.restore_msg = Some(Err("Copied 1 file back to the phone. 1,284 files were already there. 3 files could not be copied, for example /sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4, /sdcard/DCIM/Camera/PXL_20240817_183455123.NIGHT.jpg, /sdcard/Download/bartholomew.fitzgerald@northwind-industries-holdings.example.com_invoice.pdf. Restore again to retry.\nThe phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.".into()));
                 self.result = Some(Ok(vec![Summary {
                     name: "Redmi Note 13 Pro+ 5G".into(),
@@ -2081,9 +2198,9 @@ impl App {
             }
             Fixture::Many => {
                 self.phones = Some(vec![
-                    adb("Pixel 8", false),
-                    adb("Galaxy S23 Ultra", false),
-                    adb("Redmi Note 13 Pro+ 5G", true),
+                    adb("Pixel 8", false, None),
+                    adb("Galaxy S23 Ultra", false, Some(14)),
+                    adb("Redmi Note 13 Pro+ 5G", true, None),
                 ]);
                 self.backups = (0..40)
                     .map(|i| saved(&format!("Pixel {}", i % 9), true, i % 3 == 0, Some(i * 17)))
@@ -2142,7 +2259,15 @@ impl eframe::App for App {
                 Msg::Progress { done, total, now } => {
                     self.now = now;
                     if total > 0 {
-                        self.status = format!("Copying {} of {}…", count(done), files(total));
+                        let verb = if self.verifying {
+                            "Checking"
+                        } else {
+                            "Copying"
+                        };
+                        self.status = format!("{verb} {} of {}…", count(done), files(total));
+                        if self.fraction.is_none() {
+                            self.progress_from = Instant::now();
+                        }
                         self.fraction = Some(done as f32 / total as f32);
                     } else {
                         self.status = format!("{} copied so far", files(done));
@@ -2164,6 +2289,10 @@ impl eframe::App for App {
                     self.result = Some(r);
                     self.finished(ui.ctx());
                 }
+                Msg::Verified(folder, r) => {
+                    self.verified = Some((folder, r));
+                    self.finished(ui.ctx());
+                }
             }
         }
 
@@ -2180,7 +2309,10 @@ impl eframe::App for App {
         if self.confirm_close {
             let modal = egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
                 ui.set_max_width(ui.available_width().min(320.0));
-                if self.restoring {
+                if self.verifying {
+                    ui.label(RichText::new("Stop checking the backup?").font(semibold(16.0)));
+                    ui.label("The backup is not changed. You can check it again later.");
+                } else if self.restoring {
                     ui.label(RichText::new("Stop restoring?").font(semibold(16.0)));
                     ui.label("Everything restored so far stays on the phone.");
                 } else {
@@ -2193,7 +2325,14 @@ impl eframe::App for App {
                         self.closing = true;
                         self.confirm_close = false;
                     }
-                    if ui.button(if self.restoring { "Keep restoring" } else { "Keep backing up" }).clicked() {
+                    let keep = if self.verifying {
+                        "Keep checking"
+                    } else if self.restoring {
+                        "Keep restoring"
+                    } else {
+                        "Keep backing up"
+                    };
+                    if ui.button(keep).clicked() {
                         self.confirm_close = false;
                     }
                 });
@@ -2304,6 +2443,14 @@ mod tests {
         assert_eq!(super::days_ago(Some(364)), "12 months ago");
         assert_eq!(super::days_ago(Some(365)), "1 year ago");
         assert_eq!(super::days_ago(Some(1284)), "3 years ago");
+    }
+
+    #[test]
+    fn says_time_left() {
+        assert_eq!(super::time_left(30), "less than a minute left");
+        assert_eq!(super::time_left(690), "about 12 min left");
+        assert_eq!(super::time_left(3540), "about 59 min left");
+        assert_eq!(super::time_left(7800), "about 2 h 10 min left");
     }
 
     #[test]
