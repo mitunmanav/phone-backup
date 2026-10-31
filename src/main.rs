@@ -3,12 +3,13 @@
 
 mod backup;
 
-use backup::{Msg, Phone, Pick, Summary, count, files, or_list};
+use backup::{Msg, Phone, Pick, Summary, count, files, or_list, size};
 use eframe::egui::{
-    self, Align, Color32, FontFamily, FontId, Layout, Rect, RichText, Stroke, StrokeKind,
+    self, Align, Align2, Color32, FontFamily, FontId, Layout, Rect, RichText, Stroke, StrokeKind,
     TextStyle, pos2, vec2,
 };
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -162,6 +163,47 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+}
+
+/// What the file picker's worker sends back.
+enum Found {
+    List(Result<Vec<(PathBuf, u64)>, String>),
+    Thumb(PathBuf, Option<egui::ColorImage>),
+}
+
+/// The open "Choose files" dialog. Dropping it ends its worker thread.
+struct Picker {
+    folder: PathBuf,
+    /// None while the worker reads the backup.
+    files: Option<Result<Vec<(PathBuf, u64)>, String>>,
+    chosen: HashSet<PathBuf>,
+    /// None: not a picture this app can show.
+    thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    /// The rows last asked for, so the worker hears only of changes.
+    asked: Vec<PathBuf>,
+    ask: mpsc::Sender<Vec<PathBuf>>,
+    rx: mpsc::Receiver<Found>,
+}
+
+/// An 80 px square preview of a picture, turned the way the camera held it.
+fn thumbnail(path: &Path) -> Option<egui::ColorImage> {
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let turn = decoder.orientation().ok()?;
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .ok()?
+        .resize_to_fill(80, 80, image::imageops::FilterType::Triangle);
+    img.apply_orientation(turn);
+    let rgba = img.to_rgba8();
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [rgba.width() as usize, rgba.height() as usize],
+        &rgba,
+    ))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -404,14 +446,17 @@ struct App {
     chosen: Option<PathBuf>,
     restore_files: bool,
     restore_apps: bool,
+    /// Files chosen in the picker for one backup folder: (folder, chosen, files it holds).
+    only: Option<(PathBuf, Arc<HashSet<PathBuf>>, usize)>,
+    picker: Option<Picker>,
     /// Debug builds only: which test data is shown instead of the real phones and backups.
     fixture: Fixture,
     /// Debug builds only: scroll position to open at, for screenshots.
     scroll: Option<f32>,
 }
 
-/// A restore's choices: phone serial, backup folder, files, apps.
-type Plan = (String, PathBuf, bool, bool);
+/// A restore's choices: phone serial, backup folder, files, apps, and the chosen files (None: all).
+type Plan = (String, PathBuf, bool, bool, Option<Arc<HashSet<PathBuf>>>);
 
 /// Test data for checking the layout against realistic worst cases. Never shown in release builds.
 #[derive(Clone, Copy, PartialEq)]
@@ -553,10 +598,13 @@ impl App {
             chosen: None,
             restore_files: true,
             restore_apps: true,
+            only: None,
+            picker: None,
             fixture: Fixture::Real,
             scroll: None,
         };
-        // PB_FIXTURE="worst|empty|one|many [restore] [light|dark] [scroll=<px>]" opens straight on test data.
+        // PB_FIXTURE="worst|empty|one|many [restore] [light|dark] [scroll=<px>] [pick=<backup folder>]"
+        // opens straight on test data; pick= opens the file picker on a real folder.
         if cfg!(debug_assertions) {
             let spec = env::var("PB_FIXTURE").unwrap_or_default();
             for word in spec.split_whitespace() {
@@ -568,6 +616,7 @@ impl App {
                     "restore" => app.tab = Tab::Restore,
                     "light" => ctx.set_theme(egui::Theme::Light),
                     "dark" => ctx.set_theme(egui::Theme::Dark),
+                    _ if word.starts_with("pick=") => app.open_picker(ctx, word[5..].into()),
                     _ => app.scroll = word.strip_prefix("scroll=").and_then(|n| n.parse().ok()),
                 }
             }
@@ -647,7 +696,7 @@ impl App {
         self.restore_msg = None;
         self.preview = None;
         self.checking = check.then(|| plan.clone());
-        let (serial, folder, files, apps) = plan;
+        let (serial, folder, files, apps, only) = plan;
         self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
@@ -659,8 +708,8 @@ impl App {
             let mut said = Vec::new();
             let mut result = Ok(());
             if files {
-                result =
-                    backup::restore_files(&serial, &folder, check, &report).map(|m| said.push(m));
+                result = backup::restore_files(&serial, &folder, only.as_deref(), check, &report)
+                    .map(|m| said.push(m));
             }
             if apps && result.is_ok() {
                 result =
@@ -673,6 +722,216 @@ impl App {
             busy.store(false, Ordering::Relaxed);
             report(Msg::Restored(result));
         });
+    }
+
+    /// Opens the file picker; a worker lists the backup, then makes previews of the rows in view.
+    fn open_picker(&mut self, ctx: &egui::Context, folder: PathBuf) {
+        let (ask, asks) = mpsc::channel::<Vec<PathBuf>>();
+        let (tx, rx) = mpsc::channel();
+        let (ctx, dir) = (ctx.clone(), folder.clone());
+        thread::spawn(move || {
+            let send = |f: Found| {
+                ctx.request_repaint();
+                tx.send(f).is_ok()
+            };
+            if !send(Found::List(backup::backup_files(&dir))) {
+                return;
+            }
+            let mut todo = Vec::new();
+            loop {
+                // Only the rows in view now: rows scrolled past are never decoded.
+                while let Ok(rows) = asks.try_recv() {
+                    todo = rows;
+                }
+                if todo.is_empty() {
+                    match asks.recv() {
+                        Ok(rows) => todo = rows,
+                        Err(_) => return,
+                    }
+                    continue;
+                }
+                let path = todo.remove(0);
+                let img = thumbnail(&path);
+                if !send(Found::Thumb(path, img)) {
+                    return;
+                }
+            }
+        });
+        self.picker = Some(Picker {
+            folder,
+            files: None,
+            chosen: HashSet::new(),
+            thumbs: HashMap::new(),
+            asked: Vec::new(),
+            ask,
+            rx,
+        });
+    }
+
+    fn picker_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some(p) = &mut self.picker else { return };
+        while let Ok(found) = p.rx.try_recv() {
+            match found {
+                Found::List(list) => {
+                    if let Ok(list) = &list {
+                        p.chosen = match &self.only {
+                            Some((folder, chosen, _)) if *folder == p.folder => (**chosen).clone(),
+                            _ => list.iter().map(|(f, _)| f.clone()).collect(),
+                        };
+                    }
+                    p.files = Some(list);
+                }
+                Found::Thumb(path, img) => {
+                    let tex = img.map(|img| {
+                        ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR)
+                    });
+                    p.thumbs.insert(path, tex);
+                }
+            }
+        }
+        let mut wanted = Vec::new();
+        let modal = egui::Modal::new(egui::Id::unique("picker")).show(ctx, |ui| {
+            ui.set_width(520.0_f32.min(ctx.content_rect().width() - 48.0));
+            ui.label(RichText::new("Choose files to restore").font(semibold(16.0)));
+            ui.add_space(4.0);
+            match &p.files {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Reading the backup…");
+                    });
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(e).color(t.error));
+                }
+                Some(Ok(list)) => {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Select all").clicked() {
+                            p.chosen = list.iter().map(|(f, _)| f.clone()).collect();
+                        }
+                        if ui.button("Select none").clicked() {
+                            p.chosen.clear();
+                        }
+                        // Kept whole: on a narrow window it moves under the buttons instead.
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!(
+                                    "{} of {} chosen",
+                                    count(p.chosen.len()),
+                                    files(list.len())
+                                ))
+                                .color(t.muted),
+                            )
+                            .wrap_mode(egui::TextWrapMode::Extend),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    let files_root = p.folder.join("files");
+                    let height = (ctx.content_rect().height() - 240.0).clamp(160.0, 480.0);
+                    // Only the rows in view are built, so a backup of 100,000 files stays quick.
+                    egui::ScrollArea::vertical()
+                        .max_height(height)
+                        .auto_shrink([false, true])
+                        .show_rows(ui, 40.0, list.len(), |ui, rows| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                            for (path, bytes) in &list[rows] {
+                                ui.horizontal(|ui| {
+                                    let (tile, _) = ui.allocate_exact_size(
+                                        vec2(40.0, 40.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    match p.thumbs.get(path) {
+                                        Some(Some(tex)) => {
+                                            egui::Image::new(tex)
+                                                .corner_radius(4)
+                                                .paint_at(ui, tile);
+                                        }
+                                        known => {
+                                            if known.is_none() {
+                                                wanted.push(path.clone());
+                                            }
+                                            // Not a picture, or not ready yet: its type instead.
+                                            ui.painter().rect(
+                                                tile,
+                                                4,
+                                                t.bg,
+                                                Stroke::new(1.0, t.line),
+                                                StrokeKind::Inside,
+                                            );
+                                            let ext: String = path
+                                                .extension()
+                                                .map(|e| e.to_string_lossy().to_uppercase())
+                                                .unwrap_or_default()
+                                                .chars()
+                                                .take(4)
+                                                .collect();
+                                            ui.painter().text(
+                                                tile.center(),
+                                                Align2::CENTER_CENTER,
+                                                ext,
+                                                FontId::proportional(12.0),
+                                                t.muted,
+                                            );
+                                        }
+                                    }
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().interact_size.y = 20.0;
+                                        ui.spacing_mut().item_spacing.y = 0.0;
+                                        let name = path
+                                            .file_name()
+                                            .map(|n| n.to_string_lossy().into_owned())
+                                            .unwrap_or_default();
+                                        let mut on = p.chosen.contains(path);
+                                        if ui.checkbox(&mut on, name).changed() {
+                                            if on {
+                                                p.chosen.insert(path.clone());
+                                            } else {
+                                                p.chosen.remove(path);
+                                            }
+                                        }
+                                        let dir = path.parent().unwrap_or(path);
+                                        let dir = dir
+                                            .strip_prefix(&files_root)
+                                            .or_else(|_| dir.strip_prefix(&p.folder))
+                                            .unwrap_or(dir);
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(
+                                                ui.spacing().icon_width + ui.spacing().icon_spacing,
+                                            );
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} in {}",
+                                                    size(*bytes),
+                                                    dir.display()
+                                                ))
+                                                .color(t.muted)
+                                                .size(12.0),
+                                            );
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                }
+            }
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.button("Done").clicked()
+            })
+            .inner
+        });
+        if wanted != p.asked {
+            let _ = p.ask.send(wanted.clone());
+            p.asked = wanted;
+        }
+        // Esc or a click outside keeps the choice too: nothing has changed on the phone yet.
+        if (modal.inner || modal.should_close())
+            && let Some(p) = self.picker.take()
+            && let Some(Ok(list)) = p.files
+        {
+            self.only =
+                (p.chosen.len() < list.len()).then(|| (p.folder, Arc::new(p.chosen), list.len()));
+        }
     }
 
     fn run_wifi(&mut self, ctx: &egui::Context, args: Vec<String>) {
@@ -864,7 +1123,7 @@ impl App {
 
     fn wifi_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         let modal = egui::Modal::new(egui::Id::unique("wifi")).show(ctx, |ui| {
-            ui.set_width(400.0);
+            ui.set_width(400.0_f32.min(ctx.content_rect().width() - 48.0));
             ui.label(RichText::new("Connect over Wi-Fi").font(semibold(16.0)));
             ui.add_space(4.0);
             self.wifi(ui, t);
@@ -1275,6 +1534,11 @@ impl App {
             .iter()
             .find(|b| Some(&b.path) == self.chosen.as_ref());
         let (has_files, has_apps) = chosen.map_or((false, false), |b| (b.files, b.apps));
+        let only = self
+            .only
+            .as_ref()
+            .filter(|(folder, ..)| Some(folder) == chosen.map(|b| &b.path));
+        let mut pick = false;
         section(ui, t, "What to restore", false);
         ui.add_enabled_ui(!busy, |ui| {
             choice(
@@ -1285,6 +1549,19 @@ impl App {
                 "Photos, videos and files",
                 "Files the phone already has are skipped, never replaced.",
             );
+            if has_files && self.restore_files {
+                ui.horizontal(|ui| {
+                    ui.add_space(ui.spacing().icon_width + ui.spacing().icon_spacing);
+                    let says = match only {
+                        Some((_, chosen, total)) => {
+                            format!("{} of {} chosen.", count(chosen.len()), files(*total))
+                        }
+                        None => "All files.".into(),
+                    };
+                    ui.label(RichText::new(says).color(t.muted).size(12.0));
+                    pick = ui.button("Choose files…").clicked();
+                });
+            }
             choice(
                 ui,
                 t,
@@ -1294,17 +1571,24 @@ impl App {
                 "Reinstalls missing apps. Their logins and data do not come back.",
             );
         });
-        let picked = (self.restore_files && has_files) || (self.restore_apps && has_apps);
+        let only = only.map(|(_, chosen, _)| chosen.clone());
+        let files_on =
+            self.restore_files && has_files && only.as_ref().is_none_or(|o| !o.is_empty());
+        let picked = files_on || (self.restore_apps && has_apps);
+        let path = chosen.map(|b| b.path.clone());
+        if pick && let Some(path) = &path {
+            self.open_picker(ui.ctx(), path.clone());
+        }
 
         ui.add_space(24.0);
-        let path = chosen.map(|b| b.path.clone());
         // A ticked box the chosen backup has nothing for is ignored, not run.
         let plan: Option<Plan> = match (&phone, &path) {
             (Some((serial, _)), Some(path)) if picked => Some((
                 serial.clone(),
                 path.clone(),
-                self.restore_files && has_files,
+                files_on,
                 self.restore_apps && has_apps,
+                only.filter(|_| files_on),
             )),
             _ => None,
         };
@@ -1479,7 +1763,7 @@ impl App {
             _ => None,
         });
         self.preview = first_adb.zip(self.chosen.clone()).map(|(serial, path)| {
-            let plan = (serial, path, true, true);
+            let plan = (serial, path, true, true, None);
             (plan, Ok("Files: will copy 128,456 files (214.7 GB) to the phone. 1,284 files already on the phone will be skipped; nothing is replaced. This phone has no SD card named 3A1F-0C2B or 9C33-6BD5, so those files cannot be restored.\nApps: will install 212 of 214, for example com.northwindindustries.holdings.expensereports.enterprise, com.whatsapp, org.mozilla.firefox. The rest are already on the phone.".into()))
         });
         if f != Fixture::Real {
@@ -1573,6 +1857,7 @@ impl eframe::App for App {
         if self.wifi_open {
             self.wifi_dialog(ui.ctx(), &t);
         }
+        self.picker_dialog(ui.ctx(), &t);
         egui::Frame::central_panel(ui.style())
             .fill(t.bg)
             .inner_margin(28)
@@ -1657,5 +1942,20 @@ mod tests {
         assert!(!super::valid_addr("192.168.1.5"));
         assert!(!super::valid_addr("192.168.1.5:99999"));
         assert!(!super::valid_addr("192.168.1.5:0"));
+    }
+
+    #[test]
+    fn previews_pictures_only() {
+        let dir = std::env::temp_dir().join(format!("pb-thumb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (pic, text) = (dir.join("wide.png"), dir.join("note.jpg"));
+        image::RgbImage::new(120, 60).save(&pic).unwrap();
+        // A wrong extension does not fool it: the contents decide.
+        std::fs::write(&text, "not a picture").unwrap();
+        let thumb = super::thumbnail(&pic).unwrap();
+        let none = super::thumbnail(&text);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(thumb.size, [80, 80]);
+        assert!(none.is_none());
     }
 }

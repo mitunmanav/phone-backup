@@ -30,6 +30,7 @@ Checked and not a bug: if one file in a multi-file `adb pull` fails (deleted mid
 | F2 | Contacts also saved as `contacts.vcf`, which any phone or Google Contacts can import. | `feature/vcard` |
 | F3 | Restore apps from a backup folder to the connected phone (`adb install-multiple`). | `feature/restore-apps` |
 | F4 | Taskbar flashes when a backup finishes while the window is in the background. | `feature/stop` |
+| F5 | Before a restore, list what will be added, skipped, or cannot move and why; pick files from a list with thumbnails. | `feature/restore-preview`, `feature/restore-picker` |
 
 ## v1 features
 
@@ -37,7 +38,6 @@ Ordered from cheapest to largest. Each feature, and each nice-to-have inside it,
 
 | # | Feature | Also includes | Size |
 |---|---|---|---|
-| V1 | Before a restore, list what will be added, skipped, or cannot move and why. | Pick files from a list with thumbnails. (Restore already never replaces a file and re-checks each copy.) | Small |
 | V2 | Save a report after every backup or restore: what was copied and what failed. | Save it as a file; a "Copy error list" button; optional sound or notification when done; "Export diagnostics": a local zip of logs the user checks before sharing. | Small |
 | V3 | `manifest.json` with a SHA-256 hash per file, a "Verify backup" check, and a phone battery check before starting. | Warn under 20% battery; keep the computer from sleeping; time left ("about 12 min"); show the folder being copied; progress on the taskbar icon. | Small |
 | V4 | Back up the calendar and MMS messages. | Pick single folders (for example only DCIM); skip junk such as cache, stickers and sent-media copies; show the size of each choice before starting; skip files over a chosen size. | Small |
