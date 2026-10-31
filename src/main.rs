@@ -228,6 +228,89 @@ fn valid_addr(addr: &str) -> bool {
     })
 }
 
+/// Public steps to turn on USB debugging, per phone maker.
+const BRANDS: [(&str, &[&str]); 5] = [
+    (
+        "Samsung",
+        &[
+            "Settings, About phone, Software information: tap Build number 7 times.",
+            "Settings, Developer options: turn on USB debugging.",
+        ],
+    ),
+    (
+        "Xiaomi, Redmi, POCO",
+        &[
+            "Settings, About phone: tap OS version (or MIUI version) 7 times.",
+            "Settings, Additional settings, Developer options: turn on USB debugging. To restore apps, also turn on Install via USB.",
+        ],
+    ),
+    (
+        "OnePlus, OPPO, realme",
+        &[
+            "Settings, About device (or About phone), Version: tap Build number 7 times.",
+            "Settings, System settings (or Additional settings), Developer options: turn on USB debugging.",
+        ],
+    ),
+    (
+        "Vivo",
+        &[
+            "Settings, About phone: tap Software version 7 times.",
+            "Settings, System management (or More settings), Developer options: turn on USB debugging.",
+        ],
+    ),
+    (
+        "Pixel and others",
+        &[
+            "Settings, About phone: tap Build number 7 times.",
+            "Settings, System, Developer options: turn on USB debugging.",
+        ],
+    ),
+];
+
+/// Numbered steps, each wrapped line lined up under its first.
+fn steps(ui: &mut egui::Ui, t: &Tokens, list: &[&str]) {
+    // Text rows, not controls: drop the 32 px control height here.
+    let control_h = ui.spacing().interact_size.y;
+    ui.spacing_mut().interact_size.y = 20.0;
+    for (n, step) in list.iter().enumerate() {
+        ui.horizontal_top(|ui| {
+            // Fixed-width number column so every line of a step starts at the same x.
+            ui.add_sized(
+                [16.0, 20.0],
+                egui::Label::new(
+                    RichText::new(format!("{}.", n + 1))
+                        .font(semibold(14.0))
+                        .color(t.accent),
+                ),
+            );
+            ui.add(egui::Label::new(*step).wrap());
+        });
+    }
+    ui.spacing_mut().interact_size.y = control_h;
+}
+
+/// The QR code with its 4-module quiet border, black on white in both themes so phone cameras
+/// read it.
+fn qr_image(ui: &mut egui::Ui, qr: &qrcodegen::QrCode) {
+    let n = qr.size() + 8;
+    let px = (ui.available_width() / n as f32).floor().clamp(2.0, 5.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(px, px) * n as f32, egui::Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Image, true, "QR code to scan with the phone")
+    });
+    let p = ui.painter();
+    let origin = rect.min.round();
+    p.rect_filled(rect, 0, Color32::WHITE);
+    for y in 0..qr.size() {
+        for x in 0..qr.size() {
+            if qr.get_module(x, y) {
+                let at = origin + vec2((x + 4) as f32, (y + 4) as f32) * px;
+                p.rect_filled(Rect::from_min_size(at, vec2(px, px)), 0, Color32::BLACK);
+            }
+        }
+    }
+}
+
 /// USB debugging only helps once adb is on this computer.
 fn adb_missing(ui: &mut egui::Ui, t: &Tokens) {
     ui.label(RichText::new("USB debugging also needs Google's free Platform Tools on this laptop. Unzip them and put adb.exe next to this app.").color(t.muted));
@@ -499,6 +582,10 @@ struct App {
     wifi_msg: Option<Result<String, String>>,
     wifi_working: bool,
     wifi_open: bool,
+    /// The QR code on screen while waiting for the phone to scan it.
+    qr: Option<qrcodegen::QrCode>,
+    /// Which phone maker's USB debugging steps are shown.
+    brand: usize,
     /// Height of the command bar last frame; its text wraps on narrow windows.
     bar_h: f32,
     /// Asking whether to stop a running backup before closing.
@@ -691,6 +778,8 @@ impl App {
             wifi_msg: None,
             wifi_working: false,
             wifi_open: false,
+            qr: None,
+            brand: 0,
             bar_h: 64.0,
             confirm_close: false,
             closing: false,
@@ -732,7 +821,14 @@ impl App {
                     "settings" => app.tab = Tab::Settings,
                     "light" => ctx.set_theme(egui::Theme::Light),
                     "dark" => ctx.set_theme(egui::Theme::Dark),
-                    "wifi" => app.wifi_open = true,
+                    "wifi" => {
+                        app.wifi_open = true;
+                        app.qr = qrcodegen::QrCode::encode_text(
+                            &backup::qr_code().2,
+                            qrcodegen::QrCodeEcc::Medium,
+                        )
+                        .ok();
+                    }
                     "choose" => app.choosing = true,
                     "busy" => {
                         app.busy.store(true, Ordering::Relaxed);
@@ -1204,6 +1300,7 @@ impl App {
     }
 
     fn run_wifi(&mut self, ctx: &egui::Context, args: Vec<String>) {
+        self.stop_qr();
         self.wifi_working = true;
         self.wifi_msg = None;
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
@@ -1212,6 +1309,27 @@ impl App {
             let _ = tx.send(Msg::Wifi(backup::wifi(&args)));
             ctx.request_repaint();
         });
+    }
+
+    /// Shows a new QR code and waits in the background for the phone to scan it.
+    fn show_qr(&mut self, ctx: &egui::Context) {
+        let (name, password, text) = backup::qr_code();
+        self.qr = qrcodegen::QrCode::encode_text(&text, qrcodegen::QrCodeEcc::Medium).ok();
+        self.wifi_msg = None;
+        let id = backup::QR_WAIT.fetch_add(1, Ordering::Relaxed) + 1;
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        thread::spawn(move || {
+            if let Some(r) = backup::qr_pair(&name, &password, id) {
+                let _ = tx.send(Msg::Wifi(r));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn stop_qr(&mut self) {
+        if self.qr.take().is_some() {
+            backup::QR_WAIT.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Re-reads the backups in `folder` and keeps the choice when it is still there.
@@ -1486,43 +1604,30 @@ impl App {
                 } else {
                     adb_missing(ui, t);
                 }
+                self.phone_help(ui, t);
             }
             (Some(_), [], None) if allow => {
                 heading(ui, "Tap Allow on your phone");
                 ui.label(
                     "Unlock the phone. It asks whether to allow USB debugging from this computer.",
                 );
+                self.phone_help(ui, t);
             }
             (Some(_), [], None) => {
                 heading(ui, "Connect your phone");
-                // Text rows, not controls: drop the 32 px control height here.
-                ui.spacing_mut().interact_size.y = 20.0;
-                for (n, step) in [
-                    "Plug it into this computer with a USB cable.",
-                    "Unlock it, tap the USB notification and choose File transfer.",
-                    "For apps, contacts and messages, also turn on USB debugging.",
-                ]
-                .iter()
-                .enumerate()
-                {
-                    ui.horizontal_top(|ui| {
-                        // Fixed-width number column so every line of a step starts at the same x.
-                        ui.add_sized(
-                            [16.0, 20.0],
-                            egui::Label::new(
-                                RichText::new(format!("{}.", n + 1))
-                                    .font(semibold(14.0))
-                                    .color(t.accent),
-                            ),
-                        );
-                        ui.add(egui::Label::new(*step).wrap());
-                    });
-                }
-                ui.label(muted("USB debugging: Settings, About phone, tap Build number 7 times, then Developer options, USB debugging."));
+                steps(
+                    ui,
+                    t,
+                    &[
+                        "Plug it into this computer with a USB cable.",
+                        "Unlock it, tap the USB notification and choose File transfer.",
+                        "For apps, contacts and messages, also turn on USB debugging.",
+                    ],
+                );
                 if !self.adb_ok {
                     adb_missing(ui, t);
                 }
-                ui.spacing_mut().interact_size.y = 32.0;
+                self.phone_help(ui, t);
             }
         }
 
@@ -1563,11 +1668,50 @@ impl App {
         }
     }
 
+    /// How to turn on USB debugging per phone maker, and what to try when no phone shows up.
+    /// Folded away: most people need neither.
+    fn phone_help(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        // Fixture screenshots open them; there is no click to do it.
+        let open = self.fixture == Fixture::Empty;
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new("How to turn on USB debugging")
+            .default_open(open)
+            .show(ui, |ui| {
+                egui::ComboBox::from_label("Phone brand")
+                    .selected_text(BRANDS[self.brand].0)
+                    .show_ui(ui, |ui| {
+                        for (i, (name, _)) in BRANDS.iter().enumerate() {
+                            ui.selectable_value(&mut self.brand, i, *name);
+                        }
+                    });
+                steps(ui, t, BRANDS[self.brand].1);
+            });
+        egui::CollapsingHeader::new("Phone not showing up?")
+            .default_open(open)
+            .show(ui, |ui| {
+                steps(
+                    ui,
+                    t,
+                    &[
+                        "Try another cable: some only charge. Plug it straight into the computer, not a hub.",
+                        "Unlock the phone and keep the screen on.",
+                        "Tap the USB notification on the phone and choose File transfer.",
+                        "With USB debugging on, tap Allow when the phone asks. No question? In Developer options, tap Revoke USB debugging authorizations, then plug it in again.",
+                        "Some phones need a USB driver on Windows: get it from the phone maker's website.",
+                    ],
+                );
+                if !self.adb_ok {
+                    adb_missing(ui, t);
+                }
+            });
+    }
+
     fn wifi_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         if dialog(ctx, "wifi", "Connect over Wi-Fi", 400.0, "Close", |ui| {
             self.wifi(ui, t)
         }) {
             self.wifi_open = false;
+            self.stop_qr();
         }
     }
 
@@ -1655,8 +1799,23 @@ impl App {
         ui.label(muted("The phone and this computer must be on the same Wi-Fi. On the phone, open Settings, Developer options, Wireless debugging."));
         ui.add_space(12.0);
         ui.label(RichText::new("1. Pair (first time only)").font(semibold(14.0)));
+        let working = self.wifi_working;
+        if let Some(qr) = &self.qr {
+            ui.label(muted("Tap Pair device with QR code and scan this."));
+            qr_image(ui, qr);
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(16.0));
+                ui.label("Waiting for the phone to scan the code…");
+            });
+        } else if ui
+            .add_enabled(!working, egui::Button::new("Show QR code"))
+            .clicked()
+        {
+            self.show_qr(ui.ctx());
+        }
+        ui.add_space(8.0);
         ui.label(muted(
-            "Tap Pair device with pairing code, then type what it shows.",
+            "Or tap Pair device with pairing code, then type what it shows.",
         ));
         let mut fields = |ui: &mut egui::Ui| {
             ui.vertical(|ui| {
@@ -1684,7 +1843,6 @@ impl App {
         } else {
             fields(ui);
         }
-        let working = self.wifi_working;
         if ui
             .add_enabled(!working, egui::Button::new("Pair"))
             .clicked()
@@ -2631,6 +2789,7 @@ impl eframe::App for App {
                 }
                 Msg::Wifi(r) => {
                     self.wifi_working = false;
+                    self.qr = None;
                     self.wifi_msg = Some(r);
                 }
                 Msg::Restored(r) => match self.checking.take() {

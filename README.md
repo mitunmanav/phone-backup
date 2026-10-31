@@ -27,8 +27,8 @@ Download `PhoneBackup-<version>-windows-x64.exe` from [GitHub Releases](https://
 ## Connect a phone
 
 - **MTP:** Unlock the phone, connect it by USB, then choose **File transfer** in the phone's USB notification. This supports photos and files.
-- **USB debugging:** Enable USB debugging in Developer options. This is needed for apps, contacts, call history, messages, the calendar, and choosing folders by size. Accept the authorization prompt on the phone.
-- **Wi-Fi:** Pair through Android's Wireless debugging screen, then connect using the address shown by the phone.
+- **USB debugging:** Enable USB debugging in Developer options. This is needed for apps, contacts, call history, messages, the calendar, and choosing folders by size. Accept the authorization prompt on the phone. The phone card shows the steps for Samsung, Xiaomi, OnePlus, Vivo, Pixel and other phones, and what to try when the phone does not show up.
+- **Wi-Fi:** On the phone, open Wireless debugging and tap **Pair device with QR code**, then scan the code the app shows; the app pairs and connects. You can also type the pairing code and the address the phone shows.
 
 Some Android versions and manufacturers restrict access to personal data over ADB. The app reports when a selected data type is unavailable.
 
