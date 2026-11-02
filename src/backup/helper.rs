@@ -2,6 +2,7 @@
 //! See docs/android-design.md section 3.2.
 
 use super::*;
+use serde_json::Value;
 use std::hash::BuildHasher;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -119,6 +120,62 @@ fn ask(mut socket: &TcpStream, request: &str) -> String {
     reply
 }
 
+impl Helper {
+    /// Contacts as (`content query` text, so the old method's readers keep working; the helper's
+    /// full JSON). None unless the whole list arrived: a part must never replace the last full copy.
+    pub fn contacts(&self) -> Option<(String, String)> {
+        let items = list(&self.socket, "contacts")?;
+        let json: Vec<String> = items.iter().map(Value::to_string).collect();
+        Some((
+            contact_rows(&items),
+            format!("[\n{}\n]\n", json.join(",\n")),
+        ))
+    }
+}
+
+/// Reads one list to its end line, whose count must match. None on an error, Stop or a cut.
+fn list(mut socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
+    // A big list takes the phone a while to start sending.
+    socket
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .ok()?;
+    writeln!(socket, r#"{{"id":2,"op":"list","kind":"{kind}"}}"#).ok()?;
+    let mut lines = BufReader::new(socket);
+    let mut items = Vec::new();
+    let mut line = String::new();
+    while !stopped() {
+        line.clear();
+        lines.read_line(&mut line).ok()?;
+        let mut reply: Value = serde_json::from_str(&line).ok()?;
+        if reply["end"] == true {
+            return (reply["count"] == items.len()).then_some(items);
+        }
+        items.push(reply.get_mut("item")?.take());
+    }
+    None
+}
+
+/// The helper's rows in the text form `content query` prints.
+fn contact_rows(items: &[Value]) -> String {
+    if items.is_empty() {
+        return "No result found.\n".into();
+    }
+    let mut out = String::new();
+    for (n, item) in items.iter().enumerate() {
+        let get = |key: &str| item[key].as_str().unwrap_or("NULL").to_string();
+        let (id, mime, name, value) = (
+            get("contact_id"),
+            get("mimetype"),
+            get("display_name"),
+            get("data1"),
+        );
+        out += &format!(
+            "Row: {n} contact_id={id}, mimetype={mime}, display_name={name}, data1={value}\n"
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +247,83 @@ mod tests {
         let forwards = logged(adb().args(["-s", &serial, "forward", "--list"])).unwrap();
         let forwards = String::from_utf8_lossy(&forwards.stdout).into_owned();
         assert!(!forwards.contains(&format!("tcp:{port} ")), "{forwards}");
+    }
+
+    /// What the helper reads must match what the old method reads, where a phone allows both.
+    #[test]
+    #[ignore]
+    fn e2e_helper_contacts_match_the_old_method() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let old = shell(
+            &serial,
+            "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1",
+        );
+        let (text, json) = start(&serial).unwrap().contacts().unwrap();
+        assert!(!crate::export::people(&old).is_empty());
+        // The two methods may list a contact's fields in a different order.
+        let sorted = |rows: &str| {
+            let mut people = crate::export::people(rows);
+            people.iter_mut().for_each(|p| p.1.sort());
+            people
+        };
+        assert_eq!(sorted(&text), sorted(&old));
+        let items: Vec<Value> = serde_json::from_str(&json).unwrap();
+        // The old method folds linked copies of a contact into one row; the helper keeps each.
+        assert!(items.len() >= old.matches("Row: ").count());
+    }
+
+    /// A list from a fake helper that sends these lines and then hangs up.
+    fn list_from(sent: &'static str) -> Option<Vec<Value>> {
+        let server = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = TcpStream::connect(server.local_addr().unwrap()).unwrap();
+        std::thread::spawn(move || {
+            let (mut phone, _) = server.accept().unwrap();
+            // Hanging up with the request unread would throw away what was sent.
+            BufReader::new(&phone)
+                .read_line(&mut String::new())
+                .unwrap();
+            phone.write_all(sent.as_bytes()).unwrap();
+        });
+        list(&client, "contacts")
+    }
+
+    #[test]
+    fn only_a_whole_list_counts() {
+        let two = "{\"item\":{\"a\":\"1\"}}\n{\"item\":{\"a\":\"2\"}}\n";
+        let whole = format!("{two}{{\"end\":true,\"count\":2}}\n");
+        assert_eq!(list_from(whole.leak()).unwrap().len(), 2);
+        let short = format!("{two}{{\"end\":true,\"count\":3}}\n");
+        assert!(list_from(short.leak()).is_none());
+        assert!(list_from(two).is_none(), "no end line");
+        assert!(list_from("{\"id\":2,\"ok\":false,\"error\":\"permission_denied\"}\n").is_none());
+        assert!(list_from("{\"item\":{\"a\":\"1").is_none(), "cut mid-line");
+    }
+
+    #[test]
+    fn contact_rows_read_back_like_the_old_method() {
+        let phone = "vnd.android.cursor.item/phone_v2";
+        let email = "vnd.android.cursor.item/email_v2";
+        let items = serde_json::json!([
+            {"contact_id":"7","mimetype":phone,"display_name":"Ann, \"Jr\" 日本","data1":"+91 1\n2"},
+            {"contact_id":"7","mimetype":email,"display_name":"Ann, \"Jr\" 日本","data1":"a@b.c"},
+            {"contact_id":"8","mimetype":phone,"data1":"3"},
+            {"contact_id":"9","mimetype":"vnd.android.cursor.item/name","display_name":"Skip"},
+        ]);
+        let people = crate::export::people(&contact_rows(items.as_array().unwrap()));
+        assert_eq!(
+            people,
+            [
+                (
+                    "Ann, \"Jr\" 日本".to_string(),
+                    vec![
+                        ("TEL", "+91 1\n2".to_string()),
+                        ("EMAIL", "a@b.c".to_string())
+                    ],
+                ),
+                (String::new(), vec![("TEL", "3".to_string())]),
+            ]
+        );
+        assert!(contact_rows(&[]).starts_with("No result"));
     }
 
     #[test]

@@ -26,7 +26,7 @@ The app stays free, offline and account-free.
 | Alarms, browser bookmarks, system settings | No public API on current Android | No | Not supported; the UI says so |
 | App private data | Needs root | No | Not supported (WhatsApp files are an exception, see section 7) |
 
-Today contacts, call history and messages are read with `adb shell content query`. Many phones refuse this because the shell user lacks the permission. An ordinary app the user grants permission to can read these providers on every phone, which is why a companion app is needed.
+`adb shell content query` can read these providers, but many phones refuse it because the shell user lacks the permission. An ordinary app the user grants permission to can read them on every phone, which is why a companion app is needed.
 
 ## 3. Architecture
 
@@ -112,8 +112,8 @@ The current layout stays; new files are added beside it.
   files/ , sdcard_<name>/     storage mirror (existing)
   apps/<package>/*.apk        apps (existing)
   data/
-    contacts.vcf              existing; later written from companion data
-    contacts.json             new: all provider fields, for exact restore
+    contacts.vcf              existing; written from companion data when it is available
+    contacts.json             the provider's text fields, for exact restore; photos not yet
     sms.json, mms/            new
     calllog.json              new
     calendar.ics              new: for other apps
@@ -123,7 +123,8 @@ The current layout stays; new files are added beside it.
 ```
 
 - Human formats (`.vcf`, `.ics`) for people; `.json` for exact restore. Restore prefers `.json`.
-- The existing `content query` text files remain the fallback when the companion app is refused.
+- `contacts.txt` keeps the `content query` text form whichever way it was read, so exports and older backups share one reader.
+- `content query` remains the fallback when the companion app is refused.
 - `checksums.sha256` is in `sha256sum` format, so `sha256sum -c` checks a backup without this app.
 
 ### 4.1 Optional encryption
