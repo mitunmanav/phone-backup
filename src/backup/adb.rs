@@ -1,4 +1,6 @@
 use super::*;
+use std::process::Output;
+use std::time::Instant;
 
 /// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
 /// Most people never install the SDK, so shipping adb.exe beside the app is the normal case.
@@ -34,7 +36,7 @@ pub(crate) fn adb() -> Command {
 
 /// Phones on ADB; if none, phones in "File transfer" (MTP) mode.
 pub fn detect() -> Vec<Phone> {
-    let out = adb().args(["devices", "-l"]).output();
+    let out = logged(adb().args(["devices", "-l"]));
     let mut phones = out
         .map(|o| parse_adb_devices(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default();
@@ -58,9 +60,7 @@ pub fn detect() -> Vec<Phone> {
         } = p
         {
             // Not stoppable like `shell`, for the same reason as phone_id.
-            let out = adb()
-                .args(["-s", serial, "shell", "dumpsys battery"])
-                .output()
+            let out = logged(adb().args(["-s", serial, "shell", "dumpsys battery"]))
                 .map(|o| o.stdout)
                 .unwrap_or_default();
             *battery = low_battery(&String::from_utf8_lossy(&out));
@@ -187,7 +187,7 @@ pub fn qr_pair(name: &str, password: &str, id: usize) -> Option<Result<String, S
         return Some(Err(NO_ADB.into()));
     }
     // adb started with mDNS off answers "ERROR: mdns daemon unavailable"; it would never see the phone.
-    let check = adb().args(["mdns", "check"]).output();
+    let check = logged(adb().args(["mdns", "check"]));
     if check.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("unavailable")) {
         return Some(Err("adb on this computer cannot look for phones on the Wi-Fi. Pair with a code below instead.".into()));
     }
@@ -197,7 +197,7 @@ pub fn qr_pair(name: &str, password: &str, id: usize) -> Option<Result<String, S
         while std::time::Instant::now() < end
             && (!stoppable || QR_WAIT.load(Ordering::Relaxed) == id)
         {
-            let out = adb().args(["mdns", "services"]).output().ok()?;
+            let out = logged(adb().args(["mdns", "services"])).ok()?;
             if let Some(addr) = find_service(&String::from_utf8_lossy(&out.stdout), service, want) {
                 return Some(addr);
             }
@@ -276,22 +276,53 @@ pub(super) fn run(mut c: Command) -> Vec<u8> {
         }
         out
     });
-    while let Ok(None) = child.try_wait() {
-        if stopped() {
-            let _ = child.kill();
-            let _ = child.wait();
-            break;
+    let started = Instant::now();
+    let mut code = None;
+    loop {
+        match child.try_wait() {
+            Ok(None) if stopped() => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Ok(Some(status)) => {
+                code = status.code();
+                break;
+            }
+            Err(_) => break,
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
+    log_adb(&c, code, started);
     reader.join().unwrap_or_default()
+}
+
+/// `Command::output`, with the command in the debug log.
+fn logged(c: &mut Command) -> std::io::Result<Output> {
+    let started = Instant::now();
+    let out = c.output();
+    let code = out.as_ref().ok().and_then(|o| o.status.code());
+    log_adb(c, code, started);
+    out
+}
+
+/// With PB_LOG set, adds the command, its exit code and its time to a file in the temp folder.
+fn log_adb(c: &Command, code: Option<i32>, started: Instant) {
+    use std::io::Write;
+    if std::env::var_os("PB_LOG").is_some()
+        && let Ok(mut log) = fs::File::options()
+            .create(true)
+            .append(true)
+            .open(std::env::temp_dir().join("phone-backup-adb.log"))
+    {
+        let ms = started.elapsed().as_millis();
+        let _ = writeln!(log, "{code:?} {ms} ms {c:?}");
+    }
 }
 
 /// True while adb still sees the phone. Listing commands just return nothing when it is gone.
 pub(crate) fn connected(serial: &str) -> bool {
-    adb()
-        .args(["-s", serial, "get-state"])
-        .output()
+    logged(adb().args(["-s", serial, "get-state"]))
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "device")
 }
 
@@ -312,9 +343,7 @@ pub(super) fn interrupted(serial: &str) -> Option<&'static str> {
 /// ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
 /// Not stoppable like `shell`: the phone list calls it too, and Stop stays set after a job ends.
 pub(super) fn phone_id(serial: &str) -> String {
-    let out = adb()
-        .args(["-s", serial, "shell", "getprop ro.serialno"])
-        .output()
+    let out = logged(adb().args(["-s", serial, "shell", "getprop ro.serialno"]))
         .map(|o| o.stdout)
         .unwrap_or_default();
     match String::from_utf8_lossy(&out).trim() {
@@ -702,7 +731,7 @@ pub(crate) fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
             .chain(batch.iter().map(|p| sh_quote(p)))
             .collect::<Vec<_>>()
             .join(" ");
-        if let Ok(o) = adb().args(["-s", serial, "shell", &line]).output() {
+        if let Ok(o) = logged(adb().args(["-s", serial, "shell", &line])) {
             out += &String::from_utf8_lossy(&o.stdout);
         }
     }

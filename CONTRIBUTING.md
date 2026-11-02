@@ -13,6 +13,27 @@ cargo test --locked
 cargo build --locked --release
 ```
 
+## Code map
+
+| To change | Look in |
+|---|---|
+| A screen or dialog | `src/ui/`, one file per screen; `src/ui/shell.rs` for the top bar and page frame |
+| Colors, sizes, fonts | `src/ui/theme.rs` |
+| Shared controls | `src/ui/widgets.rs` |
+| Starting a job, what it reports | `src/jobs.rs` |
+| Phone commands, backup over adb | `src/backup/adb.rs` |
+| Backup over MTP | `src/backup/mtp.rs` |
+| Restore and phone to phone | `src/backup/restore.rs` |
+| Checksums, reports, tidying backups | `src/backup/checksums.rs`, `report.rs`, `merge.rs` |
+| Exports, Tools page work | `src/export.rs`, `src/tools.rs` |
+
+To add a screen: add its file in `src/ui/`, a line in `src/ui.rs`, and a branch where `src/ui/shell.rs` picks the page.
+
+## Debugging
+
+- `PB_LOG=1` adds every adb command, with its exit code and time, to `phone-backup-adb.log` in the temp folder. It holds file names and the phone's serial number, so do not share it unredacted.
+- `PB_FIXTURE="<screen and options>"` opens a debug build on test data with no phone. The options are listed in `src/main.rs`.
+
 ## Pull requests
 
 - Keep each change focused and explain the user-visible behavior it changes.
