@@ -121,25 +121,46 @@ fn ask(mut socket: &TcpStream, request: &str) -> String {
 }
 
 impl Helper {
-    /// Contacts as (`content query` text, so the old method's readers keep working; the helper's
-    /// full JSON). None unless the whole list arrived: a part must never replace the last full copy.
-    pub fn contacts(&self) -> Option<(String, String)> {
-        let items = list(&self.socket, "contacts")?;
+    /// What goes in this data file, as (`content query` text, so the old method's readers keep
+    /// working; the helper's full JSON). None when the helper does not read that file, or unless
+    /// the whole list arrived: a part must never replace the last full copy.
+    pub fn read(&self, file: &str) -> Option<(String, String)> {
+        let (kind, keys): (&str, &[&str]) = match file {
+            "contacts.txt" => (
+                "contacts",
+                &["contact_id", "mimetype", "display_name", "data1"],
+            ),
+            "sms.txt" => ("sms", &["address", "date", "type", "body"]),
+            _ => return None,
+        };
+        let items = list(&self.socket, kind)?;
         let json: Vec<String> = items.iter().map(Value::to_string).collect();
         Some((
-            contact_rows(&items),
+            text_rows(&items, keys),
             format!("[\n{}\n]\n", json.join(",\n")),
         ))
     }
 }
 
-/// Reads one list to its end line, whose count must match. None on an error, Stop or a cut.
+/// The helper's answer, unless the old method sees more rows: a phone can hide rows from an
+/// ordinary app without saying so, and a backup must not shrink because of it.
+pub fn fuller(old: String, helper: Option<(String, String)>) -> (String, Option<String>) {
+    let rows = |text: &str| text.lines().filter(|l| l.starts_with("Row: ")).count();
+    match helper {
+        Some((text, json)) if rows(&text) >= rows(&old) => (text, Some(json)),
+        _ => (old, None),
+    }
+}
+
+/// Reads one list to its end line, whose count must match. None on an error, Stop, a cut or an
+/// empty list: a phone can hide data by answering "nothing" without an error, so the old method
+/// has to confirm it. The id keeps late lines of an earlier list out of this one.
 fn list(mut socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
     // A big list takes the phone a while to start sending.
     socket
         .set_read_timeout(Some(Duration::from_secs(60)))
         .ok()?;
-    writeln!(socket, r#"{{"id":2,"op":"list","kind":"{kind}"}}"#).ok()?;
+    writeln!(socket, r#"{{"id":"{kind}","op":"list","kind":"{kind}"}}"#).ok()?;
     let mut lines = BufReader::new(socket);
     let mut items = Vec::new();
     let mut line = String::new();
@@ -147,8 +168,11 @@ fn list(mut socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
         line.clear();
         lines.read_line(&mut line).ok()?;
         let mut reply: Value = serde_json::from_str(&line).ok()?;
+        if reply["id"] != kind {
+            return None;
+        }
         if reply["end"] == true {
-            return (reply["count"] == items.len()).then_some(items);
+            return (reply["count"] == items.len() && !items.is_empty()).then_some(items);
         }
         items.push(reply.get_mut("item")?.take());
     }
@@ -156,22 +180,14 @@ fn list(mut socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
 }
 
 /// The helper's rows in the text form `content query` prints.
-fn contact_rows(items: &[Value]) -> String {
-    if items.is_empty() {
-        return "No result found.\n".into();
-    }
+fn text_rows(items: &[Value], keys: &[&str]) -> String {
     let mut out = String::new();
     for (n, item) in items.iter().enumerate() {
-        let get = |key: &str| item[key].as_str().unwrap_or("NULL").to_string();
-        let (id, mime, name, value) = (
-            get("contact_id"),
-            get("mimetype"),
-            get("display_name"),
-            get("data1"),
-        );
-        out += &format!(
-            "Row: {n} contact_id={id}, mimetype={mime}, display_name={name}, data1={value}\n"
-        );
+        let fields: Vec<String> = keys
+            .iter()
+            .map(|key| format!("{key}={}", item[*key].as_str().unwrap_or("NULL")))
+            .collect();
+        out += &format!("Row: {n} {}\n", fields.join(", "));
     }
     out
 }
@@ -258,7 +274,7 @@ mod tests {
             &serial,
             "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1",
         );
-        let (text, json) = start(&serial).unwrap().contacts().unwrap();
+        let (text, json) = start(&serial).unwrap().read("contacts.txt").unwrap();
         assert!(!crate::export::people(&old).is_empty());
         // The two methods may list a contact's fields in a different order.
         let sorted = |rows: &str| {
@@ -270,6 +286,50 @@ mod tests {
         let items: Vec<Value> = serde_json::from_str(&json).unwrap();
         // The old method folds linked copies of a contact into one row; the helper keeps each.
         assert!(items.len() >= old.matches("Row: ").count());
+    }
+
+    /// The seed's incoming message reaches the helper. Android may hide its shell-written one from
+    /// the helper; the backup must keep that one anyway. Emulator only: see docs/e2e-seed.sh.
+    #[test]
+    #[ignore]
+    fn e2e_helper_messages_lose_nothing() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let old = shell(
+            &serial,
+            "content query --uri content://sms --projection address:date:type:body",
+        );
+        let (text, json) = start(&serial).unwrap().read("sms.txt").unwrap();
+        let keys = ["address", "date", "type", "body"];
+        let old_rows = crate::export::rows(&old, &keys);
+        let rows = crate::export::rows(&text, &keys);
+        assert!(rows.iter().any(|m| m[3] == "E2E incoming"), "{text}");
+        assert!(rows.iter().all(|m| old_rows.contains(m)), "{text}\n{old}");
+        let items: Vec<Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(items.len(), rows.len());
+
+        let (kept, _) = fuller(old, Some((text, json)));
+        assert!(kept.contains("E2E hello, 日本"), "{kept}");
+        assert!(kept.contains("E2E incoming"), "{kept}");
+    }
+
+    #[test]
+    fn the_fuller_answer_wins() {
+        let helper = |text: &str| Some((text.to_string(), "json".to_string()));
+        let two = "Row: 0 a=1\nRow: 1 a=2\n";
+        let one = "Row: 0 a=1\n";
+        let refused = "Error: permission denied\n";
+        let none = "No result found.\n";
+        for old in [refused, none, one, two] {
+            assert_eq!(
+                fuller(old.to_string(), helper(two)),
+                (two.to_string(), Some("json".to_string()))
+            );
+        }
+        assert_eq!(
+            fuller(two.to_string(), helper(one)),
+            (two.to_string(), None)
+        );
+        assert_eq!(fuller(one.to_string(), None), (one.to_string(), None));
     }
 
     /// A list from a fake helper that sends these lines and then hangs up.
@@ -289,14 +349,45 @@ mod tests {
 
     #[test]
     fn only_a_whole_list_counts() {
-        let two = "{\"item\":{\"a\":\"1\"}}\n{\"item\":{\"a\":\"2\"}}\n";
-        let whole = format!("{two}{{\"end\":true,\"count\":2}}\n");
+        let two = "{\"id\":\"contacts\",\"item\":{\"a\":\"1\"}}\n{\"id\":\"contacts\",\"item\":{\"a\":\"2\"}}\n";
+        let whole = format!("{two}{{\"id\":\"contacts\",\"end\":true,\"count\":2}}\n");
         assert_eq!(list_from(whole.leak()).unwrap().len(), 2);
-        let short = format!("{two}{{\"end\":true,\"count\":3}}\n");
+        let short = format!("{two}{{\"id\":\"contacts\",\"end\":true,\"count\":3}}\n");
         assert!(list_from(short.leak()).is_none());
         assert!(list_from(two).is_none(), "no end line");
-        assert!(list_from("{\"id\":2,\"ok\":false,\"error\":\"permission_denied\"}\n").is_none());
-        assert!(list_from("{\"item\":{\"a\":\"1").is_none(), "cut mid-line");
+        assert!(
+            list_from("{\"id\":\"contacts\",\"ok\":false,\"error\":\"permission_denied\"}\n")
+                .is_none()
+        );
+        assert!(
+            list_from("{\"id\":\"contacts\",\"item\":{\"a\":\"1").is_none(),
+            "cut mid-line"
+        );
+        assert!(
+            list_from("{\"id\":\"contacts\",\"end\":true,\"count\":0}\n").is_none(),
+            "empty may mean hidden"
+        );
+        assert!(
+            list_from("{\"id\":\"sms\",\"item\":{}}\n{\"id\":\"sms\",\"end\":true,\"count\":1}\n")
+                .is_none(),
+            "another list's lines"
+        );
+    }
+
+    #[test]
+    fn message_rows_read_back_like_the_old_method() {
+        let items = serde_json::json!([
+            {"address":"+91 1","date":"5","type":"1","body":"a, b\nsecond line 日本"},
+            {"date":"6","type":"2","body":"no number","subject":"not in the text form"},
+        ]);
+        let keys = ["address", "date", "type", "body"];
+        assert_eq!(
+            crate::export::rows(&text_rows(items.as_array().unwrap(), &keys), &keys),
+            [
+                ["+91 1", "5", "1", "a, b\nsecond line 日本"],
+                ["", "6", "2", "no number"],
+            ]
+        );
     }
 
     #[test]
@@ -309,7 +400,8 @@ mod tests {
             {"contact_id":"8","mimetype":phone,"data1":"3"},
             {"contact_id":"9","mimetype":"vnd.android.cursor.item/name","display_name":"Skip"},
         ]);
-        let people = crate::export::people(&contact_rows(items.as_array().unwrap()));
+        let keys = ["contact_id", "mimetype", "display_name", "data1"];
+        let people = crate::export::people(&text_rows(items.as_array().unwrap(), &keys));
         assert_eq!(
             people,
             [
@@ -323,7 +415,6 @@ mod tests {
                 (String::new(), vec![("TEL", "3".to_string())]),
             ]
         );
-        assert!(contact_rows(&[]).starts_with("No result"));
     }
 
     #[test]
