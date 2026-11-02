@@ -125,6 +125,18 @@ impl App {
             }
             (Some(_), [], None) => {
                 heading(ui, "Connect your phone");
+                if self
+                    .phones
+                    .as_ref()
+                    .is_some_and(|p| p.contains(&Phone::UsbFailed))
+                {
+                    ui.label(
+                        RichText::new(
+                            "Windows found a USB device it cannot use. If that is your phone, unplug it, unlock it and plug it in again. Still nothing? Try another cable and USB port: some cables only charge.",
+                        )
+                        .color(t.error),
+                    );
+                }
                 steps(
                     ui,
                     t,

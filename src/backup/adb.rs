@@ -69,7 +69,7 @@ pub fn detect() -> Vec<Phone> {
     if !phones.is_empty() {
         return phones;
     }
-    mtp_rs::mtp::MtpDevice::list_devices()
+    let mtp: Vec<Phone> = mtp_rs::mtp::MtpDevice::list_devices()
         .unwrap_or_default()
         .into_iter()
         .filter(|d| !NOT_PHONES.contains(&d.vendor_id))
@@ -79,7 +79,29 @@ pub fn detect() -> Vec<Phone> {
                 .or(d.manufacturer)
                 .unwrap_or_else(|| "Phone".into()),
         })
-        .collect()
+        .collect();
+    if !mtp.is_empty() {
+        return mtp;
+    }
+    let problems =
+        logged(windows_tool("pnputil.exe").args(["/enum-devices", "/connected", "/problem"]))
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+    if usb_failed(&String::from_utf8_lossy(&problems)) {
+        vec![Phone::UsbFailed]
+    } else {
+        Vec::new()
+    }
+}
+
+/// In pnputil's list of devices with a problem: a USB device Windows could not read (it gets a
+/// made-up maker number of 0000), or one whose file transfer driver would not start (class WPD).
+/// Only these values stay the same in every Windows language; the labels beside them do not.
+pub(super) fn usb_failed(pnputil: &str) -> bool {
+    pnputil.replace('\r', "").split("\n\n").any(|device| {
+        device.contains(r"USB\VID_0000&PID_")
+            || device.contains(r"USB\VID_") && device.lines().any(|l| l.ends_with(" WPD"))
+    })
 }
 
 /// USB makers of cameras and watches, which speak the same file protocol as phones.
