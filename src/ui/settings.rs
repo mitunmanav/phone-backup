@@ -44,7 +44,7 @@ impl App {
         let note = if self.adb_ok {
             "Found. Apps, contacts and messages can be backed up over USB debugging."
         } else {
-            "Not found. Photos and files still back up in File transfer mode. For apps, contacts and messages, put adb.exe from Google's free Platform Tools next to this app."
+            "Not found. Photos and files still back up in File transfer mode. Apps, contacts and messages need it."
         };
         row(ui, t, "adb", note, |ui| {
             if ui.button("Check again").clicked() {
@@ -52,10 +52,8 @@ impl App {
             }
         });
         if !self.adb_ok {
-            ui.hyperlink_to(
-                "Download Platform Tools",
-                "https://developer.android.com/tools/releases/platform-tools",
-            );
+            ui.add_space(4.0);
+            self.adb_missing(ui, t);
         }
 
         section(ui, "Look and sound");

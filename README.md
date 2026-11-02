@@ -25,7 +25,7 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 
 ## Download
 
-Download `PhoneBackup-<version>-windows-x64.exe` from [GitHub Releases](https://github.com/mitunmanav/phone-backup/releases). It needs no installation. Windows may warn that the app is not code-signed; choose **More info**, then **Run anyway**. For ADB features, download Google's [Android Platform Tools](https://developer.android.com/tools/releases/platform-tools) and place `adb.exe` next to the app. MTP file backups do not need ADB.
+Download `PhoneBackup-<version>-windows-x64.exe` from [GitHub Releases](https://github.com/mitunmanav/phone-backup/releases). It needs no installation. Windows may warn that the app is not code-signed; choose **More info**, then **Run anyway**. For ADB features, click **Get adb** in the app and agree to Google's terms, or download Google's [Android Platform Tools](https://developer.android.com/tools/releases/platform-tools) yourself and place `adb.exe` next to the app. MTP file backups do not need ADB.
 
 ## Connect a phone
 

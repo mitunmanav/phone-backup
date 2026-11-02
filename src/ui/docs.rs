@@ -19,7 +19,7 @@ impl App {
                     ),
                     (
                         "The internet",
-                        "No account, ads, tracking or update check: the app sends nothing online. Wi-Fi pairing talks only to your phone, on your own network. Links such as Download Platform Tools open in your browser, and only when you click them.",
+                        "No account, ads, tracking or update check. The app goes online only when you click Get adb, to download it from Google, and it sends none of your data. Wi-Fi pairing talks only to your phone, on your own network. Links open in your browser, and only when you click them.",
                     ),
                     (
                         "Diagnostics",
@@ -50,7 +50,7 @@ impl App {
                     ),
                     (
                         "Other tools",
-                        "adb comes from Google under its own terms, which you accept when you download Platform Tools. Screen mirroring uses scrcpy, under the Apache License 2.0.",
+                        "adb comes from Google under its own terms, which you accept before it downloads. Screen mirroring uses scrcpy, under the Apache License 2.0.",
                     ),
                 ],
             )
@@ -171,7 +171,7 @@ impl App {
                         ui.label("adb is ready on this computer.");
                     });
                 } else {
-                    adb_missing(ui, t);
+                    self.adb_missing(ui, t);
                     if ui.button("Check again").clicked() {
                         self.adb_ok = backup::adb_installed();
                     }
