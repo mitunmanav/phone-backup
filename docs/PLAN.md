@@ -32,17 +32,23 @@ Checked and not a bug: if one file in a multi-file `adb pull` fails (deleted mid
 | F4 | Taskbar flashes when a backup finishes while the window is in the background. | `feature/stop` |
 | F5 | Before a restore, list what will be added, skipped, or cannot move and why; pick files from a list with thumbnails. | `feature/restore-preview`, `feature/restore-picker` |
 
-## v1 features
+## Version 1.0
 
-Ordered from cheapest to largest. Each feature, and each nice-to-have inside it, lands as its own pull request so it can be rolled back alone.
+The goal of 1.0: back up, restore and move an Android phone for free, with files you can open yourself. Each item lands as its own pull request so it can be rolled back alone.
 
-| # | Feature | Also includes | Size |
-|---|---|---|---|
-| V9 | Optional password-protected backups (AES-256-GCM, Argon2id key). | A plain list of what the app never does; keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. | Medium |
-| V10 | Read WhatsApp backups with the user's own key: view, search and export. | | Large |
-| V11 | Restore contacts, messages, call history and calendar to a phone. Messages and call history need a small companion Android app, so this may slip to v1.5. | | Large |
-| V12 | Import backups made by other phone-transfer apps. | | Large |
+| Group | What it adds | Size |
+|---|---|---|
+| Easy start | Get adb in one click; clear next steps when Windows sees a phone but adb does not; a check-for-updates button that only runs when clicked; signed releases and an installer where free options allow. | Medium |
+| Companion app | A small open-source Android helper, installed over adb and removed afterwards, that reads contacts, call history, messages and calendar on phones that refuse the current method. Conversations, contacts, calls and calendar can be read inside the app. See [android-design.md](android-design.md). | Large |
+| Restore and transfer | Put contacts, call history, calendar and messages back on a phone, with a count of what arrived and resuming after a break. A full phone-to-phone checklist that also lists what cannot move. | Large |
+| Phone manager | Browse and copy files both ways; list, install, save, uninstall or turn off apps; a printable phone details and health page. | Medium |
+| WhatsApp | Back up WhatsApp and WhatsApp Business folders; a guided move between Android phones using WhatsApp's own local restore. | Medium |
+| Comfort | Optional password-protected backups (AES-256-GCM, Argon2id key); a plain list of what the app never does; keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. | Medium |
+
+## Ideas after 1.0
+
+Not commitments: a photo gallery; reading WhatsApp backups with the user's own key; a history of backups and search across them; importing public export formats (Google Takeout, Apple's privacy export, SMS XML); iPhone backups and iPhone to Android; other languages; Linux and Mac builds.
 
 ## Out of scope
 
-Scheduled backups, iPhone support, and app private data (Android blocks it without root). Never: starting with Windows, reminder pop-ups, ads, accounts or telemetry.
+Scheduled backups, moving WhatsApp between Android and iPhone (WhatsApp has its own transfer for this), and app private data (Android blocks it without root). Never: starting with Windows, reminder pop-ups, ads, accounts or telemetry.

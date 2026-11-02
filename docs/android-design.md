@@ -152,7 +152,8 @@ Only the user's own files and public formats:
 
 1. Back up `Android/media/com.whatsapp/WhatsApp/` (and `com.whatsapp.w4b` for WhatsApp Business) with `adb pull`. This is a folder copy and can ship early.
 2. Later, a read-only chat viewer: if the user enabled WhatsApp's end-to-end encrypted backup, they enter their 64-digit key and the app decrypts `msgstore.db.crypt15` (format documented by the open-source project `wa-crypt-tools`) and renders chats as HTML.
-3. Not planned: downgrading WhatsApp or automating taps inside it. Both risk the user's data and break WhatsApp's terms. Moving WhatsApp between phones is handled by WhatsApp's own transfer and Google Drive backup.
+3. Moving WhatsApp between Android phones: copy the folder to the new phone before WhatsApp is first opened, then the user runs WhatsApp's own "restore local backup". The app stays out of WhatsApp's screens and leaves the backup and its key unchanged.
+4. Not planned: downgrading WhatsApp or automating taps inside it. Both risk the user's data and break WhatsApp's terms.
 
 ## 8. Screens
 
@@ -165,20 +166,7 @@ Only the user's own files and public formats:
 
 ## 9. Build order
 
-| # | Step | Size | Builds on |
-|---|---|---|---|
-| 1 | File restore (`adb push` + media scan) | S | `pull`, `needs_copy`, `safe_name` |
-| 2 | A Backups screen: list, size, date, verify, delete | S | `verify` |
-| 3 | Companion app v1: hello, permissions, list contacts, call history, SMS, calendar | M-L | new Kotlin project |
-| 4 | Use the companion for personal data; keep `content query` as fallback | S | `adb_backup` |
-| 5 | Exports: ICS, CSV, HTML conversations | M | `vcard` |
-| 6 | Contacts, call history and calendar restore | M | companion `insert` |
-| 7 | SMS and MMS restore with the default-SMS switch | M | companion `sms_role` |
-| 8 | Phone-to-phone wizard | S | 1-7 |
-| 9 | Optional encryption | S-M | `checksums.sha256` |
-| 10 | WhatsApp folder backup, then the crypt15 viewer | S, then L | |
-
-Each step gets its own branch and pull request, like the items in `PLAN.md`.
+The order is in [PLAN.md](PLAN.md). Each step gets its own branch and pull request.
 
 ## 10. Testing
 
