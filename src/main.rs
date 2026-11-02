@@ -112,6 +112,9 @@ struct App {
     update_working: bool,
     /// What the last click on Check for updates found.
     update: Option<Result<Option<String>, String>>,
+    /// The phone report is being read and saved.
+    report_working: bool,
+    report_err: Option<String>,
     dest: PathBuf,
     pick: Pick,
     /// What `backup::measure` found on a phone, by serial; None while it runs.
@@ -343,6 +346,8 @@ impl App {
             adb_err: None,
             update_working: false,
             update: None,
+            report_working: false,
+            report_err: None,
             dest,
             pick,
             sizes: None,
@@ -484,6 +489,10 @@ impl App {
                             app.adb_err = Some(r"Cannot save to C:\Users\Bartholomew Fitzgerald\AppData\Local\Programs\Phone Backup: Access is denied. (os error 5). Move this app to a folder you can change, such as your Desktop, then try again.".into());
                         }
                     }
+                    "report=working" => app.report_working = true,
+                    "report=failed" => {
+                        app.report_err = Some("The phone did not answer. Check that it is still connected, then try again.".into());
+                    }
                     "busy" => {
                         app.busy.store(true, Ordering::Relaxed);
                         app.status = "Copying 48,213 of 128,456 files…".into();
@@ -591,6 +600,10 @@ impl eframe::App for App {
                 Msg::Update(r) => {
                     self.update_working = false;
                     self.update = Some(r);
+                }
+                Msg::PhoneReport(r) => {
+                    self.report_working = false;
+                    self.report_err = r.err();
                 }
                 Msg::Transferred(folder, r) => {
                     if let Some((from, folder, ran)) = folder {

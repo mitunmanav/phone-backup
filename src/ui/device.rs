@@ -183,11 +183,67 @@ impl App {
 
         // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching this card.
         ui.add_space(12.0);
-        if ui
-            .add_enabled(!busy, egui::Button::new("Connect over Wi-Fi…"))
-            .clicked()
-        {
-            self.wifi_open = true;
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!busy, egui::Button::new("Connect over Wi-Fi…"))
+                .clicked()
+            {
+                self.wifi_open = true;
+            }
+            self.report_buttons(ui, busy);
+        });
+        if self.report_working {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(16.0));
+                ui.label("Reading the phone…");
+            });
+        }
+        if let Some(e) = &self.report_err {
+            ui.add(egui::Label::new(RichText::new(e).color(t.error)).wrap());
+        }
+    }
+
+    /// A button per ADB phone to save a page about it, for printing or showing a buyer.
+    fn report_buttons(&mut self, ui: &mut egui::Ui, busy: bool) {
+        let phones: Vec<(String, String)> = self
+            .phones
+            .iter()
+            .flatten()
+            .filter_map(|p| match p {
+                Phone::Adb { serial, model, .. } => Some((serial.clone(), model.clone())),
+                _ => None,
+            })
+            .collect();
+        for (serial, model) in &phones {
+            let label = if phones.len() > 1 {
+                format!("Save report for {model}…")
+            } else {
+                "Save phone report…".into()
+            };
+            if ui
+                // Without a model name, adb gives a long Wi-Fi address instead.
+                .add_enabled(
+                    !busy && !self.report_working,
+                    egui::Button::new(label).truncate(),
+                )
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_directory(&self.dest)
+                    .set_file_name("phone-report.txt")
+                    .save_file()
+            {
+                self.report_working = true;
+                self.report_err = None;
+                let (tx, ctx, serial) = (self.tx.clone(), ui.ctx().clone(), serial.clone());
+                thread::spawn(move || {
+                    let r = backup::phone_report(&serial, &path);
+                    if r.is_ok() {
+                        let _ = Command::new("explorer").arg(&path).spawn();
+                    }
+                    let _ = tx.send(Msg::PhoneReport(r));
+                    ctx.request_repaint();
+                });
+            }
         }
     }
 
