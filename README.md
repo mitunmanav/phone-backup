@@ -21,7 +21,7 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Save a SHA-256 checksum of every file (`checksums.sha256`, which `sha256sum -c` also reads), and check a backup with **Verify backup** on the Restore page.
 - Warn when the phone's battery is under 20% and not charging, keep the computer awake while a job runs, and show the time left.
 - Save a diagnostics file under Settings to attach to a bug report after reading it.
-- Choose the backup folder and a light or dark theme (or follow Windows) under Settings, at the bottom of the page list.
+- Choose the backup folder and a light or dark theme (or follow Windows) under Settings, the last tab at the top. Settings also opens the app's privacy notice and license, and shows the first-run steps again (what the app does, adb, USB debugging and the backup folder).
 
 ## Download
 
