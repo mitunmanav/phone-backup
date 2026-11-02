@@ -47,14 +47,34 @@ jobs:
           cargo test --locked
           cargo build --locked --release
 
-      - name: Package release and checksum
+      - uses: actions/setup-java@v5
+        if: steps.version.outputs.new == 'true'
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build signed companion app
+        if: steps.version.outputs.new == 'true'
+        shell: pwsh
+        env:
+          COMPANION_KEYSTORE_BASE64: ${{ secrets.COMPANION_KEYSTORE_BASE64 }}
+          COMPANION_KEY_PASSWORD: ${{ secrets.COMPANION_KEY_PASSWORD }}
+        run: |
+          $env:COMPANION_KEYSTORE = "$env:RUNNER_TEMP\companion.p12"
+          [IO.File]::WriteAllBytes($env:COMPANION_KEYSTORE, [Convert]::FromBase64String($env:COMPANION_KEYSTORE_BASE64))
+          companion\gradlew.bat -p companion assembleRelease
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item $env:COMPANION_KEYSTORE
+
+      - name: Package release and checksums
         if: steps.version.outputs.new == 'true'
         shell: pwsh
         run: |
           $asset = "PhoneBackup-${{ steps.version.outputs.version }}-windows-x64.exe"
+          $helper = "PhoneBackupHelper-${{ steps.version.outputs.version }}.apk"
           Copy-Item "target/release/phone-backup.exe" $asset
-          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $asset" | Set-Content "SHA256SUMS.txt" -Encoding ascii
+          Copy-Item "companion/build/outputs/apk/release/companion-release.apk" $helper
+          $asset, $helper | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLowerInvariant())  $_" } | Set-Content "SHA256SUMS.txt" -Encoding ascii
 
       - name: Publish GitHub Release
         if: steps.version.outputs.new == 'true'
@@ -68,4 +88,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             PhoneBackup-${{ steps.version.outputs.version }}-windows-x64.exe
+            PhoneBackupHelper-${{ steps.version.outputs.version }}.apk
             SHA256SUMS.txt
