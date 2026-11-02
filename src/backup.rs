@@ -47,6 +47,8 @@ pub enum Msg {
     GotAdb(Result<(), String>),
     /// What the update check found: a newer version, or None for up to date.
     Update(Result<Option<String>, String>),
+    /// The phone report was saved and opened, or why it was not.
+    PhoneReport(Result<(), String>),
     Done(Result<Vec<Summary>, String>),
     /// What `measure` found on the phone with this serial.
     Sizes(String, Vec<(String, u64)>, u64),
@@ -688,6 +690,21 @@ mod tests {
             pick.limits(),
             "Only DCIM and files not in a folder. Only photos, music, documents and other files. Skips files over 1 KB."
         );
+    }
+
+    #[test]
+    fn phone_report_shows_only_what_the_phone_gives() {
+        let getprop = "[ro.product.model]: [Pixel 8]\n[ro.serialno]: [SECRET]\n[ro.product.manufacturer]: []\n[ro.build.version.release]: [15]\n";
+        let battery =
+            "Current Battery Service state:\n  Capacity level: 3\n  health: 2\n  level: 85\n";
+        let df = "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/block/dm-48\n 100000000 40000000 60000000 40% /data\n";
+        assert_eq!(
+            phone_report_body(getprop, battery, df),
+            "Model: Pixel 8\nAndroid version: 15\nStorage: 41.0 GB used, 61.4 GB free\nBattery level: 85%\nBattery condition, as the phone reports it: Good. This does not measure how worn the battery is."
+        );
+        // Unknown health, an unreadable df and a phone that says nothing at all.
+        assert_eq!(phone_report_body("", "health: 1", "df: /data: denied"), "");
+        assert_eq!(phone_report_body("", "", ""), "");
     }
 
     #[test]

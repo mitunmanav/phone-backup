@@ -559,7 +559,7 @@ pub(super) fn restore_in(
     };
     if !check {
         let (Ok(text) | Err(text)) = &result;
-        save_report(
+        let _ = save_report(
             &folder.join(RESTORE_REPORT),
             &format!("Restore to {phone}"),
             text,

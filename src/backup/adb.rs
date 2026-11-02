@@ -451,7 +451,7 @@ pub(super) fn run(mut c: Command) -> Vec<u8> {
 }
 
 /// `Command::output`, with the command in the debug log.
-fn logged(c: &mut Command) -> std::io::Result<Output> {
+pub(super) fn logged(c: &mut Command) -> std::io::Result<Output> {
     let started = Instant::now();
     let out = c.output();
     let code = out.as_ref().ok().and_then(|o| o.status.code());
