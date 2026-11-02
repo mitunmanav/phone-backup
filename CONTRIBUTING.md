@@ -26,6 +26,7 @@ cargo build --locked --release
 | Restore and phone to phone | `src/backup/restore.rs` |
 | Checksums, reports, tidying backups | `src/backup/checksums.rs`, `report.rs`, `merge.rs` |
 | Exports, Tools page work | `src/export.rs`, `src/tools.rs` |
+| Android helper app | `companion/`; build with `companion\gradlew.bat -p companion assembleRelease`, design in `docs/android-design.md` |
 
 To add a screen: add its file in `src/ui/`, a line in `src/ui.rs`, and a branch where `src/ui/shell.rs` picks the page.
 

@@ -50,8 +50,8 @@ Rust client  <== JSON lines over TCP ==>      TCP server on 127.0.0.1:P
 - Components:
   - `MainActivity`: asks for permissions and shows the connection status.
   - `BridgeService`: foreground service (`foregroundServiceType="dataSync"`) with a persistent notification. Opens a `ServerSocket` bound to `127.0.0.1`. Holds a partial wake lock (plus a Wi-Fi lock in Wi-Fi mode) only while a request runs, so a long backup survives the screen turning off. No restart watchdog: the PC starts the service again if it dies.
-  - The components Android requires before an app can become the default SMS app: an SMS deliver receiver, an MMS WAP-push receiver, a "respond via message" service and a compose activity. They can be minimal.
-- Permissions, requested only for the data the user picked: `READ_CONTACTS`, `WRITE_CONTACTS`, `READ_SMS`, `READ_CALL_LOG`, `WRITE_CALL_LOG`, `READ_CALENDAR`, `WRITE_CALENDAR`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `WAKE_LOCK`, `POST_NOTIFICATIONS` (Android 13+). Writing SMS needs no extra permission once the app is the default SMS app.
+  - Added with SMS restore, because reading needs none of them: the components Android requires before an app can become the default SMS app (an SMS deliver receiver, an MMS WAP-push receiver, a "respond via message" service and a compose activity). They can be minimal.
+- Permissions, each added with the feature that uses it and requested only for the data the user picked: `READ_CONTACTS`, `WRITE_CONTACTS`, `READ_SMS`, `RECEIVE_SMS`, `READ_CALL_LOG`, `WRITE_CALL_LOG`, `READ_CALENDAR`, `WRITE_CALENDAR`, `INTERNET` (needed for the loopback socket; nothing leaves the phone), `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `WAKE_LOCK`, `POST_NOTIFICATIONS` (Android 13+). Writing SMS needs no extra permission once the app is the default SMS app.
 - Distribution: the PC app ships the APK next to its own executable and installs it with `adb install -r`. The APK is also published on the GitHub releases page so anyone can check the build.
 
 ### 3.2 Session start (PC side)
