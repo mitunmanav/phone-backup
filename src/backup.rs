@@ -45,6 +45,8 @@ pub enum Msg {
     Wifi(Result<String, String>),
     /// The download of adb ended.
     GotAdb(Result<(), String>),
+    /// What the update check found: a newer version, or None for up to date.
+    Update(Result<Option<String>, String>),
     Done(Result<Vec<Summary>, String>),
     /// What `measure` found on the phone with this serial.
     Sizes(String, Vec<(String, u64)>, u64),
@@ -418,6 +420,27 @@ mod tests {
         );
         assert!(!dir.join("platform-tools.part").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Checks that GitHub's address still works: `cargo test github_update -- --ignored`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "asks GitHub over the internet"]
+    fn github_update_address_answers() {
+        println!("{:?}", adb::check_update().unwrap());
+    }
+
+    #[test]
+    fn spots_a_newer_release() {
+        let at = |v: &str| format!("https://github.com/a/b/releases/tag/v{v}");
+        let new = adb::newer_release;
+        assert_eq!(new(&at("0.10.0"), "0.9.0"), Ok(Some("0.10.0".into())));
+        assert_eq!(new(&at("1.0.0"), "0.9.9"), Ok(Some("1.0.0".into())));
+        assert_eq!(new(&at("0.9.0"), "0.9.0"), Ok(None));
+        assert_eq!(new(&at("0.8.0"), "0.9.0"), Ok(None));
+        assert!(new("", "0.9.0").is_err());
+        assert!(new("https://github.com/a/b/releases", "0.9.0").is_err());
+        assert!(new(&at("1.0.0-rc1"), "0.9.0").is_err());
     }
 
     #[test]

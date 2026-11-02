@@ -109,6 +109,9 @@ struct App {
     adb_working: bool,
     /// Why the last download of adb did not work.
     adb_err: Option<String>,
+    update_working: bool,
+    /// What the last click on Check for updates found.
+    update: Option<Result<Option<String>, String>>,
     dest: PathBuf,
     pick: Pick,
     /// What `backup::measure` found on a phone, by serial; None while it runs.
@@ -338,6 +341,8 @@ impl App {
             adb_agreed: false,
             adb_working: false,
             adb_err: None,
+            update_working: false,
+            update: None,
             dest,
             pick,
             sizes: None,
@@ -414,6 +419,7 @@ impl App {
         // [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
+        // update=working|new|same|failed also shows that result of Check for updates.
         if cfg!(debug_assertions) && test_run() {
             app.intro = None;
             let spec = env::var("PB_FIXTURE").unwrap_or_default();
@@ -450,6 +456,15 @@ impl App {
                     }
                     "tools" => app.tab = Tab::Tools,
                     "settings" => app.tab = Tab::Settings,
+                    _ if word.starts_with("update=") => {
+                        app.update_working = word == "update=working";
+                        app.update = match &word[7..] {
+                            "new" => Some(Ok(Some("12.34.56".into()))),
+                            "same" => Some(Ok(None)),
+                            "failed" => Some(Err("Could not reach GitHub (curl: (28) Connection timed out after 30002 milliseconds). Check the internet connection, then try again.".into())),
+                            _ => None,
+                        };
+                    }
                     "light" => ctx.set_theme(egui::Theme::Light),
                     "dark" => ctx.set_theme(egui::Theme::Dark),
                     "wifi" => {
@@ -572,6 +587,10 @@ impl eframe::App for App {
                     self.adb_working = false;
                     self.adb_ok = backup::adb_installed();
                     self.adb_err = r.err();
+                }
+                Msg::Update(r) => {
+                    self.update_working = false;
+                    self.update = Some(r);
                 }
                 Msg::Transferred(folder, r) => {
                     if let Some((from, folder, ran)) = folder {

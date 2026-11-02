@@ -112,11 +112,47 @@ impl App {
             ui,
             t,
             &format!("Phone Backup {}", env!("CARGO_PKG_VERSION")),
-            "Free software. No account, and nothing is sent online.",
+            "Free software. No account, and none of your data is sent online.",
             |ui| {
                 ui.hyperlink_to("Source code on GitHub", env!("CARGO_PKG_REPOSITORY"));
             },
         );
+        let note = match &self.update {
+            _ if self.update_working => "Asking GitHub…".to_string(),
+            Some(Ok(None)) => "You have the newest version.".to_string(),
+            Some(Ok(Some(v))) => format!("Version {v} is out."),
+            _ => "Asks GitHub for the newest version, only when you click.".to_string(),
+        };
+        row(ui, t, "Updates", &note, |ui| {
+            let check =
+                ui.add_enabled(!self.update_working, egui::Button::new("Check for updates"));
+            if check.clicked() {
+                self.update_working = true;
+                self.update = None;
+                let (tx, ctx) = (self.tx.clone(), ui.ctx().clone());
+                thread::spawn(move || {
+                    let _ = tx.send(Msg::Update(backup::check_update()));
+                    ctx.request_repaint();
+                });
+            }
+            // The row lines controls up at the top; these are shorter than the button beside them.
+            let beside = vec2(ui.available_width(), check.rect.height());
+            ui.allocate_ui_with_layout(beside, Layout::right_to_left(Align::Center), |ui| {
+                if self.update_working {
+                    ui.add(egui::Spinner::new().size(16.0));
+                }
+                if matches!(self.update, Some(Ok(Some(_)) | Err(_))) {
+                    ui.hyperlink_to(
+                        "Go to the download page",
+                        concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest"),
+                    );
+                }
+            });
+        });
+        if let Some(Err(e)) = &self.update {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(e).color(t.error)).wrap());
+        }
         if link_row(
             ui,
             t,
