@@ -3,21 +3,10 @@ use crate::*;
 impl App {
     pub(crate) fn start(&mut self, ctx: &egui::Context) {
         let phones = self.phones.clone().unwrap_or_default();
-        let (dest, pick, tx, ctx, busy) = (
-            self.dest.clone(),
-            self.pick.clone(),
-            self.tx.clone(),
-            ctx.clone(),
-            self.busy.clone(),
-        );
+        let (dest, pick) = (self.dest.clone(), self.pick.clone());
         self.begin(Job::Backup);
         self.result = None;
-        thread::spawn(move || {
-            backup::keep_awake(true);
-            let report = |m: Msg| {
-                let _ = tx.send(m);
-                ctx.request_repaint();
-            };
+        self.spawn_job(ctx, true, move |report| {
             let adb: Vec<_> = phones
                 .iter()
                 .filter_map(|p| match p {
@@ -31,12 +20,12 @@ impl App {
                     dest.display()
                 ))
             } else if adb.is_empty() {
-                backup::mtp_backup(&dest, &pick, &report).map(|s| vec![s])
+                backup::mtp_backup(&dest, &pick, report).map(|s| vec![s])
             } else {
                 // One phone failing (say, unplugged) must not skip the others.
                 let (mut done, mut failed) = (Vec::new(), Vec::new());
                 for (serial, model) in &adb {
-                    match backup::adb_backup(serial, model, &dest, pick.clone(), &report) {
+                    match backup::adb_backup(serial, model, &dest, pick.clone(), report) {
                         Ok(s) => done.push(s),
                         Err(e) if adb.len() > 1 => failed.push(format!("{model}: {e}")),
                         Err(e) => failed.push(e),
@@ -54,9 +43,7 @@ impl App {
                     Err(failed.join("\n") + &ok)
                 }
             };
-            backup::keep_awake(false);
-            busy.store(false, Ordering::Relaxed);
-            report(Msg::Done(result));
+            Msg::Done(result)
         });
     }
 
@@ -68,6 +55,32 @@ impl App {
         self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
+    }
+
+    /// Runs a job on a worker. Its result goes to the window last, after the job is marked
+    /// finished. With `awake`, the computer stays awake until then.
+    fn spawn_job(
+        &self,
+        ctx: &egui::Context,
+        awake: bool,
+        work: impl FnOnce(&dyn Fn(Msg)) -> Msg + Send + 'static,
+    ) {
+        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
+        thread::spawn(move || {
+            if awake {
+                backup::keep_awake(true);
+            }
+            let report = |m: Msg| {
+                let _ = tx.send(m);
+                ctx.request_repaint();
+            };
+            let done = work(&report);
+            if awake {
+                backup::keep_awake(false);
+            }
+            busy.store(false, Ordering::Relaxed);
+            report(done);
+        });
     }
 
     /// The model of the ADB phone with this serial, or the serial when it is gone.
@@ -94,13 +107,7 @@ impl App {
         let (serial, folder, files, apps, only) = plan;
         let phone = self.model_of(&serial);
         self.restore_report = (!check).then(|| folder.join(backup::RESTORE_REPORT));
-        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
-        thread::spawn(move || {
-            backup::keep_awake(true);
-            let report = |m: Msg| {
-                let _ = tx.send(m);
-                ctx.request_repaint();
-            };
+        self.spawn_job(ctx, true, move |report| {
             let pick = Pick {
                 files,
                 apps,
@@ -114,11 +121,9 @@ impl App {
                 pick,
                 only.as_deref(),
                 check,
-                &report,
+                report,
             );
-            backup::keep_awake(false);
-            busy.store(false, Ordering::Relaxed);
-            report(Msg::Restored(result));
+            Msg::Restored(result)
         });
     }
 
@@ -126,17 +131,9 @@ impl App {
     pub(crate) fn verify(&mut self, ctx: &egui::Context, folder: PathBuf) {
         self.begin(Job::Verify);
         self.verified = None;
-        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
-        thread::spawn(move || {
-            backup::keep_awake(true);
-            let report = |m: Msg| {
-                let _ = tx.send(m);
-                ctx.request_repaint();
-            };
-            let result = backup::verify(&folder, &report);
-            backup::keep_awake(false);
-            busy.store(false, Ordering::Relaxed);
-            report(Msg::Verified(folder, result));
+        self.spawn_job(ctx, true, move |report| {
+            let result = backup::verify(&folder, report);
+            Msg::Verified(folder, result)
         });
     }
 
@@ -145,19 +142,13 @@ impl App {
     pub(crate) fn export(&mut self, ctx: &egui::Context, folder: PathBuf) {
         self.begin(Job::Export);
         self.export_msg = None;
-        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
-        thread::spawn(move || {
-            let report = |m: Msg| {
-                let _ = tx.send(m);
-                ctx.request_repaint();
-            };
-            let result = export::export(&folder, &report);
+        self.spawn_job(ctx, false, move |report| {
+            let result = export::export(&folder, report);
             let out = folder.join(export::EXPORTS);
             if result.is_ok() {
                 let _ = Command::new("explorer").arg(&out).spawn();
             }
-            busy.store(false, Ordering::Relaxed);
-            report(Msg::Exported(out, result));
+            Msg::Exported(out, result)
         });
     }
 
@@ -177,22 +168,12 @@ impl App {
         self.begin(Job::Restore);
         self.restore_msg = None;
         self.preview = None;
-        let (tx, ctx, busy, dest, safety) = (
-            self.tx.clone(),
-            ctx.clone(),
-            self.busy.clone(),
-            self.dest.clone(),
-            self.safety,
-        );
-        let report = move |m: Msg| {
-            let _ = tx.send(m);
-            ctx.request_repaint();
-        };
+        let (dest, safety) = (self.dest.clone(), self.safety);
         match plan {
             Some(((_, folder, _, _, Some(ran)), false)) => {
                 self.checking = None;
                 self.restore_report = Some(folder.join(backup::RESTORE_REPORT));
-                thread::spawn(move || {
+                self.spawn_job(ctx, false, move |report| {
                     let r = backup::transfer_now(
                         (&to, &to_model),
                         &dest,
@@ -200,26 +181,24 @@ impl App {
                         &ran,
                         pick,
                         safety,
-                        &report,
+                        report,
                     );
-                    busy.store(false, Ordering::Relaxed);
-                    report(Msg::Restored(r));
+                    Msg::Restored(r)
                 });
             }
             _ => {
                 // The folder is filled in when the backup of the first phone has made it.
                 self.checking = Some((to.clone(), PathBuf::new(), pick.files, pick.apps, None));
                 self.restore_report = None;
-                thread::spawn(move || {
+                self.spawn_job(ctx, false, move |report| {
                     let (folder, r) = backup::transfer_check(
                         (&from, &from_model),
                         (&to, &to_model),
                         &dest,
                         pick,
-                        &report,
+                        report,
                     );
-                    busy.store(false, Ordering::Relaxed);
-                    report(Msg::Transferred(folder.map(|(f, ran)| (from, f, ran)), r));
+                    Msg::Transferred(folder.map(|(f, ran)| (from, f, ran)), r)
                 });
             }
         }
@@ -238,18 +217,12 @@ impl App {
         if job == Job::Delete {
             self.status = "Moving the backup to the Recycle Bin…".into();
         }
-        let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
-        thread::spawn(move || {
-            let report = |m: Msg| {
-                let _ = tx.send(m);
-                ctx.request_repaint();
-            };
+        self.spawn_job(ctx, false, move |report| {
             let r = match into {
-                Some(into) => backup::merge_backups(&from, &into, &report),
+                Some(into) => backup::merge_backups(&from, &into, report),
                 None => backup::delete_backup(&from),
             };
-            busy.store(false, Ordering::Relaxed);
-            report(Msg::Tidied(r));
+            Msg::Tidied(r)
         });
     }
 }
