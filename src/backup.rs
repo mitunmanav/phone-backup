@@ -43,6 +43,8 @@ pub enum Msg {
     },
     Phones(Vec<Phone>),
     Wifi(Result<String, String>),
+    /// The download of adb ended.
+    GotAdb(Result<(), String>),
     Done(Result<Vec<Summary>, String>),
     /// What `measure` found on the phone with this serial.
     Sizes(String, Vec<(String, u64)>, u64),
@@ -350,6 +352,71 @@ fn safe_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn installs_adb_only_when_the_download_is_whole() {
+        let root = std::env::temp_dir().join(format!("phone-backup-adb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (src, part, dir) = (root.join("src"), root.join("part"), root.join("app"));
+        let tools = src.join("platform-tools");
+        fs::create_dir_all(&tools).unwrap();
+        fs::create_dir_all(&part).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        let zip_of = |name: &str| {
+            let zip = root.join(name);
+            let status = adb::windows_tool("tar.exe")
+                .arg("-a")
+                .arg("-cf")
+                .arg(&zip)
+                .arg("-C")
+                .arg(&src)
+                .arg("platform-tools")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            zip
+        };
+        fs::write(tools.join("readme.txt"), "").unwrap();
+        let broken = zip_of("broken.zip");
+        fs::write(tools.join("adb.exe"), "").unwrap();
+        let whole = zip_of("whole.zip");
+
+        assert!(adb::install_adb(&broken, &part, &dir).is_err());
+        assert!(!dir.join("platform-tools").exists());
+
+        fs::remove_dir_all(part.join("platform-tools")).unwrap();
+        adb::install_adb(&whole, &part, &dir).unwrap();
+        assert!(dir.join("platform-tools/adb.exe").is_file());
+
+        // A folder already there is the user's: refuse, and leave it alone.
+        fs::remove_file(dir.join("platform-tools/adb.exe")).unwrap();
+        fs::write(dir.join("platform-tools/mine.txt"), "").unwrap();
+        fs::remove_dir_all(part.join("platform-tools")).ok();
+        assert!(adb::install_adb(&whole, &part, &dir).is_err());
+        assert!(dir.join("platform-tools/mine.txt").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Checks that Google's address still works: `cargo test google_adb -- --ignored`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "downloads about 8 MB from Google"]
+    fn downloads_google_adb() {
+        let dir = std::env::temp_dir().join(format!("phone-backup-google-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        adb::get_adb_into(&dir).unwrap();
+        let adb_exe = dir.join("platform-tools/adb.exe");
+        assert!(
+            Command::new(adb_exe)
+                .arg("version")
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(!dir.join("platform-tools.part").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn reads_adb_wifi_output() {

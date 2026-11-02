@@ -139,7 +139,100 @@ pub(super) fn low_battery(dumpsys: &str) -> Option<u8> {
     level.filter(|l| *l < 20)
 }
 
-pub(super) const NO_ADB: &str = "This computer does not have adb yet. Download Platform Tools and put adb.exe next to this app.";
+pub(super) const NO_ADB: &str =
+    "This computer does not have adb yet. Get it in Settings, under Phone connection.";
+
+/// Google publishes no checksum for this download, so HTTPS is the only check on it.
+const PLATFORM_TOOLS: &str =
+    "https://dl.google.com/android/repository/platform-tools-latest-windows.zip";
+
+/// curl or tar from Windows itself. Never searched for: this app's folder may hold anything,
+/// such as a Downloads folder with a file of the same name.
+pub(super) fn windows_tool(name: &str) -> Command {
+    let root = std::env::var_os("SystemRoot").map_or_else(|| r"C:\Windows".into(), PathBuf::from);
+    let mut c = Command::new(root.join("System32").join(name));
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
+    c
+}
+
+/// Runs a Windows tool; on failure, what it printed.
+fn run_tool(c: &mut Command) -> Result<(), String> {
+    let out = c.output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+}
+
+/// Downloads Google's Platform Tools next to this app, where `adb_path` looks. The caller has
+/// the user's agreement to Google's terms.
+pub fn get_adb() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().ok_or("This app's folder cannot be found.")?;
+    get_adb_into(dir)
+}
+
+pub(super) fn get_adb_into(dir: &Path) -> Result<(), String> {
+    let part = dir.join("platform-tools.part");
+    let _ = fs::remove_dir_all(&part);
+    fs::create_dir_all(&part).map_err(|e| {
+        format!(
+            "Cannot save to {}: {e}. Move this app to a folder you can change, such as your Desktop, then try again.",
+            dir.display()
+        )
+    })?;
+    let zip = part.join("platform-tools.zip");
+    let result = run_tool(
+        windows_tool("curl.exe")
+            .args(["--fail", "--location", "--silent", "--show-error"])
+            .args(["--proto", "=https", "--proto-redir", "=https"])
+            // Give up on a dead connection, not on a slow one.
+            .args([
+                "--connect-timeout",
+                "30",
+                "--speed-limit",
+                "1",
+                "--speed-time",
+                "60",
+            ])
+            .arg("--output")
+            .arg(&zip)
+            .arg(PLATFORM_TOOLS),
+    )
+    .map_err(|e| {
+        format!("Could not download adb ({e}). Check the internet connection, then try again.")
+    })
+    .and_then(|()| install_adb(&zip, &part, dir));
+    let _ = fs::remove_dir_all(&part);
+    result
+}
+
+/// Unpacks the download into `part`, a folder of its own, and moves it into place only once
+/// adb.exe is there, so a broken download never leaves half a tool behind.
+pub(super) fn install_adb(zip: &Path, part: &Path, dir: &Path) -> Result<(), String> {
+    run_tool(
+        windows_tool("tar.exe")
+            .arg("-xf")
+            .arg(zip)
+            .arg("-C")
+            .arg(part),
+    )
+    .map_err(|e| format!("Could not unpack adb ({e}). Try again."))?;
+    let unpacked = part.join("platform-tools");
+    if !unpacked.join("adb.exe").is_file() {
+        return Err("The download did not contain adb. Try again.".into());
+    }
+    let target = dir.join("platform-tools");
+    if target.exists() {
+        return Err(format!(
+            "{} already exists without adb.exe in it. Move or rename that folder, then try again.",
+            target.display()
+        ));
+    }
+    fs::rename(&unpacked, &target)
+        .map_err(|e| format!("Cannot save to {}: {e}. Try again.", dir.display()))
+}
 
 /// Runs `adb pair` or `adb connect` and returns what adb said.
 pub fn wifi(args: &[&str]) -> Result<String, String> {

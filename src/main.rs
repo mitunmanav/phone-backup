@@ -104,6 +104,11 @@ struct App {
     /// None until the first check has finished.
     phones: Option<Vec<Phone>>,
     adb_ok: bool,
+    /// The user ticked Google's terms; the download stays locked until then.
+    adb_agreed: bool,
+    adb_working: bool,
+    /// Why the last download of adb did not work.
+    adb_err: Option<String>,
     dest: PathBuf,
     pick: Pick,
     /// What `backup::measure` found on a phone, by serial; None while it runs.
@@ -330,6 +335,9 @@ impl App {
             busy,
             phones: None,
             adb_ok: true,
+            adb_agreed: false,
+            adb_working: false,
+            adb_err: None,
             dest,
             pick,
             sizes: None,
@@ -402,9 +410,9 @@ impl App {
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [noadb[=working|failed]] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         if cfg!(debug_assertions) && test_run() {
             app.intro = None;
@@ -453,6 +461,13 @@ impl App {
                         .ok();
                     }
                     "choose" => app.choosing = true,
+                    _ if word.starts_with("noadb") => {
+                        app.adb_ok = false;
+                        app.adb_working = word == "noadb=working";
+                        if word == "noadb=failed" {
+                            app.adb_err = Some(r"Cannot save to C:\Users\Bartholomew Fitzgerald\AppData\Local\Programs\Phone Backup: Access is denied. (os error 5). Move this app to a folder you can change, such as your Desktop, then try again.".into());
+                        }
+                    }
                     "busy" => {
                         app.busy.store(true, Ordering::Relaxed);
                         app.status = "Copying 48,213 of 128,456 files…".into();
@@ -551,6 +566,11 @@ impl eframe::App for App {
                     self.wifi_working = false;
                     self.qr = None;
                     self.wifi_msg = Some(r);
+                }
+                Msg::GotAdb(r) => {
+                    self.adb_working = false;
+                    self.adb_ok = backup::adb_installed();
+                    self.adb_err = r.err();
                 }
                 Msg::Transferred(folder, r) => {
                     if let Some((from, folder, ran)) = folder {

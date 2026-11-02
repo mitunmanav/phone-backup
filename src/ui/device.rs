@@ -111,7 +111,8 @@ impl App {
                         "Turn on USB debugging to include apps, contacts and messages.",
                     ));
                 } else {
-                    adb_missing(ui, t);
+                    ui.label(muted("USB debugging also needs adb, Google's free tool."));
+                    self.adb_missing(ui, t);
                 }
                 self.phone_help(ui, t);
             }
@@ -134,7 +135,8 @@ impl App {
                     ],
                 );
                 if !self.adb_ok {
-                    adb_missing(ui, t);
+                    ui.label(muted("USB debugging also needs adb, Google's free tool."));
+                    self.adb_missing(ui, t);
                 }
                 self.phone_help(ui, t);
             }
@@ -200,10 +202,46 @@ impl App {
                         "Some phones need a USB driver on Windows: get it from the phone maker's website.",
                     ],
                 );
-                if !self.adb_ok {
-                    adb_missing(ui, t);
-                }
             });
+    }
+
+    /// USB debugging only helps once adb is on this computer. Google's terms come before its
+    /// download, and the manual route stays for when the download does not work.
+    pub(crate) fn adb_missing(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        if self.adb_working {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(16.0));
+                ui.label("Getting adb from Google…");
+            });
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut self.adb_agreed, "I agree to Google's terms");
+            ui.hyperlink_to(
+                "Read the terms",
+                "https://developer.android.com/studio/terms",
+            );
+        });
+        let get = ui
+            .add_enabled(self.adb_agreed, egui::Button::new("Get adb (8 MB)"))
+            .on_disabled_hover_text("Agree to Google's terms first");
+        if get.clicked() {
+            self.adb_working = true;
+            self.adb_err = None;
+            let (tx, ctx) = (self.tx.clone(), ui.ctx().clone());
+            thread::spawn(move || {
+                let _ = tx.send(Msg::GotAdb(backup::get_adb()));
+                ctx.request_repaint();
+            });
+        }
+        if let Some(e) = &self.adb_err {
+            ui.add(egui::Label::new(RichText::new(e).color(t.error)).wrap());
+            ui.add(egui::Label::new("Or put adb.exe next to this app yourself:").wrap());
+            ui.hyperlink_to(
+                "Download Platform Tools",
+                "https://developer.android.com/tools/releases/platform-tools",
+            );
+        }
     }
 
     /// The phone maker picker and its steps to turn on USB debugging.

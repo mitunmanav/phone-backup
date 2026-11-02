@@ -188,15 +188,6 @@ pub(crate) fn steps(ui: &mut egui::Ui, t: &Tokens, list: &[&str]) {
     ui.spacing_mut().interact_size.y = control_h;
 }
 
-/// USB debugging only helps once adb is on this computer.
-pub(crate) fn adb_missing(ui: &mut egui::Ui, t: &Tokens) {
-    ui.label(RichText::new("USB debugging also needs Google's free Platform Tools on this laptop. Unzip them and put adb.exe next to this app.").color(t.muted));
-    ui.hyperlink_to(
-        "Download Platform Tools",
-        "https://developer.android.com/tools/releases/platform-tools",
-    );
-}
-
 /// The main action of a page: accent when it can run, a quiet field otherwise.
 pub(crate) fn primary(ui: &mut egui::Ui, t: &Tokens, label: &str, enabled: bool) -> bool {
     let (fill, text) = if enabled {
