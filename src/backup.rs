@@ -79,6 +79,8 @@ pub enum Phone {
     Mtp {
         name: String,
     },
+    /// No phone found, and Windows could not use some USB device: maybe this phone on a bad cable.
+    UsbFailed,
 }
 
 pub struct Summary {
@@ -505,6 +507,26 @@ mod tests {
         assert!(phones[2] == Phone::Unauthorized);
         assert!(phones[3] == Phone::Unauthorized);
         assert_eq!(phones.len(), 4);
+    }
+
+    #[test]
+    fn spots_a_usb_device_windows_could_not_read() {
+        let device = |id: &str, class: &str| {
+            format!(
+                "Instance ID:    {id}\r\nClass Name:     {class}\r\nStatus:     Problem\r\n\r\n"
+            )
+        };
+        let unread = device(r"USB\VID_0000&PID_0002\5&2d7e1a2c&0&3", "USB");
+        let file_transfer = device(r"USB\VID_22B8&PID_2E82\ABC123", "WPD");
+        let camera = device(r"USB\VID_30C9&PID_00C2&MI_00\6&1234ABCD", "Camera");
+        let other_bus = device(r"PCI\VEN_0000&DEV_0002\1", "WPD");
+        assert!(usb_failed(&unread));
+        assert!(usb_failed(&file_transfer));
+        assert!(!usb_failed(&camera));
+        assert!(!usb_failed(&other_bus));
+        // The class of one device must not count for the USB ID of another.
+        assert!(!usb_failed(&(camera + &other_bus)));
+        assert!(!usb_failed("No devices were found on the system.\r\n"));
     }
 
     #[test]

@@ -410,9 +410,9 @@ impl App {
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [noadb[=working|failed]] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         if cfg!(debug_assertions) && test_run() {
             app.intro = None;
@@ -461,6 +461,7 @@ impl App {
                         .ok();
                     }
                     "choose" => app.choosing = true,
+                    "badusb" => app.phones = Some(vec![Phone::UsbFailed]),
                     _ if word.starts_with("noadb") => {
                         app.adb_ok = false;
                         app.adb_working = word == "noadb=working";
