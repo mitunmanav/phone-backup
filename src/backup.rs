@@ -516,6 +516,18 @@ pub(crate) fn connected(serial: &str) -> bool {
 
 const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Back up again to continue.";
 
+/// Why the running job must end now: Stop was pressed or the phone is gone. Output read from the
+/// phone just before this answered Some is cut short and must not be saved.
+fn interrupted(serial: &str) -> Option<&'static str> {
+    if stopped() {
+        Some(STOPPED)
+    } else if !connected(serial) {
+        Some(DISCONNECTED)
+    } else {
+        None
+    }
+}
+
 /// ro.serialno is the same over USB and Wi-Fi, unlike the adb serial.
 /// Not stoppable like `shell`: the phone list calls it too, and Stop stays set after a job ends.
 fn phone_id(serial: &str) -> String {
@@ -736,6 +748,7 @@ pub fn adb_backup(
     let _ = fs::create_dir_all(if pick.data { &data_dir } else { &root });
     let mut data = Vec::new();
     let mut written = Vec::new();
+    let mut cut = None;
     for (label, file, query) in [
         ("Contacts", "contacts.txt", "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1"),
         ("Call history", "call_log.txt", "content query --uri content://call_log/calls --projection number:name:date:duration:type"),
@@ -748,6 +761,11 @@ pub fn adb_backup(
     .filter(|_| pick.data)
     {
         let out = shell(serial, query);
+        // A cut-off answer still starts with "Row:" and would replace the last full copy.
+        if let Some(e) = interrupted(serial) {
+            cut = Some(e);
+            break;
+        }
         let ok = out.starts_with("Row:") || out.starts_with("No result");
         if ok {
             if file == "contacts.txt" {
@@ -756,11 +774,17 @@ pub fn adb_backup(
             }
             if file == "mms.txt" {
                 mms_attachments(serial, &data_dir.join("mms"));
+                cut = interrupted(serial);
             }
             let _ = fs::write(data_dir.join(file), out);
             written.push(data_dir.join(file));
         }
         data.push((label, ok));
+    }
+    if let Some(e) = cut {
+        // Their old sums no longer match what was just written.
+        update_sums(&root, &written, &[], report);
+        return Err(e.into());
     }
     listed.extend(written.iter().cloned());
     update_sums(&root, &written, &listed, report);
@@ -791,6 +815,11 @@ fn mms_attachments(serial: &str, dir: &Path) {
         "content query --uri content://mms/part --projection _id:ct:cl",
     );
     for (id, name) in parts.lines().filter_map(mms_part) {
+        let file = dir.join(safe_name(&format!("{id}_{name}")));
+        // A part never changes once saved, so only new ones are read.
+        if fs::metadata(&file).is_ok_and(|m| m.len() > 0) {
+            continue;
+        }
         let _ = fs::create_dir_all(dir);
         let mut c = adb();
         c.args([
@@ -799,7 +828,14 @@ fn mms_attachments(serial: &str, dir: &Path) {
             "exec-out",
             &format!("content read --uri content://mms/part/{id}"),
         ]);
-        let _ = fs::write(dir.join(safe_name(&format!("{id}_{name}"))), run(c));
+        let bytes = run(c);
+        // Stop or an unplug cuts the read short; a short file would be kept for good.
+        if interrupted(serial).is_some() {
+            return;
+        }
+        if !bytes.is_empty() {
+            let _ = fs::write(file, bytes);
+        }
     }
 }
 
@@ -2035,7 +2071,11 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
         // adb pull into a folder keeps the phone's file name, so renamed files go one by one.
         let same_name =
             job.local.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
-        match (same_name && !too_long(&job.local), job.local.parent()) {
+        // A file that is already there goes one by one through a temp file: pulling over it
+        // would leave it cut short when Stop or an unplug ends the pull.
+        // shortcut: changed files copy one by one, slow only when thousands changed at once.
+        let fresh = same_name && !too_long(&job.local) && !job.local.exists();
+        match (fresh, job.local.parent()) {
             (true, Some(dir)) => by_dir.entry(dir.to_path_buf()).or_default().push(job),
             _ => single.push(job),
         }
@@ -2093,15 +2133,19 @@ fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
         }
-        if too_long(&job.local) {
+        if too_long(&job.local) || job.local.exists() {
             // adb.exe cannot write past 260 characters; Rust's fs can, so pull short and move.
             let short = tmp.join("file");
             let _ = fs::create_dir_all(&tmp);
+            let _ = fs::remove_file(&short);
             let mut c = adb();
             c.args(["-s", serial, "pull", "-a", &job.remote])
                 .arg(&short);
             run(c);
-            let _ = fs::rename(&short, &job.local);
+            // Only a whole file replaces the one in the backup.
+            if fs::metadata(&short).is_ok_and(|m| m.len() == job.size) {
+                let _ = fs::rename(&short, &job.local);
+            }
         } else {
             let mut c = adb();
             c.args(["-s", serial, "pull", "-a", &job.remote])
@@ -2912,6 +2956,18 @@ mod tests {
         let msg = verify(&first.root, &quiet).unwrap();
         assert!(msg.starts_with("All "), "{msg}");
 
+        // A file that changed on the phone replaces the old copy whole, through the temp folder.
+        shell(&serial, "echo changed > /sdcard/E2E/Docs/-dash.txt");
+        let changed = adb_backup(&serial, "E2E", &dest, all.clone(), &quiet).unwrap();
+        assert_eq!((changed.copied, changed.errors.len()), (1, 0));
+        assert_eq!(
+            fs::read_to_string(e2e.join("Docs/-dash.txt")).unwrap(),
+            "changed\n"
+        );
+        assert!(!first.root.join(".pulling").exists());
+        let msg = verify(&first.root, &quiet).unwrap();
+        assert!(msg.starts_with("All "), "{msg}");
+
         // Restore: delete some files on the phone, then bring them back.
         let deep_remote = (1..=12).fold("/sdcard/E2E/deep".to_string(), |p, i| {
             format!("{p}/folder_with_a_fairly_long_name_{i}")
@@ -3062,6 +3118,36 @@ mod tests {
             "{:?}",
             again.errors
         );
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    /// Needs the emulator (PB_E2E_SERIAL). Stop during the contacts, calls and messages step ends
+    /// the backup and leaves the last full copy of that data as it was.
+    #[test]
+    #[ignore]
+    fn e2e_stop_in_data_step_keeps_old_data() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let dest = std::env::temp_dir().join(format!("pb-e2e-data-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let pick = Pick {
+            files: false,
+            apps: false,
+            data: true,
+            ..Pick::default()
+        };
+        let first = adb_backup(&serial, "E2E", &dest, pick.clone(), &|_| {}).unwrap();
+        let sms = first.root.join("data").join("sms.txt");
+        let before = fs::read_to_string(&sms).unwrap();
+        assert!(!before.is_empty());
+        let stop_when_saving = |m: Msg| {
+            if matches!(&m, Msg::Status(s) if s.starts_with("Saving contacts")) {
+                STOP.store(true, Ordering::Relaxed);
+            }
+        };
+        let r = adb_backup(&serial, "E2E", &dest, pick, &stop_when_saving);
+        STOP.store(false, Ordering::Relaxed);
+        assert_eq!(r.err().as_deref(), Some(STOPPED));
+        assert_eq!(fs::read_to_string(&sms).unwrap(), before);
         let _ = fs::remove_dir_all(&dest);
     }
 
