@@ -39,20 +39,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.version.outputs.new == 'true'
 
-      - name: Check, test and build
-        if: steps.version.outputs.new == 'true'
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked
-          cargo build --locked --release
-
       - uses: actions/setup-java@v5
         if: steps.version.outputs.new == 'true'
         with:
           distribution: temurin
           java-version: 21
 
+      # Before cargo: build.rs embeds the APK in the app.
       - name: Build signed companion app
         if: steps.version.outputs.new == 'true'
         shell: pwsh
@@ -65,6 +58,14 @@ jobs:
           companion\gradlew.bat -p companion assembleRelease
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item $env:COMPANION_KEYSTORE
+
+      - name: Check, test and build
+        if: steps.version.outputs.new == 'true'
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --locked --release
 
       - name: Package release and checksums
         if: steps.version.outputs.new == 'true'

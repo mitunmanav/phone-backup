@@ -19,6 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # Before cargo: build.rs embeds the APK in the app.
+      - name: Build companion app
+        run: companion\gradlew.bat -p companion assembleRelease
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -36,11 +45,3 @@ jobs:
 
       - name: Build release binary
         run: cargo build --locked --release
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - name: Build companion app
-        run: companion\gradlew.bat -p companion assembleRelease
