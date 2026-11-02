@@ -2,6 +2,7 @@
 # Puts awkward files, junk, a contact, a calendar event and a picture message on a test phone or emulator for the e2e tests:
 #   adb shell < docs/e2e-seed.sh
 #   adb connect 127.0.0.1:5555   (emulator only; tap Allow on its screen)
+#   companion\gradlew.bat -p companion assembleRelease   (the helper test needs the helper built)
 #   PB_E2E_SERIAL=emulator-5554 cargo test -- --include-ignored --test-threads=1
 # Shared storage refuses : ? * < > | and \ in names, and ignores letter case.
 B=/sdcard/E2E

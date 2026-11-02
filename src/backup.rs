@@ -11,6 +11,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 mod adb;
 mod checksums;
+// shortcut: no job calls the helper yet; remove this allow when the first data type reads through it.
+#[allow(dead_code)]
+mod helper;
 mod merge;
 mod mtp;
 mod report;
