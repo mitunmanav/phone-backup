@@ -718,6 +718,13 @@ pub(super) fn adb_backup_run(
         return Err(DISCONNECTED.into());
     }
 
+    // shortcut: why the helper failed is dropped, so the user only sees contacts not saved; show it when a test phone refuses the helper.
+    let helper = pick.data.then(|| {
+        status("Starting the helper on the phone. Allow it if the phone asks…".into());
+        super::helper::start(serial).ok()
+    });
+    let helper = helper.flatten();
+
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
     status("Saving contacts, calls, messages and calendar…".into());
     let data_dir = root.join("data");
@@ -736,7 +743,14 @@ pub(super) fn adb_backup_run(
     .into_iter()
     .filter(|_| pick.data)
     {
-        let out = shell(serial, query);
+        let from_helper = helper
+            .as_ref()
+            .filter(|_| file == "contacts.txt")
+            .and_then(|h| h.contacts());
+        let (out, json) = match from_helper {
+            Some((text, json)) => (text, Some(json)),
+            None => (shell(serial, query), None),
+        };
         // A cut-off answer still starts with "Row:" and would replace the last full copy.
         if let Some(e) = interrupted(serial) {
             cut = Some(e);
@@ -748,6 +762,10 @@ pub(super) fn adb_backup_run(
                 let _ = fs::write(data_dir.join("contacts.vcf"), vcard(&out));
                 written.push(data_dir.join("contacts.vcf"));
             }
+            if let Some(json) = json {
+                let _ = fs::write(data_dir.join("contacts.json"), json);
+                written.push(data_dir.join("contacts.json"));
+            }
             if file == "mms.txt" {
                 mms_attachments(serial, &data_dir.join("mms"));
                 cut = interrupted(serial);
@@ -757,6 +775,7 @@ pub(super) fn adb_backup_run(
         }
         data.push((label, ok));
     }
+    drop(helper);
     if let Some(e) = cut {
         // Their old sums no longer match what was just written.
         update_sums(&root, &written, &[], report);

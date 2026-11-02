@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.os.Build
 import android.provider.ContactsContract
 import java.io.BufferedWriter
@@ -151,11 +152,19 @@ class BridgeService : Service() {
     private fun error(id: Any?, code: String) = JSONObject().put("id", id).put("ok", false).put("error", code)
 
     private fun listContacts(id: Any?, writer: BufferedWriter) {
-        val columns = arrayOf(ContactsContract.Contacts._ID, ContactsContract.Contacts.DISPLAY_NAME)
+        val data = ContactsContract.Data.CONTENT_URI
+        val columns = arrayOf("contact_id", "raw_contact_id", "mimetype", "display_name", "is_primary", "is_super_primary") +
+            (1..15).map { "data$it" }
         var count = 0
-        contentResolver.query(ContactsContract.Contacts.CONTENT_URI, columns, null, null, null)?.use { rows ->
+        contentResolver.query(data, columns, null, null, null)?.use { rows ->
             while (rows.moveToNext()) {
-                val item = JSONObject().put("id", rows.getLong(0)).put("name", rows.getString(1) ?: JSONObject.NULL)
+                val item = JSONObject()
+                for (column in 0 until rows.columnCount) {
+                    // shortcut: photos are left out because bytes do not travel in JSON, add them with `adb pull` (section 3.3) when restore needs them.
+                    if (rows.getType(column) !in listOf(Cursor.FIELD_TYPE_NULL, Cursor.FIELD_TYPE_BLOB)) {
+                        item.put(rows.getColumnName(column), rows.getString(column))
+                    }
+                }
                 writer.send(JSONObject().put("id", id).put("item", item))
                 count++
             }

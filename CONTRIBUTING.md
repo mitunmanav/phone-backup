@@ -27,7 +27,7 @@ cargo build --locked --release
 | Checksums, reports, tidying backups | `src/backup/checksums.rs`, `report.rs`, `merge.rs` |
 | Exports, Tools page work | `src/export.rs`, `src/tools.rs` |
 | Android helper app | `companion/`; build with `companion\gradlew.bat -p companion assembleRelease`, design in `docs/android-design.md`. The next `cargo build` embeds that APK; without it the app still builds, only the helper is missing |
-| Starting and removing the helper | `src/backup/helper.rs` |
+| Starting, reading through and removing the helper | `src/backup/helper.rs`; the backup's data step in `src/backup/adb.rs` calls it |
 
 To add a screen: add its file in `src/ui/`, a line in `src/ui.rs`, and a branch where `src/ui/shell.rs` picks the page.
 

@@ -11,8 +11,6 @@ use std::time::{Duration, UNIX_EPOCH};
 
 mod adb;
 mod checksums;
-// shortcut: no job calls the helper yet; remove this allow when the first data type reads through it.
-#[allow(dead_code)]
 mod helper;
 mod merge;
 mod mtp;
@@ -1313,6 +1311,12 @@ mod tests {
         let sms = first.root.join("data").join("sms.txt");
         let before = fs::read_to_string(&sms).unwrap();
         assert!(!before.is_empty());
+        // The helper read the contacts and is gone again.
+        assert!(first.root.join("data").join("contacts.json").exists());
+        assert_eq!(
+            shell(&serial, "pm list packages org.phonebackup.companion"),
+            ""
+        );
         let stop_when_saving = |m: Msg| {
             if matches!(&m, Msg::Status(s) if s.starts_with("Saving contacts")) {
                 STOP.store(true, Ordering::Relaxed);
