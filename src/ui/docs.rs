@@ -19,7 +19,7 @@ impl App {
                     ),
                     (
                         "The internet",
-                        "No account, ads, tracking or update check. The app goes online only when you click Get adb, to download it from Google, and it sends none of your data. Wi-Fi pairing talks only to your phone, on your own network. Links open in your browser, and only when you click them.",
+                        "No account, ads or tracking. The app goes online only when you click Get adb, to download it from Google, or Check for updates, to ask GitHub for the newest version. It sends none of your data; those sites see your internet address, as any website does. Wi-Fi pairing talks only to your phone, on your own network. Links open in your browser, and only when you click them.",
                     ),
                     (
                         "Diagnostics",

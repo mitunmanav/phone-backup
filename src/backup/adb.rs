@@ -230,6 +230,44 @@ pub(super) fn get_adb_into(dir: &Path) -> Result<(), String> {
     result
 }
 
+/// Asks GitHub where its latest-release address points. Some(version) when that is newer than
+/// this app. Only ever called from a click.
+pub fn check_update() -> Result<Option<String>, String> {
+    let reach = |e: String| {
+        format!("Could not reach GitHub ({e}). Check the internet connection, then try again.")
+    };
+    let out = windows_tool("curl.exe")
+        .args(["--silent", "--show-error", "--proto", "=https"])
+        .args(["--max-time", "30", "--output", "NUL"])
+        .args(["--write-out", "%{redirect_url}"])
+        .arg(concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest"))
+        .output()
+        .map_err(|e| reach(e.to_string()))?;
+    if !out.status.success() {
+        return Err(reach(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    newer_release(
+        &String::from_utf8_lossy(&out.stdout),
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// The version in a ".../releases/tag/v1.2.3" address, when it is newer than `current`.
+pub(super) fn newer_release(address: &str, current: &str) -> Result<Option<String>, String> {
+    let numbers = |v: &str| {
+        v.split('.')
+            .map(|n| n.parse::<u32>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    let latest = address.rsplit_once("/tag/v").map_or("", |x| x.1.trim());
+    let Some(new) = numbers(latest) else {
+        return Err("GitHub's answer could not be read. Try again later.".into());
+    };
+    Ok((new > numbers(current).unwrap_or_default()).then(|| latest.to_string()))
+}
+
 /// Unpacks the download into `part`, a folder of its own, and moves it into place only once
 /// adb.exe is there, so a broken download never leaves half a tool behind.
 pub(super) fn install_adb(zip: &Path, part: &Path, dir: &Path) -> Result<(), String> {
