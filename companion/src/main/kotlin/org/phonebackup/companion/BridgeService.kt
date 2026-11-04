@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
+import android.provider.CalendarContract
 import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.Telephony
@@ -133,7 +134,8 @@ class BridgeService : Service() {
         .put("perms", JSONObject()
             .put("contacts", granted(Manifest.permission.READ_CONTACTS))
             .put("sms", granted(Manifest.permission.READ_SMS))
-            .put("calllog", granted(Manifest.permission.READ_CALL_LOG)))
+            .put("calllog", granted(Manifest.permission.READ_CALL_LOG))
+            .put("calendar", granted(Manifest.permission.READ_CALENDAR)))
 
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
@@ -159,6 +161,17 @@ class BridgeService : Service() {
                         id,
                         CallLog.Calls.CONTENT_URI,
                         arrayOf("number", "name", "date", "duration", "type", "new", "is_read", "presentation", "features"),
+                        writer,
+                    )
+                    "calendar" -> list(
+                        id,
+                        CalendarContract.Events.CONTENT_URI,
+                        arrayOf(
+                            "title", "dtstart", "dtend", "allDay", "eventLocation", "description", "rrule",
+                            "duration", "eventTimezone", "eventEndTimezone", "rdate", "exrule", "exdate",
+                            "availability", "accessLevel", "hasAlarm", "calendar_id", "calendar_displayName",
+                            "account_name", "account_type",
+                        ),
                         writer,
                     )
                     else -> writer.send(error(id, "unknown_kind"))

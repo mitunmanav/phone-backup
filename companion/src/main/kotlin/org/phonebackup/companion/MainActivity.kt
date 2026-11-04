@@ -20,6 +20,6 @@ class MainActivity : Activity() {
                 insets
             }
         })
-        requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.READ_SMS, Manifest.permission.READ_CALL_LOG), 1)
+        requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.READ_SMS, Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_CALENDAR), 1)
     }
 }

@@ -96,7 +96,7 @@ pub struct Summary {
     pub errors: Vec<String>,
     /// (what, saved?) for contacts, call history, messages and the calendar. Empty for MTP.
     pub data: Vec<(&'static str, bool)>,
-    /// What the user must know about the contacts, calls and messages beyond saved or not.
+    /// What the user must know about the contacts, calls, messages and calendar beyond saved or not.
     pub notes: Vec<String>,
     pub full: bool,
     /// What was asked for.
@@ -1319,6 +1319,7 @@ mod tests {
         assert!(!before.is_empty());
         // The helper read the contacts and is gone again.
         assert!(first.root.join("data").join("contacts.json").exists());
+        assert!(first.root.join("data").join("calendar.json").exists());
         assert_eq!(
             shell(&serial, "pm list packages org.phonebackup.companion"),
             ""
