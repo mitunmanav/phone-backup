@@ -117,14 +117,13 @@ The current layout stays; new files are added beside it.
     sms.json                  the provider's text fields, for exact restore
     call_log.json             the provider's text fields, for exact restore
     mms/                      new
-    calendar.ics              new: for other apps
-    calendar.json             new: for exact restore
+    calendar.json             the provider's text fields, for exact restore
   checksums.sha256            existing: SHA-256 of every file, checked by Verify backup
   report.txt                  existing
 ```
 
 - Human formats (`.vcf`, `.ics`) for people; `.json` for exact restore. Restore prefers `.json`.
-- `contacts.txt`, `call_log.txt` and `sms.txt` keep the `content query` text form whichever way they were read, so exports and older backups share one reader.
+- `contacts.txt`, `call_log.txt`, `sms.txt` and `calendar.txt` keep the `content query` text form whichever way they were read, so exports and older backups share one reader.
 - `content query` also runs on every backup, and its rows are kept when it sees more than the companion app. A phone can hide messages from an ordinary app without an error: recent one-time codes for three hours on current Android, and a shell-written message on an Android 17 emulator. On a phone that refuses `content query`, those hidden messages cannot be detected or saved, so the backup summary and report warn that some may be missing. An empty list from the companion app is never trusted on its own.
 - `checksums.sha256` is in `sha256sum` format, so `sha256sum -c` checks a backup without this app.
 
