@@ -131,6 +131,7 @@ impl Helper {
                 &["contact_id", "mimetype", "display_name", "data1"],
             ),
             "sms.txt" => ("sms", &["address", "date", "type", "body"]),
+            "call_log.txt" => ("calllog", &["number", "name", "date", "duration", "type"]),
             _ => return None,
         };
         let items = list(&self.socket, kind)?;
@@ -157,7 +158,9 @@ pub fn fuller(old: String, helper: Option<(String, String)>) -> (String, Option<
 pub fn note(file: &str, old: &str, out: &str, saved: bool, why: Option<&str>) -> Option<String> {
     let rows = |text: &str| text.starts_with("Row:");
     match (file, why) {
-        ("contacts.txt" | "sms.txt", Some(why)) if !rows(out) => Some(why.to_string()),
+        ("contacts.txt" | "sms.txt" | "call_log.txt", Some(why)) if !rows(out) => {
+            Some(why.to_string())
+        }
         // Only `content query` can show what the phone hid from the helper.
         ("sms.txt", _) if saved && !rows(old) => Some(
             "Some messages may be missing. Android can hide messages from backups, such as recent one-time codes, without saying so.".into(),
@@ -326,6 +329,31 @@ mod tests {
         assert!(kept.contains("E2E incoming"), "{kept}");
     }
 
+    /// What the helper reads must match what the old method reads, where a phone allows both.
+    #[test]
+    #[ignore]
+    fn e2e_helper_calls_match_the_old_method() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let old = shell(
+            &serial,
+            "content query --uri content://call_log/calls --projection number:name:date:duration:type",
+        );
+        let (text, json) = start(&serial).unwrap().read("call_log.txt").unwrap();
+        let sorted = |rows: &str| {
+            let mut calls =
+                crate::export::rows(rows, &["number", "name", "date", "duration", "type"]);
+            calls.sort();
+            calls
+        };
+        assert_eq!(sorted(&text), sorted(&old));
+        assert!(
+            sorted(&text).iter().any(|c| c[1] == "E2E, caller"),
+            "{text}"
+        );
+        let items: Vec<Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(items.len(), sorted(&text).len());
+    }
+
     #[test]
     fn the_fuller_answer_wins() {
         let helper = |text: &str| Some((text.to_string(), "json".to_string()));
@@ -359,11 +387,11 @@ mod tests {
         assert_eq!(note("contacts.txt", refused, row, true, None), None);
 
         let why = Some("Why.");
-        for file in ["sms.txt", "contacts.txt"] {
+        for file in ["sms.txt", "contacts.txt", "call_log.txt"] {
             assert_eq!(note(file, refused, refused, false, why).unwrap(), "Why.");
         }
         assert_eq!(note("contacts.txt", row, row, true, why), None);
-        assert_eq!(note("call_log.txt", refused, refused, false, why), None);
+        assert_eq!(note("calendar.txt", refused, refused, false, why), None);
     }
 
     /// A list from a fake helper that sends these lines and then hangs up.

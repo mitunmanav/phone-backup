@@ -15,7 +15,7 @@ impl App {
                     ),
                     (
                         "The helper on your phone",
-                        "When a backup includes contacts and messages, the app puts a small helper app on the phone to read them, and removes it when the backup ends. If the phone is unplugged first, the next backup removes it. It sends data only to your computer, over the USB debugging connection.",
+                        "When a backup includes contacts, call history and messages, the app puts a small helper app on the phone to read them, and removes it when the backup ends. If the phone is unplugged first, the next backup removes it. It sends data only to your computer, over the USB debugging connection.",
                     ),
                     (
                         "Where your backups go",

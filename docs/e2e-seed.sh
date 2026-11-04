@@ -1,5 +1,5 @@
 #!/bin/sh
-# Puts awkward files, junk, a contact, a calendar event, a text message and a picture message on a test phone or emulator for the e2e tests:
+# Puts awkward files, junk, a contact, a call, a calendar event, a text message and a picture message on a test phone or emulator for the e2e tests:
 #   adb shell < docs/e2e-seed.sh
 #   adb connect 127.0.0.1:5555   (emulator only; tap Allow on its screen)
 #   adb emu sms send 5550199 "E2E incoming"   (emulator only; wait a few seconds for it to arrive)
@@ -32,6 +32,8 @@ ID=$(content query --uri content://com.android.contacts/raw_contacts --projectio
 content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:$ID --bind mimetype:s:vnd.android.cursor.item/name --bind data1:s:'Ann, Lee; Jr'
 content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:$ID --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:'+1 555 0100'
 content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:$ID --bind mimetype:s:vnd.android.cursor.item/email_v2 --bind data1:s:'ann@x.com'
+content delete --uri content://call_log/calls --where "name like 'E2E%'"
+content insert --uri content://call_log/calls --bind number:s:+15550100 --bind name:s:'E2E, caller' --bind date:l:1767225600000 --bind duration:i:61 --bind type:i:1
 # Junk the backup skips: a hidden cache, WhatsApp stickers and its copies of sent media.
 mkdir -p $B/.cache "$B/WhatsApp/Media/WhatsApp Stickers" "$B/WhatsApp/Media/WhatsApp Images/Sent"
 echo c > $B/.cache/c.bin

@@ -96,7 +96,7 @@ pub struct Summary {
     pub errors: Vec<String>,
     /// (what, saved?) for contacts, call history, messages and the calendar. Empty for MTP.
     pub data: Vec<(&'static str, bool)>,
-    /// What the user must know about the contacts and messages beyond saved or not.
+    /// What the user must know about the contacts, calls and messages beyond saved or not.
     pub notes: Vec<String>,
     pub full: bool,
     /// What was asked for.
