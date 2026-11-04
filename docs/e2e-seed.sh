@@ -1,7 +1,8 @@
 #!/bin/sh
-# Puts awkward files, junk, a contact, a calendar event and a picture message on a test phone or emulator for the e2e tests:
+# Puts awkward files, junk, a contact, a calendar event, a text message and a picture message on a test phone or emulator for the e2e tests:
 #   adb shell < docs/e2e-seed.sh
 #   adb connect 127.0.0.1:5555   (emulator only; tap Allow on its screen)
+#   adb emu sms send 5550199 "E2E incoming"   (emulator only; wait a few seconds for it to arrive)
 #   companion\gradlew.bat -p companion assembleRelease   (the helper test needs the helper built)
 #   PB_E2E_SERIAL=emulator-5554 cargo test -- --include-ignored --test-threads=1
 # Shared storage refuses : ? * < > | and \ in names, and ignores letter case.
@@ -45,9 +46,11 @@ if [ -z "$CAL" ]; then
   CAL=$(content query --uri content://com.android.calendar/calendars --projection _id | grep _id= | head -1 | sed 's/.*_id=//')
 fi
 content insert --uri content://com.android.calendar/events --bind calendar_id:i:$CAL --bind title:s:'E2E dentist' --bind dtstart:l:1767225600000 --bind dtend:l:1767229200000 --bind eventTimezone:s:UTC
-# One picture message with text, a sender and a picture. Only the default SMS app may write
-# messages, so the shell is allowed to first.
+# One text message, and one picture message with text, a sender and a picture. Only the default
+# SMS app may write messages, so the shell is allowed to first.
 appops set com.android.shell WRITE_SMS allow
+content delete --uri content://sms --where "body like 'E2E %'"
+content insert --uri content://sms --bind address:s:+15550100 --bind date:l:1767225600000 --bind type:i:1 --bind body:s:'E2E hello, 日本'
 content delete --uri content://mms --where "sub='E2E'"
 content insert --uri content://mms --bind msg_box:i:1 --bind date:l:1767225600 --bind sub:s:E2E --bind m_type:i:132
 M=$(content query --uri content://mms --projection _id --where "sub='E2E'" | tail -1 | sed 's/.*_id=//')

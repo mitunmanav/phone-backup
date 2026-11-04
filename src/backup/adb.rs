@@ -718,7 +718,7 @@ pub(super) fn adb_backup_run(
         return Err(DISCONNECTED.into());
     }
 
-    // shortcut: why the helper failed is dropped, so the user only sees contacts not saved; show it when a test phone refuses the helper.
+    // shortcut: why the helper failed is dropped, so the user only sees contacts or messages not saved; show it when a test phone refuses the helper.
     let helper = pick.data.then(|| {
         status("Starting the helper on the phone. Allow it if the phone asks…".into());
         super::helper::start(serial).ok()
@@ -743,14 +743,10 @@ pub(super) fn adb_backup_run(
     .into_iter()
     .filter(|_| pick.data)
     {
-        let from_helper = helper
-            .as_ref()
-            .filter(|_| file == "contacts.txt")
-            .and_then(|h| h.contacts());
-        let (out, json) = match from_helper {
-            Some((text, json)) => (text, Some(json)),
-            None => (shell(serial, query), None),
-        };
+        let (out, json) = super::helper::fuller(
+            shell(serial, query),
+            helper.as_ref().and_then(|h| h.read(file)),
+        );
         // A cut-off answer still starts with "Row:" and would replace the last full copy.
         if let Some(e) = interrupted(serial) {
             cut = Some(e);
@@ -763,8 +759,9 @@ pub(super) fn adb_backup_run(
                 written.push(data_dir.join("contacts.vcf"));
             }
             if let Some(json) = json {
-                let _ = fs::write(data_dir.join("contacts.json"), json);
-                written.push(data_dir.join("contacts.json"));
+                let path = data_dir.join(file).with_extension("json");
+                let _ = fs::write(&path, json);
+                written.push(path);
             }
             if file == "mms.txt" {
                 mms_attachments(serial, &data_dir.join("mms"));

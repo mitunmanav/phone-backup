@@ -8,8 +8,10 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
+import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
+import android.provider.Telephony
 import java.io.BufferedWriter
 import java.io.IOException
 import java.io.Reader
@@ -137,10 +139,21 @@ class BridgeService : Service() {
         val id = request.opt("id")
         try {
             when (request.optString("op")) {
-                "list" -> if (request.optString("kind") == "contacts") {
-                    listContacts(id, writer)
-                } else {
-                    writer.send(error(id, "unknown_kind"))
+                "list" -> when (request.optString("kind")) {
+                    "contacts" -> list(
+                        id,
+                        ContactsContract.Data.CONTENT_URI,
+                        arrayOf("contact_id", "raw_contact_id", "mimetype", "display_name", "is_primary", "is_super_primary") +
+                            (1..15).map { "data$it" },
+                        writer,
+                    )
+                    "sms" -> list(
+                        id,
+                        Telephony.Sms.CONTENT_URI,
+                        arrayOf("address", "date", "date_sent", "read", "seen", "type", "status", "subject", "body", "locked"),
+                        writer,
+                    )
+                    else -> writer.send(error(id, "unknown_kind"))
                 }
                 else -> writer.send(error(id, "unknown_op"))
             }
@@ -151,12 +164,9 @@ class BridgeService : Service() {
 
     private fun error(id: Any?, code: String) = JSONObject().put("id", id).put("ok", false).put("error", code)
 
-    private fun listContacts(id: Any?, writer: BufferedWriter) {
-        val data = ContactsContract.Data.CONTENT_URI
-        val columns = arrayOf("contact_id", "raw_contact_id", "mimetype", "display_name", "is_primary", "is_super_primary") +
-            (1..15).map { "data$it" }
+    private fun list(id: Any?, uri: Uri, columns: Array<String>, writer: BufferedWriter) {
         var count = 0
-        contentResolver.query(data, columns, null, null, null)?.use { rows ->
+        contentResolver.query(uri, columns, null, null, null)?.use { rows ->
             while (rows.moveToNext()) {
                 val item = JSONObject()
                 for (column in 0 until rows.columnCount) {
