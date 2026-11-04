@@ -22,6 +22,8 @@ pub enum Done {
     /// Phone files whose backup copy matches, and how many chosen files did not.
     Matched(Result<(Vec<(String, u64)>, usize), String>),
     Text(Result<String, String>),
+    /// A backup read for the Read page.
+    Book(Result<crate::export::Book, String>),
 }
 
 /// Identical files in the backup's photos and files: same size first, then the same SHA-256.

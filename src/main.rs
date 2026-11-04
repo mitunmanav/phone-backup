@@ -67,6 +67,8 @@ enum Tab {
     Transfer,
     Tools,
     Settings,
+    /// A backup's messages, contacts, calls and calendar, opened from Tools.
+    Read,
     /// Pages opened from Settings.
     Privacy,
     License,
@@ -204,6 +206,8 @@ struct App {
     /// A delete waiting for the user's yes.
     confirm: Option<Confirm>,
     scrcpy: Option<PathBuf>,
+    /// The backup open on the Read page.
+    reading: Option<Reading>,
     /// Debug builds only: which test data is shown instead of the real phones and backups.
     fixture: Fixture,
     /// Debug builds only: scroll position to open at, for screenshots.
@@ -415,14 +419,15 @@ impl App {
             free_pick: None,
             confirm: None,
             scrcpy: None,
+            reading: None,
             fixture: Fixture::Real,
             scroll: None,
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
         // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
-        // [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
+        // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         // update=working|new|same|failed also shows that result of Check for updates.
         if cfg!(debug_assertions) && test_run() {
@@ -504,6 +509,22 @@ impl App {
                         ctx.set_zoom_factor(word[5..].parse().unwrap_or(1.0))
                     }
                     _ if word.starts_with("pick=") => app.open_picker(ctx, word[5..].into(), false),
+                    _ if word.starts_with("read=") => {
+                        if let Ok(book) = export::book(Path::new(&word[5..])) {
+                            app.reading = Some(Reading::new("Test backup".into(), book));
+                            app.tab = Tab::Read;
+                        }
+                    }
+                    "contacts" | "calls" | "calendar" => {
+                        if let Some(r) = &mut app.reading {
+                            r.part = match word {
+                                "contacts" => Part::Contacts,
+                                "calls" => Part::Calls,
+                                _ => Part::Calendar,
+                            };
+                            r.refilter();
+                        }
+                    }
                     _ if word.starts_with("shot=") => app.shot = Some(word[5..].into()),
                     _ if word.starts_with("size=") => {
                         if let Some((w, h)) = word[5..].split_once('x')
@@ -667,8 +688,17 @@ impl eframe::App for App {
             match done {
                 tools::Done::Status(s) => self.tool_status = s,
                 tools::Done::Dupes(Ok(groups)) => self.show_dupes(groups),
-                tools::Done::Dupes(Err(e)) | tools::Done::Matched(Err(e)) => {
-                    self.tool_msg = Some((which, Err(e)))
+                tools::Done::Dupes(Err(e))
+                | tools::Done::Matched(Err(e))
+                | tools::Done::Book(Err(e)) => self.tool_msg = Some((which, Err(e))),
+                tools::Done::Book(Ok(book)) => {
+                    let name = self
+                        .backups
+                        .iter()
+                        .find(|b| Some(&b.path) == self.chosen.as_ref())
+                        .map_or(String::new(), |b| b.name.clone());
+                    self.go(Tab::Read);
+                    self.reading = Some(Reading::new(name, book));
                 }
                 tools::Done::Matched(Ok((list, left))) if list.is_empty() => {
                     self.tool_msg = Some((
@@ -750,6 +780,13 @@ impl eframe::App for App {
             && ui.input(|i| i.key_pressed(egui::Key::Escape))
         {
             self.go(Tab::Settings);
+        }
+        // With the search box focused, Esc only leaves the box.
+        if self.tab == Tab::Read
+            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && ui.ctx().memory(|m| m.focused().is_none())
+        {
+            self.go(Tab::Tools);
         }
         let pad: i8 = if ui.available_width() >= 640.0 {
             28
