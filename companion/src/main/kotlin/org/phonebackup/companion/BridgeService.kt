@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
+import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.Telephony
 import java.io.BufferedWriter
@@ -131,7 +132,8 @@ class BridgeService : Service() {
         .put("sdk", Build.VERSION.SDK_INT)
         .put("perms", JSONObject()
             .put("contacts", granted(Manifest.permission.READ_CONTACTS))
-            .put("sms", granted(Manifest.permission.READ_SMS)))
+            .put("sms", granted(Manifest.permission.READ_SMS))
+            .put("calllog", granted(Manifest.permission.READ_CALL_LOG)))
 
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
@@ -151,6 +153,12 @@ class BridgeService : Service() {
                         id,
                         Telephony.Sms.CONTENT_URI,
                         arrayOf("address", "date", "date_sent", "read", "seen", "type", "status", "subject", "body", "locked"),
+                        writer,
+                    )
+                    "calllog" -> list(
+                        id,
+                        CallLog.Calls.CONTENT_URI,
+                        arrayOf("number", "name", "date", "duration", "type", "new", "is_read", "presentation", "features"),
                         writer,
                     )
                     else -> writer.send(error(id, "unknown_kind"))
