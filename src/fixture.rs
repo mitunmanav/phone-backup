@@ -88,6 +88,10 @@ impl App {
                         ("Call history", false),
                         ("Messages", false),
                     ],
+                    notes: vec![
+                        "The phone refused the helper app. On some phones, turn on \"Install via USB\" in Developer options, then try again.".into(),
+                        "Some messages may be missing. Android can hide messages from backups, such as recent one-time codes, without saying so.".into(),
+                    ],
                     full: true,
                     pick: Pick::default(),
                 }]));

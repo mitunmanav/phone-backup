@@ -349,6 +349,9 @@ impl App {
                             if !refused.is_empty() {
                                 ui.label(format!("Your phone did not allow reading {}.", or_list(&refused)));
                             }
+                            for note in &s.notes {
+                                ui.label(note);
+                            }
                         } else {
                             ui.label("Apps, contacts and messages were not saved. Turn on USB debugging to include them.");
                         }

@@ -125,7 +125,7 @@ The current layout stays; new files are added beside it.
 
 - Human formats (`.vcf`, `.ics`) for people; `.json` for exact restore. Restore prefers `.json`.
 - `contacts.txt` and `sms.txt` keep the `content query` text form whichever way they were read, so exports and older backups share one reader.
-- `content query` also runs on every backup, and its rows are kept when it sees more than the companion app. A phone can hide messages from an ordinary app without an error: recent one-time codes for three hours on current Android, and a shell-written message on an Android 17 emulator. On a phone that refuses `content query`, those hidden messages cannot be detected or saved. An empty list from the companion app is never trusted on its own.
+- `content query` also runs on every backup, and its rows are kept when it sees more than the companion app. A phone can hide messages from an ordinary app without an error: recent one-time codes for three hours on current Android, and a shell-written message on an Android 17 emulator. On a phone that refuses `content query`, those hidden messages cannot be detected or saved, so the backup summary and report warn that some may be missing. An empty list from the companion app is never trusted on its own.
 - `checksums.sha256` is in `sha256sum` format, so `sha256sum -c` checks a backup without this app.
 
 ### 4.1 Optional encryption
