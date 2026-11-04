@@ -152,6 +152,20 @@ pub fn fuller(old: String, helper: Option<(String, String)>) -> (String, Option<
     }
 }
 
+/// What the user must hear about one data file, given what `content query` gave (`old`), what is
+/// being saved (`out`), whether it was saved, and why the helper did not start, if it did not.
+pub fn note(file: &str, old: &str, out: &str, saved: bool, why: Option<&str>) -> Option<String> {
+    let rows = |text: &str| text.starts_with("Row:");
+    match (file, why) {
+        ("contacts.txt" | "sms.txt", Some(why)) if !rows(out) => Some(why.to_string()),
+        // Only `content query` can show what the phone hid from the helper.
+        ("sms.txt", _) if saved && !rows(old) => Some(
+            "Some messages may be missing. Android can hide messages from backups, such as recent one-time codes, without saying so.".into(),
+        ),
+        _ => None,
+    }
+}
+
 /// Reads one list to its end line, whose count must match. None on an error, Stop, a cut or an
 /// empty list: a phone can hide data by answering "nothing" without an error, so the old method
 /// has to confirm it. The id keeps late lines of an earlier list out of this one.
@@ -330,6 +344,26 @@ mod tests {
             (two.to_string(), None)
         );
         assert_eq!(fuller(one.to_string(), None), (one.to_string(), None));
+    }
+
+    #[test]
+    fn notes_say_only_what_the_user_can_miss() {
+        let row = "Row: 0 a=1\n";
+        let none = "No result found.\n";
+        let refused = "Error: permission denied\n";
+        let hidden = note("sms.txt", refused, row, true, None).unwrap();
+        assert!(hidden.starts_with("Some messages may be missing"));
+        assert_eq!(note("sms.txt", none, none, true, None), Some(hidden));
+        assert_eq!(note("sms.txt", row, row, true, None), None);
+        assert_eq!(note("sms.txt", refused, refused, false, None), None);
+        assert_eq!(note("contacts.txt", refused, row, true, None), None);
+
+        let why = Some("Why.");
+        for file in ["sms.txt", "contacts.txt"] {
+            assert_eq!(note(file, refused, refused, false, why).unwrap(), "Why.");
+        }
+        assert_eq!(note("contacts.txt", row, row, true, why), None);
+        assert_eq!(note("call_log.txt", refused, refused, false, why), None);
     }
 
     /// A list from a fake helper that sends these lines and then hangs up.

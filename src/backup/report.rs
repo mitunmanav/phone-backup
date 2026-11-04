@@ -111,6 +111,9 @@ pub(super) fn write_report(s: &Summary, copied: &[PathBuf]) {
         };
         body += &format!("{what}: {state}\n");
     }
+    for note in &s.notes {
+        body += &format!("{note}\n");
+    }
     let limits = s.pick.limits();
     if s.pick.files && !limits.is_empty() {
         body += &format!("Files chosen: {limits}\n");

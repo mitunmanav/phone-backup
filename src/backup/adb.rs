@@ -718,12 +718,16 @@ pub(super) fn adb_backup_run(
         return Err(DISCONNECTED.into());
     }
 
-    // shortcut: why the helper failed is dropped, so the user only sees contacts or messages not saved; show it when a test phone refuses the helper.
     let helper = pick.data.then(|| {
         status("Starting the helper on the phone. Allow it if the phone asks…".into());
-        super::helper::start(serial).ok()
+        super::helper::start(serial)
     });
-    let helper = helper.flatten();
+    // shortcut: a helper that starts and then fails a list gives no reason; show one when a test phone does this.
+    let (helper, why) = match helper {
+        Some(Ok(helper)) => (Some(helper), None),
+        Some(Err(why)) => (None, Some(why)),
+        None => (None, None),
+    };
 
     // Contacts, call log and SMS as text. Many phones refuse these to ADB; the summary says so.
     status("Saving contacts, calls, messages and calendar…".into());
@@ -731,6 +735,7 @@ pub(super) fn adb_backup_run(
     let _ = fs::create_dir_all(if pick.data { &data_dir } else { &root });
     let mut data = Vec::new();
     let mut written = Vec::new();
+    let mut notes = Vec::new();
     let mut cut = None;
     for (label, file, query) in [
         ("Contacts", "contacts.txt", "content query --uri content://com.android.contacts/data --projection contact_id:mimetype:display_name:data1"),
@@ -743,8 +748,9 @@ pub(super) fn adb_backup_run(
     .into_iter()
     .filter(|_| pick.data)
     {
+        let old = shell(serial, query);
         let (out, json) = super::helper::fuller(
-            shell(serial, query),
+            old.clone(),
             helper.as_ref().and_then(|h| h.read(file)),
         );
         // A cut-off answer still starts with "Row:" and would replace the last full copy.
@@ -753,6 +759,11 @@ pub(super) fn adb_backup_run(
             break;
         }
         let ok = out.starts_with("Row:") || out.starts_with("No result");
+        if let Some(note) = super::helper::note(file, &old, &out, ok, why.as_deref())
+            && !notes.contains(&note)
+        {
+            notes.push(note);
+        }
         if ok {
             if file == "contacts.txt" {
                 let _ = fs::write(data_dir.join("contacts.vcf"), vcard(&out));
@@ -793,6 +804,7 @@ pub(super) fn adb_backup_run(
         copied: to_copy.saturating_sub(errors.len()),
         errors,
         data,
+        notes,
         full: true,
         pick,
     };

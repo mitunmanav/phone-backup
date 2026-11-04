@@ -114,6 +114,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
         copied: copied.len(),
         errors,
         data: Vec::new(),
+        notes: Vec::new(),
         full: false,
         pick: Pick {
             files: true,

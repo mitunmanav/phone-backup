@@ -96,6 +96,8 @@ pub struct Summary {
     pub errors: Vec<String>,
     /// (what, saved?) for contacts, call history, messages and the calendar. Empty for MTP.
     pub data: Vec<(&'static str, bool)>,
+    /// What the user must know about the contacts and messages beyond saved or not.
+    pub notes: Vec<String>,
     pub full: bool,
     /// What was asked for.
     pub pick: Pick,
@@ -935,6 +937,7 @@ mod tests {
             copied: 1,
             errors: vec![r"/sdcard/b.jpg -> C:\b.jpg".into()],
             data: vec![("Contacts", true), ("Messages", false)],
+            notes: vec!["Some messages may be missing.".into()],
             full: true,
             pick: Pick {
                 apps: false,
@@ -952,7 +955,9 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Copied 1 file this time. The backup holds 2 files."));
-        assert!(text.contains("Messages: the phone did not allow reading it"));
+        assert!(text.contains(
+            "Messages: the phone did not allow reading it\nSome messages may be missing.\n"
+        ));
         assert!(text.contains("Could not copy (1):\n/sdcard/b.jpg"));
         assert!(text.contains(&format!(
             "Copied (1):\n{}",
@@ -1012,6 +1017,7 @@ mod tests {
             "first: files {} copied {} errors {:?} data {:?}",
             first.files, first.copied, first.errors, first.data
         );
+        assert!(first.notes.is_empty(), "{:?}", first.notes);
         let report = fs::read_to_string(first.root.join(REPORT)).unwrap();
         assert!(
             report.contains(
