@@ -32,7 +32,7 @@ fn stopped() -> bool {
 }
 
 const STOPPED: &str =
-    "You stopped the backup. Files copied so far are kept; press Back up again to continue.";
+    "You stopped the backup. Files copied so far are kept; press Try again to continue.";
 
 /// What the backup reports back to the window while it runs.
 pub enum Msg {
@@ -78,6 +78,8 @@ pub enum Phone {
         wifi: bool,
         /// The battery level, only when it is under 20% and the phone is not charging.
         battery: Option<u8>,
+        /// The battery level whenever the phone gives it.
+        level: Option<u8>,
     },
     /// Plugged in with USB debugging on, but "Allow" not tapped yet.
     Unauthorized,
@@ -533,7 +535,8 @@ mod tests {
                     serial: "emulator-5554".into(),
                     model: "Pixel 8".into(),
                     wifi: false,
-                    battery: None
+                    battery: None,
+                    level: None
                 }
         );
         assert!(matches!(&phones[1], Phone::Adb { wifi: true, model, .. } if model == "SM G991B"));
@@ -573,6 +576,8 @@ mod tests {
         assert_eq!(low_battery(&dump(12, true)), None);
         assert_eq!(low_battery(&dump(20, false)), None);
         assert_eq!(low_battery(""), None);
+        assert_eq!(battery_level(&dump(82, true)), Some(82));
+        assert_eq!(battery_level(""), None);
     }
 
     #[test]

@@ -16,6 +16,10 @@ impl App {
             self.doc_page(ui, t);
             return None;
         }
+        if self.tab == Tab::Help {
+            self.help_page(ui, t);
+            return None;
+        }
         if self.tab == Tab::Backup {
             let cmd = self.backup_tab(ui, t);
             self.backup_result(ui, t);
@@ -86,7 +90,7 @@ impl App {
         let bar = if self.intro.is_some()
             || matches!(
                 self.tab,
-                Tab::Settings | Tab::Tools | Tab::Privacy | Tab::License
+                Tab::Settings | Tab::Tools | Tab::Privacy | Tab::License | Tab::Help
             ) {
             0.0
         } else {
@@ -124,7 +128,6 @@ impl App {
                                     20.0
                                 };
                                 ui.add(egui::Label::new(txt(head, size, 600.0, t.ink)).truncate());
-                                ui.add_space(8.0);
                             }
                             match self.intro {
                                 Some(step) => {
@@ -211,7 +214,8 @@ impl App {
                 Rect::from_min_size(area.min + vec2(i as f32 * w, 0.0), vec2(w, area.height()))
             };
             let on = self.tab == *tab
-                || (*tab == Tab::Settings && matches!(self.tab, Tab::Privacy | Tab::License));
+                || (*tab == Tab::Settings && matches!(self.tab, Tab::Privacy | Tab::License))
+                || (*tab == self.help_from && self.tab == Tab::Help);
             let sense = if busy {
                 egui::Sense::hover()
             } else {
@@ -406,10 +410,20 @@ impl App {
                             backup::STOP.store(true, Ordering::Relaxed);
                         }
                     } else if primary(ui, t, cmd.label, cmd.enabled) {
-                        match cmd.plan {
-                            _ if self.tab == Tab::Transfer => self.transfer(ui.ctx(), cmd.plan),
-                            Some((plan, check)) => self.restore(ui.ctx(), plan, check),
-                            None => self.start(ui.ctx()),
+                        match (cmd.open, cmd.plan) {
+                            (Some(path), _) => {
+                                let _ = Command::new("explorer").arg(path).spawn();
+                            }
+                            (_, plan) if self.tab == Tab::Transfer => self.transfer(ui.ctx(), plan),
+                            (_, Some((plan, check))) => self.restore(ui.ctx(), plan, check),
+                            _ => self.start(ui.ctx()),
+                        }
+                    }
+                    // A finished or stopped job must not be the end of the road.
+                    if cmd.again && !busy {
+                        ui.add_space(4.0);
+                        if link(ui, t, "Start again") {
+                            self.result = None;
                         }
                     }
                     ui.add_space(4.0);

@@ -1,6 +1,103 @@
+use super::device::BRANDS;
 use crate::*;
 
 impl App {
+    /// A way back. The page's own title says where you are.
+    fn trail(&mut self, ui: &mut egui::Ui, t: &Tokens, back: &str, to: Tab) {
+        if link(ui, t, &format!("‹ {back}")) {
+            self.go(to);
+        }
+    }
+
+    /// Big picture and one plain line, for pages you read.
+    fn doc_head(&self, ui: &mut egui::Ui, t: &Tokens, glyph: &str, title: &str, lede: &str) {
+        ui.horizontal_top(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(56.0), egui::Sense::hover());
+            icon(ui, r.center(), glyph, 44.0, t.accent);
+            ui.vertical(|ui| {
+                ui.label(txt(title, 20.0, 600.0, t.ink));
+                ui.add(egui::Label::new(txt(lede, 13.0, 400.0, t.muted)).wrap());
+            });
+        });
+        ui.add_space(14.0);
+    }
+
+    /// How to turn on USB debugging for each phone maker, and what to try when no phone shows up.
+    pub(crate) fn help_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        const USB: &str = "\u{E88E}";
+        let back = self.help_from;
+        let word = if back == Tab::Settings {
+            "Settings"
+        } else {
+            "Back up"
+        };
+        self.trail(ui, t, word, back);
+        self.doc_head(
+            ui,
+            t,
+            USB,
+            "Turn on USB debugging",
+            "A switch on the phone that lets this PC read apps, contacts and messages. Pick your phone's brand.",
+        );
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+            for (i, (name, _)) in BRANDS.iter().enumerate() {
+                if chip(ui, t, "", name, self.brand == i, 0.0) {
+                    self.brand = i;
+                }
+            }
+        });
+        ui.add_space(12.0);
+        let steps = BRANDS[self.brand].1;
+        info_cards(
+            ui,
+            t,
+            &[
+                ("\u{E8EA}", "Step 1", steps[0]),
+                ("\u{E713}", "Step 2", steps[1]),
+                (
+                    USB,
+                    "Step 3",
+                    "Plug the phone in and tap Allow when it asks.",
+                ),
+            ],
+        );
+        ui.add_space(10.0);
+        ui.label(txt("Phone not showing up?", 15.0, 600.0, t.ink));
+        ui.add_space(8.0);
+        info_cards(
+            ui,
+            t,
+            &[
+                (
+                    USB,
+                    "Try another cable",
+                    "Some only charge. Plug it straight into the computer, not a hub.",
+                ),
+                (
+                    "\u{E72E}",
+                    "Unlock the phone",
+                    "Keep the screen on while it connects.",
+                ),
+                (
+                    "\u{E8B7}",
+                    "Choose File transfer",
+                    "Tap the USB notification on the phone and choose File transfer.",
+                ),
+                (
+                    "\u{E897}",
+                    "No question on the phone?",
+                    "In Developer options, tap Revoke USB debugging authorizations, then plug it in again.",
+                ),
+                (
+                    "\u{E896}",
+                    "USB driver",
+                    "Some phones need one on Windows. Get it from the phone maker's website.",
+                ),
+            ],
+        );
+    }
+
     /// Privacy or License, opened from Settings: a trail back, a heading, then short sections.
     pub(crate) fn doc_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         ui.set_max_width(ui.available_width().min(600.0));

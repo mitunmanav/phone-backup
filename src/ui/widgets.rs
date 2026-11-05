@@ -137,24 +137,22 @@ pub(crate) fn section(ui: &mut egui::Ui, title: &str) {
 
 /// Numbered steps, each wrapped line lined up under its first.
 pub(crate) fn steps(ui: &mut egui::Ui, t: &Tokens, list: &[&str]) {
-    // Text rows, not controls: drop the 32 px control height here.
-    let control_h = ui.spacing().interact_size.y;
-    ui.spacing_mut().interact_size.y = 20.0;
+    let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 9.0);
     for (n, step) in list.iter().enumerate() {
         ui.horizontal_top(|ui| {
             // Fixed-width number column so every line of a step starts at the same x.
-            ui.add_sized(
-                [16.0, 20.0],
-                egui::Label::new(
-                    RichText::new(format!("{}.", n + 1))
-                        .font(semibold(14.0))
-                        .color(t.accent),
-                ),
+            let (r, _) = ui.allocate_exact_size(vec2(22.0, 20.0), egui::Sense::hover());
+            put(
+                ui,
+                r.min,
+                Align2::LEFT_TOP,
+                txt(&format!("{}.", n + 1), 13.0, 600.0, t.accent),
+                22.0,
             );
-            ui.add(egui::Label::new(*step).wrap());
+            ui.add(egui::Label::new(txt(step, 13.0, 400.0, t.ink)).wrap());
         });
     }
-    ui.spacing_mut().interact_size.y = control_h;
+    ui.spacing_mut().item_spacing.y = gap;
 }
 
 // Controls paint at BUTTON height but answer clicks across HIT, so rows stay light and targets large.
@@ -508,6 +506,114 @@ pub(crate) fn quiet(ui: &mut egui::Ui, t: &Tokens, label: &str, enabled: bool) -
         .galley_with_override_text_color(face.center() - g.size() / 2.0, g, ink);
     ring(ui, &r, face, RADIUS, t);
     r
+}
+
+/// Words that act: for ways back and ways out, where a button would shout.
+pub(crate) fn link(ui: &mut egui::Ui, t: &Tokens, label: &str) -> bool {
+    let g = galley(
+        ui,
+        txt(label, 13.0, 500.0, t.accent),
+        egui::TextWrapMode::Extend,
+        f32::INFINITY,
+    );
+    let (rect, r) = ui.allocate_exact_size(vec2(g.size().x, HIT), egui::Sense::click());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, label));
+    let top = rect.center() - g.size() / 2.0;
+    let under = top.y + g.size().y;
+    ui.painter()
+        .galley_with_override_text_color(top, g, t.accent);
+    if r.hovered() {
+        ui.painter()
+            .hline(rect.x_range(), under, Stroke::new(1.0, t.accent));
+    }
+    ring(ui, &r, rect.shrink2(vec2(0.0, 8.0)), 2, t);
+    let clicked = r.clicked();
+    r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    clicked
+}
+
+/// A small labelled button that stays lit when chosen.
+pub(crate) fn chip(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    glyph: &str,
+    label: &str,
+    on: bool,
+    min_w: f32,
+) -> bool {
+    let weight = if on { 600.0 } else { 400.0 };
+    let g = galley(
+        ui,
+        txt(label, 13.0, weight, t.ink),
+        egui::TextWrapMode::Extend,
+        f32::INFINITY,
+    );
+    let pad = if glyph.is_empty() { 28.0 } else { 54.0 };
+    let width = (g.size().x + pad).max(min_w);
+    let (rect, r) = ui.allocate_exact_size(vec2(width, HIT), egui::Sense::click());
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, on, label));
+    let face = rect.shrink2(vec2(0.0, 3.0));
+    let edge = if on {
+        Stroke::new(2.0, t.accent)
+    } else if r.hovered() {
+        Stroke::new(1.0, t.border)
+    } else {
+        Stroke::new(1.0, t.line)
+    };
+    ui.painter()
+        .rect(face, RADIUS, t.surface, edge, StrokeKind::Inside);
+    if !glyph.is_empty() {
+        let ink = if on { t.accent } else { t.muted };
+        let at = pos2(rect.left() + 22.0, rect.center().y);
+        icon(ui, at, glyph, 16.0, ink);
+    }
+    ui.painter().galley(
+        pos2(rect.left() + pad - 14.0, rect.center().y - g.size().y / 2.0),
+        g,
+        Color32::PLACEHOLDER,
+    );
+    ring(ui, &r, face, RADIUS, t);
+    let clicked = r.clicked();
+    r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    clicked
+}
+
+/// Picture, heading and text in cards of equal height per row, as many across as fit.
+pub(crate) fn info_cards(ui: &mut egui::Ui, t: &Tokens, parts: &[(&str, &str, &str)]) {
+    const GAP: f32 = 12.0;
+    let w = ui.available_width();
+    let cols = (((w + GAP) / (300.0 + GAP)) as usize).clamp(1, 3);
+    let card = (w - GAP * (cols as f32 - 1.0)) / cols as f32;
+    for row in parts.chunks(cols) {
+        let bodies: Vec<_> = row
+            .iter()
+            .map(|p| {
+                let body = txt(p.2, 13.0, 400.0, t.ink);
+                galley(ui, body, egui::TextWrapMode::Wrap, card - 32.0)
+            })
+            .collect();
+        let h = bodies.iter().map(|g| g.size().y).fold(0.0, f32::max) + 66.0;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for (p, g) in row.iter().zip(bodies) {
+                let (r, _) = ui.allocate_exact_size(vec2(card, h), egui::Sense::hover());
+                let edge = Stroke::new(1.0, t.line);
+                ui.painter()
+                    .rect(r, RADIUS, t.surface, edge, StrokeKind::Inside);
+                icon(ui, r.min + vec2(28.0, 28.0), p.0, 22.0, t.accent);
+                put(
+                    ui,
+                    pos2(r.left() + 48.0, r.top() + 28.0),
+                    Align2::LEFT_CENTER,
+                    txt(p.1, 13.0, 600.0, t.ink),
+                    card - 60.0,
+                );
+                ui.painter()
+                    .galley(r.min + vec2(16.0, 50.0), g, Color32::PLACEHOLDER);
+            }
+        });
+        ui.add_space(GAP - 3.0);
+    }
 }
 
 /// How many tiles fit across, and how big each is. Three or more across never leave one tile

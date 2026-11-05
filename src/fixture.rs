@@ -31,6 +31,7 @@ impl App {
             model: model.into(),
             wifi,
             battery,
+            level: battery.or(Some(82)),
         };
         self.restore_msg = None;
         self.export_msg = None;
@@ -149,12 +150,23 @@ impl App {
             }
             // One ordinary phone with USB debugging and a few backups: the everyday case.
             Fixture::Pixel => {
-                self.phones = Some(vec![adb("Pixel 8 Pro", false, Some(82))]);
+                self.phones = Some(vec![adb("Pixel 8 Pro", false, None)]);
                 self.backups = vec![
                     saved("Pixel 8 Pro", true, true, Some(0)),
                     saved("Pixel 8 Pro", true, true, Some(30)),
                     saved("Galaxy S21", true, false, Some(190)),
                 ];
+                let list = [
+                    ("DCIM/Camera/a.jpg", 31_400_000_000),
+                    ("DCIM/Camera/a.mp4", 11_200_000_000),
+                    ("Music/a.mp3", 2_100_000_000),
+                    ("Documents/a.pdf", 3_500_000_000),
+                    ("Download/a.zip", 3_100_000_000),
+                ]
+                .iter()
+                .map(|(p, s)| (p.to_string(), *s))
+                .collect();
+                self.sizes = Some(("Pixel 8 Pro-serial".into(), Some((list, 4_300_000_000))));
             }
             Fixture::Many => {
                 self.phones = Some(vec![

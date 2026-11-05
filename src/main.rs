@@ -31,6 +31,10 @@ struct Cmd {
     enabled: bool,
     /// Restore only: what the main button runs, and whether it only checks.
     plan: Option<(Plan, bool)>,
+    /// A finished job: the main button opens this instead of running anything.
+    open: Option<PathBuf>,
+    /// A finished or stopped job: offer Start again, so it is not the end of the road.
+    again: bool,
 }
 
 /// Debug builds opened on PB_FIXTURE test data: they must not save their fake folder, zoom or
@@ -78,6 +82,8 @@ enum Tab {
     /// Pages opened from Settings.
     Privacy,
     License,
+    /// How to turn on USB debugging, opened from Back up or Settings.
+    Help,
 }
 
 /// What the running (or last) job is.
@@ -151,6 +157,8 @@ struct App {
     qr: Option<qrcodegen::QrCode>,
     /// Which phone maker's USB debugging steps are shown.
     brand: usize,
+    /// The page the help page goes back to.
+    help_from: Tab,
     /// Height of the command bar last frame; its text wraps on narrow windows.
     bar_h: f32,
     /// Asking whether to stop a running backup before closing.
@@ -414,6 +422,7 @@ impl App {
             wifi_open: false,
             qr: None,
             brand: 0,
+            help_from: Tab::Backup,
             bar_h: 64.0,
             confirm_close: false,
             closing: false,
@@ -474,6 +483,7 @@ impl App {
                 match word {
                     "privacy" => app.tab = Tab::Privacy,
                     "license" => app.tab = Tab::License,
+                    "help" => app.tab = Tab::Help,
                     _ if word.starts_with("intro") => {
                         app.intro = Some(word.get(6..).and_then(|n| n.parse().ok()).unwrap_or(0))
                     }
@@ -557,7 +567,7 @@ impl App {
                         }]));
                     }
                     "stopped" => {
-                        app.result = Some(Err("You stopped the backup. Files copied so far are kept; press Back up again to continue.".into()));
+                        app.result = Some(Err("You stopped the backup. Files copied so far are kept; press Try again to continue.".into()));
                         app.stopped_at = Some(0.62);
                     }
                     _ if word.starts_with("zoom=") => {
@@ -808,10 +818,12 @@ impl eframe::App for App {
         self.confirm_dialog(ui.ctx());
 
         // Esc leaves Privacy and License for Settings, where they open from.
-        if matches!(self.tab, Tab::Privacy | Tab::License)
-            && ui.input(|i| i.key_pressed(egui::Key::Escape))
-        {
-            self.go(Tab::Settings);
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            match self.tab {
+                Tab::Privacy | Tab::License => self.go(Tab::Settings),
+                Tab::Help => self.go(self.help_from),
+                _ => {}
+            }
         }
         // A side rail when there is room, a strip across the top when not, nothing on the intro.
         let full = ui.max_rect();

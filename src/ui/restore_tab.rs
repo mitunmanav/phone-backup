@@ -230,6 +230,8 @@ impl App {
             },
             enabled: plan.is_some(),
             plan: plan.map(|p| (p, !checked)),
+            open: None,
+            again: false,
         }
     }
 

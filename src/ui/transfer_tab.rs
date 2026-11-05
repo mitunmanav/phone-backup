@@ -166,6 +166,8 @@ impl App {
             },
             enabled: ready && picked,
             plan: plan.map(|p| (p, !checked)),
+            open: None,
+            again: false,
         }
     }
 }

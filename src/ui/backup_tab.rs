@@ -263,14 +263,10 @@ impl App {
             .is_some_and(|p| p.contains(&Phone::Unauthorized));
         let phase = self.phase();
         let (name, how) = match (adb.as_slice(), mtp) {
-            ([(model, wifi)], _) => (
+            ([(model, _)], _) => (
                 model.clone(),
-                if *wifi {
-                    "Connected over Wi-Fi"
-                } else {
-                    "Connected by USB cable"
-                }
-                .to_string(),
+                self.adb_phone()
+                    .map_or(String::new(), |p| self.phone_note(&p.0)),
             ),
             ([_, ..], _) => (
                 format!("{} phones", adb.len()),
@@ -356,13 +352,15 @@ impl App {
             put(ui, pos2(lx, by), left_top, title(&name), left_max);
             put(ui, pos2(lx, sub_y), left_top, sub(&how), left_max);
             // Dropped 4 points so its baseline meets the larger name.
-            put(
+            let shown = put(
                 ui,
                 pos2(rx, by + 4.0),
                 Align2::RIGHT_TOP,
                 txt(&dest_name, 13.0, 600.0, t.ink),
                 right_max,
             );
+            ui.interact(shown, ui.scope_id().with("dest"), egui::Sense::hover())
+                .on_hover_text(self.dest.display().to_string());
             put(
                 ui,
                 pos2(rx, sub_y),
@@ -409,8 +407,8 @@ impl App {
         let width = ui.available_width();
         let (cols, small) = tile_grid(width, 0.0, TILES.len());
         let block = TILES.len().div_ceil(cols) as f32 * (small.y + TILE_GAP);
-        // Everything else the first screen must show: page margins, gap, heading, the Saves to row,
-        // Wi-Fi and report buttons, and any battery warnings and limits.
+        // Everything else the first screen must show: page margin, gap, the row above the tiles,
+        // and any battery warnings and limits.
         let low = self
             .phones
             .iter()
@@ -436,8 +434,7 @@ impl App {
             - 14.0
             - 8.0
             - HIT
-            - 28.0
-            - (HIT + 12.0)
+            - 3.0 * ui.spacing().item_spacing.y
             - low * 28.0
             - limits_row;
         let min = if width < 560.0 { 136.0 } else { 148.0 };
@@ -446,52 +443,38 @@ impl App {
         ui.add_space(8.0);
         self.battery_warnings(ui, t);
 
+        let phase = self.phase();
         if ready {
             ui.horizontal(|ui| {
                 ui.set_min_height(HIT);
-                let heading = if busy {
-                    "Backing up"
-                } else {
-                    "What to back up"
+                let heading = match phase {
+                    Phase::Running => "Backing up",
+                    Phase::Done(_) => "What was backed up",
+                    Phase::Stopped => "What was copied",
+                    Phase::Idle => "What to back up",
                 };
                 ui.label(txt(heading, 13.0, 600.0, t.ink));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if quiet(ui, t, "Choose folders…", !busy).clicked() {
+                    if phase == Phase::Idle && quiet(ui, t, "Choose folders…", true).clicked() {
                         self.choosing = true;
                     }
                 });
             });
-            self.tiles(ui, t, rest - hero, busy, mtp_only, measured);
+            self.tiles(ui, t, rest - hero, phase, mtp_only, measured);
             let limits = self.pick.limits();
             if !limits.is_empty() {
                 ui.add(egui::Label::new(txt(&limits, 12.0, 400.0, t.muted)).wrap());
             }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let full = self.dest.display().to_string();
-                ui.label(muted("Saves to"));
-                ui.scope(|ui| {
-                    ui.set_max_width(ui.available_width() - 64.0);
-                    ui.add(egui::Label::new(muted(&short_path(ui, &full))).truncate())
-                        .on_hover_text(&full);
-                });
-                if ui.add_enabled(!busy, egui::Link::new("Change…")).clicked() {
-                    self.go(Tab::Settings);
-                }
-            });
             if adb.len() > 1 {
                 ui.label(muted("Each phone gets its own backup folder."));
             }
             if mtp_only {
-                if self.adb_ok {
-                    ui.label(muted(
-                        "Turn on USB debugging to include apps, contacts and messages.",
-                    ));
+                ui.label(muted(if self.adb_ok {
+                    "Turn on USB debugging to include apps, contacts and messages."
                 } else {
-                    ui.label(muted("USB debugging also needs adb, Google's free tool."));
-                    self.adb_missing(ui, t);
-                }
-                self.phone_help(ui, t);
+                    "USB debugging also needs adb, Google's free tool."
+                }));
+                self.connect_help(ui, t, false);
             }
         } else if let Some(phones) = &self.phones {
             let (allow, bad_usb) = (
@@ -506,8 +489,10 @@ impl App {
                     .wrap(),
                 );
             } else {
-                ui.add_space(4.0);
-                ui.label(txt("Connect your phone", 13.0, 600.0, t.ink));
+                ui.horizontal(|ui| {
+                    ui.set_min_height(HIT - 14.0);
+                    ui.label(txt("Connect your phone", 13.0, 600.0, t.ink));
+                });
                 if bad_usb {
                     ui.add(
                         egui::Label::new(
@@ -530,14 +515,11 @@ impl App {
                 );
                 if !self.adb_ok {
                     ui.label(muted("USB debugging also needs adb, Google's free tool."));
-                    self.adb_missing(ui, t);
                 }
             }
-            self.phone_help(ui, t);
+            ui.add_space(10.0);
+            self.connect_help(ui, t, true);
         }
-        // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching the page.
-        ui.add_space(4.0);
-        self.phone_actions(ui, t, &|ui, label, enabled| quiet(ui, t, label, enabled));
 
         let files_on = self.pick.files && self.pick.kinds.contains(&true);
         let apps_on = !mtp_only && self.pick.apps;
@@ -559,7 +541,6 @@ impl App {
                 _ => format!("About {}", size(bytes)),
             }
         });
-        let phase = self.phase();
         let (title, note) = match phase {
             Phase::Running => (
                 self.status.clone(),
@@ -568,10 +549,7 @@ impl App {
                     _ => "Keep the phone plugged in and unlocked.".into(),
                 },
             ),
-            Phase::Done(0) => (
-                "Backup finished".into(),
-                "No problems. Report saved.".into(),
-            ),
+            Phase::Done(0) => ("Backup finished".into(), "No errors. Report saved.".into()),
             Phase::Done(n) => (
                 format!("Finished with {n} {}", plural(n, "problem")),
                 "The list is in the report.".into(),
@@ -580,33 +558,58 @@ impl App {
                 self.stopped_at.map_or("Backup stopped".into(), |f| {
                     format!("Stopped at {:.0}%", (f * 100.0).floor())
                 }),
-                "Files copied so far are kept.".into(),
+                "Copied files are safe.".into(),
             ),
             Phase::Idle if !ready => ("Connect a phone to start".into(), String::new()),
-            Phase::Idle if !picked => {
-                ("Choose at least one thing to back up".into(), String::new())
-            }
-            Phase::Idle => (
+            Phase::Idle if !picked => ("Pick something to back up".into(), String::new()),
+            Phase::Idle if adb.len() > 1 => (
                 format!("Ready to back up {name}"),
                 needs.unwrap_or_default(),
             ),
+            Phase::Idle => ("Ready to back up".into(), needs.unwrap_or_default()),
         };
-        let note = if !ready && !matches!(phase, Phase::Idle | Phase::Running) {
-            "Connect a phone to back up again.".into()
+        let note = if !ready && phase == Phase::Stopped {
+            "Connect a phone to try again.".into()
         } else {
             note
+        };
+        let open = match (phase, &self.result) {
+            (Phase::Done(_), Some(Ok(done))) => Some(match done.as_slice() {
+                [one] => one.root.clone(),
+                _ => self.dest.clone(),
+            }),
+            _ => None,
         };
         Cmd {
             title,
             note,
-            label: if self.result.is_some() {
-                "Back up again"
-            } else {
-                "Back up now"
+            label: match phase {
+                Phase::Done(_) => "Open folder",
+                Phase::Stopped => "Try again",
+                _ => "Back up now",
             },
-            enabled: ready && picked,
+            enabled: open.is_some() || ready && picked,
             plan: None,
+            open,
+            again: matches!(phase, Phase::Done(_) | Phase::Stopped),
         }
+    }
+
+    /// How to get a phone connected: the help page, and Wi-Fi when `wifi`. Without adb, the way
+    /// to get it comes first.
+    fn connect_help(&mut self, ui: &mut egui::Ui, t: &Tokens, wifi: bool) {
+        ui.horizontal_wrapped(|ui| {
+            if !self.adb_ok && quiet(ui, t, "Get adb in Settings", true).clicked() {
+                self.go(Tab::Settings);
+            }
+            if quiet(ui, t, "How to turn on USB debugging", true).clicked() {
+                self.help_from = Tab::Backup;
+                self.go(Tab::Help);
+            }
+            if wifi && quiet(ui, t, "Connect over Wi-Fi", true).clicked() {
+                self.wifi_open = true;
+            }
+        });
     }
 
     /// What a backup can hold, as tiles filling the width and any spare height.
@@ -615,7 +618,7 @@ impl App {
         ui: &mut egui::Ui,
         t: &Tokens,
         room: f32,
-        busy: bool,
+        phase: Phase,
         mtp_only: bool,
         measured: Option<(u64, [u64; 5], u64)>,
     ) {
@@ -631,16 +634,17 @@ impl App {
                 for (k, (glyph, name, note)) in chunk.iter().enumerate() {
                     let i = row * cols + k;
                     let dim = i >= KINDS.len() && mtp_only;
-                    let line = match (i, measured) {
-                        _ if dim => "Not in this mode".to_string(),
-                        (0..5, Some((_, kinds, _))) => sized(kinds[i]),
-                        (5, Some((apps, ..))) => sized(apps),
-                        _ => (*note).to_string(),
-                    };
                     let on = match i {
                         5 => !dim && self.pick.apps,
                         6 => !dim && self.pick.data,
                         k => self.pick.files && self.pick.kinds[k],
+                    };
+                    let line = match (i, measured) {
+                        _ if dim => "Not in this mode".to_string(),
+                        _ if on && phase == Phase::Done(0) => "Copied".to_string(),
+                        (0..5, Some((_, kinds, _))) => sized(kinds[i]),
+                        (5, Some((apps, ..))) => sized(apps),
+                        _ => (*note).to_string(),
                     };
                     // A lone tile on the last row takes the whole row.
                     let this = if chunk.len() == 1 {
@@ -649,7 +653,7 @@ impl App {
                         each
                     };
                     let item = (*glyph, *name, line.as_str());
-                    if tile(ui, t, item, on, busy, dim, this) {
+                    if tile(ui, t, item, on, phase != Phase::Idle, dim, this) {
                         match i {
                             5 => self.pick.apps = !self.pick.apps,
                             6 => self.pick.data = !self.pick.data,
@@ -658,7 +662,9 @@ impl App {
                     }
                 }
             });
-            ui.add_space(TILE_GAP - ui.spacing().item_spacing.y);
+            if (row + 1) * cols < TILES.len() {
+                ui.add_space(TILE_GAP - ui.spacing().item_spacing.y);
+            }
         }
     }
 
@@ -838,13 +844,31 @@ impl App {
                 ui.add_space(16.0);
                 result_box(t).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Backup stopped").font(semibold(16.0)).color(t.error));
+                    ui.label(
+                        RichText::new("Backup stopped")
+                            .font(semibold(16.0))
+                            .color(t.error),
+                    );
                     ui.label(e);
-                    ui.label(RichText::new("Check the cable and that the phone is unlocked, then press Back up again.").color(t.muted));
+                    ui.label(
+                        RichText::new(
+                            "Check the cable and that the phone is unlocked, then press Try again.",
+                        )
+                        .color(t.muted),
+                    );
                 });
             }
             Some(Ok(summaries)) => {
                 for s in summaries {
+                    // A clean backup has said all it needs in the command bar.
+                    let clean = s.errors.is_empty()
+                        && s.data.iter().all(|d| d.1)
+                        && s.notes.is_empty()
+                        && s.full
+                        && s.files > 0;
+                    if clean {
+                        continue;
+                    }
                     ui.add_space(16.0);
                     result_box(t).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -868,7 +892,7 @@ impl App {
                         }
                         if !s.errors.is_empty() {
                             ui.label(
-                                RichText::new(format!("{} could not be copied. Press Back up again to retry. The list is in report.txt.", files(s.errors.len())))
+                                RichText::new(format!("{} could not be copied. Press Start again to retry. The list is in report.txt.", files(s.errors.len())))
                                     .color(t.error),
                             );
                         }

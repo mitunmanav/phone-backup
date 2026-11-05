@@ -57,6 +57,25 @@ impl App {
         (adb, mtp)
     }
 
+    /// How the phone with this serial stands, in a few words.
+    pub(crate) fn phone_note(&self, serial: &str) -> String {
+        let found = self.phones.iter().flatten().find_map(|p| match p {
+            Phone::Adb {
+                serial: s,
+                wifi,
+                level,
+                ..
+            } if s == serial => Some((*wifi, *level)),
+            _ => None,
+        });
+        match found {
+            Some((false, Some(l))) => format!("{l}% charged"),
+            Some((true, Some(l))) => format!("{l}% charged, over Wi-Fi"),
+            Some((true, None)) => "Connected over Wi-Fi".into(),
+            _ => "Connected by USB cable".into(),
+        }
+    }
+
     /// The phone, how it is connected, and how to connect one.
     pub(crate) fn device(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let muted = |s: &str| RichText::new(s).color(t.muted);
