@@ -1,49 +1,6 @@
 use crate::*;
 use egui::{Pos2, pos2};
 
-/// A titled panel: the title, with quiet `aside` text at its right, a hairline, then the body.
-pub(crate) fn panel<R>(
-    ui: &mut egui::Ui,
-    t: &Tokens,
-    title: &str,
-    aside: &str,
-    add: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    egui::Frame::new()
-        .fill(t.surface)
-        .stroke(Stroke::new(1.0, t.line))
-        .corner_radius(8)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let gap = ui.spacing().item_spacing;
-            ui.spacing_mut().item_spacing.y = 0.0;
-            egui::Frame::new()
-                .inner_margin(egui::Margin::symmetric(16, 6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(title).font(semibold(14.0)));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(RichText::new(aside).color(t.muted))
-                        });
-                    });
-                });
-            ui.painter().hline(
-                ui.max_rect().x_range(),
-                ui.cursor().top(),
-                Stroke::new(1.0, t.line),
-            );
-            egui::Frame::new()
-                .inner_margin(egui::Margin::symmetric(16, 14))
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = gap;
-                    ui.set_width(ui.available_width());
-                    add(ui)
-                })
-                .inner
-        })
-        .inner
-}
-
 /// What a finished job says, kept together in one quiet tinted box.
 pub(crate) fn result_box(t: &Tokens) -> egui::Frame {
     egui::Frame::new()

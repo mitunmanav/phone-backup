@@ -211,6 +211,8 @@ struct App {
     tool_tx: mpsc::Sender<tools::Done>,
     tool_rx: mpsc::Receiver<tools::Done>,
     /// The Tools panel whose job is running, and what it says.
+    /// Which tool the Tools page shows.
+    tool: usize,
     tool_busy: Option<&'static str>,
     tool_status: String,
     /// What the last tool said, and in which panel.
@@ -458,6 +460,7 @@ impl App {
             tidy_msg: None,
             tool_tx,
             tool_rx,
+            tool: 0,
             tool_busy: None,
             tool_status: String::new(),
             tool_msg: None,
@@ -470,7 +473,7 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-4>] [settings] [privacy] [license] [intro[=<step>]]
         // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
@@ -514,6 +517,7 @@ impl App {
                         });
                     }
                     "tools" => app.tab = Tab::Tools,
+                    _ if word.starts_with("tool=") => app.tool = word[5..].parse().unwrap_or(0),
                     "settings" => app.tab = Tab::Settings,
                     _ if word.starts_with("update=") => {
                         app.update_working = word == "update=working";

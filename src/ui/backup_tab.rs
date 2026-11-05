@@ -307,6 +307,7 @@ impl App {
     }
 
     /// Percent or outcome for a copy onto a phone, at `mid`, with its note at `sub` when given.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn mid_words(
         &self,
         ui: &egui::Ui,

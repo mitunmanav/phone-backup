@@ -1,6 +1,75 @@
 use crate::*;
+use egui::pos2;
 
-/// The Tools page: each tool works on the backup chosen at the top.
+struct Tool {
+    /// What the tool's jobs and results are filed under.
+    id: &'static str,
+    short: &'static str,
+    name: &'static str,
+    note: &'static str,
+    glyph: &'static str,
+    safe: &'static str,
+    input: (&'static str, &'static str),
+    output: (&'static str, &'static str),
+}
+
+const ICON_PHONE: &str = "\u{E8EA}";
+
+const TOOLS: [Tool; 5] = [
+    Tool {
+        id: "dupes",
+        short: "Find copies",
+        name: "Duplicate files",
+        note: "Finds photos and files saved more than once in a backup, such as pictures shared in several chats.",
+        glyph: "\u{E8C8}",
+        safe: "Nothing is deleted until you confirm.",
+        input: ("\u{E8C8}", "Files in your backup"),
+        output: ("\u{E9D5}", "A list of the copies"),
+    },
+    Tool {
+        id: "heic",
+        short: "HEIC to JPG",
+        name: "HEIC photos to JPG",
+        note: "Makes a JPG copy of each photo, with its date and location, for Windows apps that cannot open HEIC.",
+        glyph: "\u{E8B9}",
+        safe: "Your HEIC photos stay as they are.",
+        input: ("\u{E8B9}", "HEIC photos"),
+        output: ("\u{EB9F}", "JPG copies"),
+    },
+    Tool {
+        id: "contacts",
+        short: "Fix contacts",
+        name: "Duplicate contacts",
+        note: "Merges contacts with the same name, number or email into a new file.",
+        glyph: "\u{E77B}",
+        safe: "contacts.vcf stays as it is.",
+        input: ("\u{E77B}", "contacts.vcf"),
+        output: ("\u{E716}", "One card per person"),
+    },
+    Tool {
+        id: "phone",
+        short: "Free up space",
+        name: "Free up space on the phone",
+        note: "Deletes files from the phone that are safe in a backup: only those whose backup copy has the same size.",
+        glyph: ICON_PHONE,
+        safe: "This changes the phone. Nothing goes until you confirm.",
+        input: (ICON_PHONE, "Files on the phone"),
+        output: ("\u{E74D}", "Space back"),
+    },
+    Tool {
+        id: "scrcpy",
+        short: "See screen",
+        name: "See the phone's screen",
+        note: "Shows and controls the phone from this PC, using scrcpy, a free app by Genymobile.",
+        glyph: "\u{E7F4}",
+        safe: "",
+        input: (ICON_PHONE, "The phone's screen"),
+        output: ("\u{E7F4}", "A window on this PC"),
+    },
+];
+
+/// Tools are separate small jobs, not a copy, so no cable: picture buttons across the top, then
+/// what goes in and what comes out.
 impl App {
     pub(crate) fn adb_serial(&self) -> Option<String> {
         self.phones.iter().flatten().find_map(|p| match p {
@@ -48,69 +117,206 @@ impl App {
         self.dupes = Some((groups, rows));
     }
 
-    /// The running job's progress and Stop, or what the panel's last job said.
-    pub(crate) fn tool_note(&mut self, ui: &mut egui::Ui, t: &Tokens, which: &'static str) {
-        if self.tool_busy == Some(which) {
-            ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(16.0));
-                ui.add(egui::Label::new(&self.tool_status).wrap());
-            });
-            let stopping = tools::STOP.load(Ordering::Relaxed);
-            if which != "phone"
-                && ui
-                    .add_enabled(
-                        !stopping,
-                        egui::Button::new(if stopping { "Stopping…" } else { "Stop" }),
-                    )
-                    .clicked()
-            {
-                tools::STOP.store(true, Ordering::Relaxed);
-            }
-        } else if let Some((w, r)) = &self.tool_msg
-            && *w == which
-        {
-            match r {
-                Ok(m) => ui.label(m.as_str()),
-                Err(e) => ui.label(RichText::new(e.as_str()).color(t.error)),
-            };
-        }
+    /// What this tool's last job said, while it stands for the chosen backup.
+    fn tool_result(&self, id: &str) -> Option<&Result<String, String>> {
+        self.tool_msg
+            .as_ref()
+            .filter(|(w, _)| *w == id)
+            .map(|(_, r)| r)
     }
 
     pub(crate) fn tools_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        let muted = |s: &str| RichText::new(s).color(t.muted);
-        ui.set_max_width(ui.available_width().min(640.0));
-        let running = self.tool_busy.is_some();
-        let label = |b: &backup::Saved| format!("{}, backed up {}", b.name, days_ago(b.age_days));
-        panel(ui, t, "Backup", "", |ui| {
-            if self.backups.is_empty() {
-                ui.label(format!("No backups in {} yet.", self.scanned.display()));
-            } else {
-                let shown = self
-                    .backups
-                    .iter()
-                    .find(|b| Some(&b.path) == self.chosen.as_ref())
-                    .map_or("Choose a backup".into(), label);
-                ui.add_enabled_ui(!running, |ui| {
-                    egui::ComboBox::from_id_salt("tool_backup")
-                        .width(ui.available_width())
-                        .truncate()
-                        .selected_text(shown)
-                        .show_ui(ui, |ui| {
-                            for b in &self.backups {
-                                let on = Some(&b.path) == self.chosen.as_ref();
-                                if ui.selectable_label(on, label(b)).clicked() && !on {
-                                    self.chosen = Some(b.path.clone());
-                                    self.dupes = None;
-                                    self.tool_msg = None;
-                                }
-                            }
-                        });
-                });
+        let width = ui.available_width();
+        let locked = self.tool_busy.is_some();
+        let cols = if width >= 560.0 { 5.0 } else { 3.0 };
+        let each = (width - 8.0 * (cols - 1.0)) / cols - 0.5;
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            for (i, k) in TOOLS.iter().enumerate() {
+                if tool_tile(ui, t, k, self.tool == i, each, locked) {
+                    self.tool = i;
+                }
             }
-            ui.label(muted("The tools below work on this backup."));
-            if ui
-                .add_enabled(!running, egui::Button::new("Find another backup"))
-                .clicked()
+        });
+        ui.add_space(16.0);
+        let top = ui.cursor().min;
+        let height = (ui.clip_rect().bottom() - top.y - 14.0).max(240.0);
+        let area = Rect::from_min_size(top, vec2(width, height));
+        ui.allocate_rect(area, egui::Sense::hover());
+        let (stage, detail) = if width >= 640.0 {
+            let w = (width * 0.42).clamp(300.0, 640.0);
+            (
+                Rect::from_min_size(area.min, vec2(w, height.min(w * 0.72))),
+                Rect::from_min_max(pos2(area.left() + w + 36.0, area.top()), area.max),
+            )
+        } else {
+            // In a short window the words and the button matter more than the picture.
+            let h = if height < 320.0 { 0.0 } else { 150.0 };
+            (
+                Rect::from_min_size(area.min, vec2(width, (h - 14.0f32).max(0.0))),
+                Rect::from_min_max(pos2(area.left(), area.top() + h), area.max),
+            )
+        };
+        if stage.height() > 0.0 {
+            self.tool_stage(ui, t, stage);
+        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(detail), |ui| {
+            own_scroll(ui, "tool-detail", detail.height(), |ui| {
+                self.tool_detail(ui, t)
+            });
+        });
+    }
+
+    /// What goes in and what comes out, in pictures, with work moving between them while it runs.
+    fn tool_stage(&self, ui: &egui::Ui, t: &Tokens, r: Rect) {
+        let k = &TOOLS[self.tool];
+        let ctx = ui.ctx();
+        // Fades in when you pick another tool, so the change shows.
+        let secs = if self.motion { 0.25 } else { 0.0 };
+        let shown = ctx.animate_value_with_time(egui::Id::unique("stage"), self.tool as f32, secs);
+        let a = 1.0 - (shown - self.tool as f32).abs().min(1.0);
+        let p = ui.painter();
+        p.rect(
+            r,
+            RADIUS,
+            t.surface,
+            Stroke::new(1.0, t.line),
+            StrokeKind::Inside,
+        );
+        let size = (r.height() * 0.3).clamp(28.0, 60.0);
+        let y = r.center().y - 12.0;
+        let (lx, rx) = (r.left() + r.width() * 0.24, r.right() - r.width() * 0.24);
+        let done = matches!(self.tool_result(k.id), Some(Ok(_)))
+            || (self.tool == 0 && self.dupes.as_ref().is_some_and(|d| !d.0.is_empty()));
+        let seal = ctx.animate_bool_with_easing(
+            egui::Id::unique("stage-seal"),
+            done,
+            egui::emath::easing::cubic_out,
+        );
+        icon(ui, pos2(lx, y), k.input.0, size, t.ink.gamma_multiply(a));
+        let out = mix(t.muted, t.accent, seal).gamma_multiply(a);
+        icon(ui, pos2(rx, y), k.output.0, size, out);
+        let label_w = r.width() * 0.44;
+        for (x, word) in [(lx, k.input.1), (rx, k.output.1)] {
+            put(
+                ui,
+                pos2(x, y + size * 0.5 + 12.0),
+                Align2::CENTER_TOP,
+                txt(word, 12.0, 400.0, t.ink.gamma_multiply(a)),
+                label_w,
+            );
+        }
+        let (x0, x1) = (lx + size * 0.62, rx - size * 0.62);
+        p.hline(x0..=x1, y, Stroke::new(2.0, t.line));
+        if self.tool_busy == Some(k.id) && self.motion {
+            let time = ctx.input(|i| i.time) as f32;
+            let gap = (x1 - x0) / 3.0;
+            for n in 0..3 {
+                let x = (time * 70.0 + n as f32 * gap).rem_euclid(x1 - x0);
+                p.rect_filled(
+                    Rect::from_center_size(pos2(x0 + x, y), vec2(8.0, 10.0)),
+                    2,
+                    t.accent,
+                );
+            }
+            ctx.request_repaint();
+        } else {
+            icon(ui, pos2((x0 + x1) / 2.0, y), "\u{E76C}", 14.0, out);
+        }
+        badge(ui, t, pos2(rx + size * 0.45, y + size * 0.4), seal);
+    }
+
+    fn tool_detail(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let k = &TOOLS[self.tool];
+        let wrapped = |ui: &mut egui::Ui, text: RichText| {
+            ui.add(egui::Label::new(text).wrap());
+        };
+        let running = self.tool_busy.is_some();
+        let full = ui.available_width().min(680.0);
+        ui.set_max_width(full);
+        wrapped(ui, txt(k.name, 18.0, 600.0, t.ink));
+        ui.add_space(4.0);
+        wrapped(ui, txt(k.note, 13.0, 400.0, t.ink));
+        if !k.safe.is_empty() {
+            ui.add_space(8.0);
+            ui.horizontal_top(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(22.0, 20.0), egui::Sense::hover());
+                icon(
+                    ui,
+                    r.left_center() + vec2(8.0, 0.0),
+                    "\u{EA18}",
+                    15.0,
+                    t.accent,
+                );
+                ui.scope(|ui| wrapped(ui, txt(k.safe, 12.0, 400.0, t.muted)));
+            });
+        }
+        ui.add_space(14.0);
+
+        let serial = self.adb_serial();
+        let (row, _) = ui.allocate_exact_size(vec2(full, HIT), egui::Sense::hover());
+        let y = row.center().y;
+        let word = if k.id == "scrcpy" { "Phone" } else { "Backup" };
+        put(
+            ui,
+            pos2(row.left(), y),
+            Align2::LEFT_CENTER,
+            txt(word, 12.0, 400.0, t.muted),
+            64.0,
+        );
+        let at = pos2(row.left() + 64.0, y - 10.0);
+        if k.id == "scrcpy" {
+            let name = self.adb_phone().map_or("No phone yet".into(), |p| p.1);
+            put(
+                ui,
+                at,
+                Align2::LEFT_TOP,
+                txt(&name, 13.0, 600.0, t.ink),
+                full - 64.0,
+            );
+        } else {
+            let options: Vec<String> = self
+                .backups
+                .iter()
+                .map(|b| {
+                    format!(
+                        "{}, {}",
+                        Self::label(&self.backups, b),
+                        days_ago(b.age_days)
+                    )
+                })
+                .collect();
+            let name = self
+                .backups
+                .iter()
+                .position(|b| Some(&b.path) == self.chosen.as_ref())
+                .map_or("Choose a backup".to_string(), |i| options[i].clone());
+            let room = (full - 64.0 - 132.0, !running && !options.is_empty());
+            if let Some(n) = chooser(
+                ui,
+                t,
+                at,
+                &name,
+                (14.0, room.0),
+                room.1,
+                "tool-backup",
+                &options,
+            ) {
+                self.chosen = Some(self.backups[n].path.clone());
+                self.dupes = None;
+                self.tool_msg = None;
+            }
+            let end = Rect::from_min_max(pos2(row.right() - 124.0, row.top()), row.max);
+            let find = ui
+                .scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(end)
+                        .layout(Layout::right_to_left(Align::Center)),
+                    |ui| quiet(ui, t, "Find another…", !running),
+                )
+                .inner;
+            if find.clicked()
                 && let Some(dir) = rfd::FileDialog::new()
                     .set_directory(&self.dest)
                     .pick_folder()
@@ -120,254 +326,329 @@ impl App {
                 self.dupes = None;
                 self.tool_msg = None;
             }
-        });
+            if self.backups.is_empty() {
+                wrapped(
+                    ui,
+                    txt(
+                        &format!("No backups in {} yet.", self.scanned.display()),
+                        12.0,
+                        400.0,
+                        t.muted,
+                    ),
+                );
+            }
+        }
+        ui.add_space(10.0);
+
         let folder = self.chosen.clone().filter(|_| !self.backups.is_empty());
         let can = folder.is_some() && !running;
+        let hint = |ui: &mut egui::Ui, title: &str, note: &str| {
+            if !title.is_empty() {
+                wrapped(ui, txt(title, 13.0, 600.0, t.ink));
+            }
+            if !note.is_empty() {
+                wrapped(ui, txt(note, 12.0, 400.0, t.muted));
+            }
+        };
+        let chosen = self
+            .free_pick
+            .as_ref()
+            .filter(|(f, _)| Some(f) == folder.as_ref())
+            .map(|(_, c)| c.clone())
+            .unwrap_or_default();
+        if self.tool_busy == Some(k.id) {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(16.0));
+                ui.add(egui::Label::new(txt(&self.tool_status, 13.0, 600.0, t.ink)).wrap());
+            });
+        } else if let Some(r) = self.tool_result(k.id) {
+            match r {
+                // Its first sentence is the news; the rest explains.
+                Ok(m) => {
+                    let (head, rest) = m.split_once(". ").unwrap_or((m, ""));
+                    wrapped(ui, txt(head.trim_end_matches('.'), 18.0, 600.0, t.accent));
+                    wrapped(ui, txt(rest, 13.0, 400.0, t.ink));
+                }
+                Err(e) => wrapped(ui, txt(e, 13.0, 400.0, t.error)),
+            }
+        } else {
+            match k.id {
+                "scrcpy" if self.scrcpy.is_none() => hint(
+                    ui,
+                    "scrcpy is not on this computer",
+                    "Unzip it next to this app to use it from here.",
+                ),
+                "scrcpy" if serial.is_none() => {
+                    hint(ui, "Connect the phone with USB debugging on", "")
+                }
+                "scrcpy" => hint(ui, "Opens in its own window", ""),
+                _ if folder.is_none() => hint(ui, "Choose a backup first", ""),
+                "phone" if chosen.is_empty() => hint(ui, "Choose what to delete", ""),
+                "phone" if serial.is_none() => hint(
+                    ui,
+                    &format!("{} chosen", files(chosen.len())),
+                    "Connect the phone with USB debugging on.",
+                ),
+                "phone" => hint(
+                    ui,
+                    &format!("{} chosen", files(chosen.len())),
+                    "Their copies stay in the backup.",
+                ),
+                _ => {}
+            }
+        }
+        if k.id == "dupes" {
+            self.dupes_list(ui, t, folder.as_deref(), running);
+        }
+        ui.add_space(12.0);
 
-        ui.add_space(8.0);
-        panel(ui, t, "Duplicate files", "", |ui| {
-            ui.label(muted("Finds photos and files saved more than once in this backup, such as pictures shared in several chats."));
-            if ui
-                .add_enabled(can, egui::Button::new("Find duplicates"))
-                .clicked()
-                && let Some(f) = folder.clone()
-            {
-                self.dupes = None;
-                self.run_tool(ui.ctx(), "dupes", move |say| {
-                    tools::Done::Dupes(tools::duplicates(&f, say))
-                });
-            }
-            self.tool_note(ui, t, "dupes");
-            let Some((groups, rows)) = &self.dupes else {
-                return;
-            };
-            if groups.is_empty() {
-                ui.label("No duplicates found.");
+        ui.horizontal_wrapped(|ui| {
+            if self.tool_busy == Some(k.id) {
+                let stopping = tools::STOP.load(Ordering::Relaxed);
+                let label = if stopping { "Stopping…" } else { "Stop" };
+                if quiet(ui, t, label, !stopping && k.id != "phone").clicked() {
+                    tools::STOP.store(true, Ordering::Relaxed);
+                }
                 return;
             }
-            let ticked: Vec<(PathBuf, u64)> = groups
-                .iter()
-                .flatten()
-                .filter(|(p, _)| self.ticked.contains(p))
-                .cloned()
-                .collect();
-            let bytes: u64 = ticked.iter().map(|(_, n)| n).sum();
-            ui.label(format!(
-                "{} files are saved more than once. {} ticked to delete ({}); one copy of each stays.",
-                count(groups.len()),
-                count(ticked.len()),
-                size(bytes)
-            ));
-            // Rows of 22 px with 4 px between; show_rows takes the height without the gap.
-            const ROW: f32 = 26.0;
-            let height = (rows.len() as f32 * ROW - 4.0).min(320.0);
-            egui::ScrollArea::vertical()
-                .id_salt("dupes")
-                .max_height(height)
-                .min_scrolled_height(height)
-                .auto_shrink([false, true])
-                .show_rows(ui, ROW - 4.0, rows.len(), |ui, range| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                    ui.spacing_mut().interact_size.y = ROW - 4.0;
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    for &(g, f) in &rows[range] {
-                        let group = &groups[g];
-                        match f {
-                            None => {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} copies, {} each",
-                                        group.len(),
-                                        size(group[0].1)
-                                    ))
-                                    .font(semibold(14.0)),
-                                );
+            match k.id {
+                "dupes" => self.dupes_buttons(ui, t, folder.clone(), can),
+                "heic" => {
+                    let done = matches!(self.tool_result("heic"), Some(Ok(_)));
+                    if done
+                        && let Some(f) = &folder
+                        && primary(ui, t, "Open jpg folder", true)
+                    {
+                        let _ = Command::new("explorer").arg(f.join("jpg")).spawn();
+                    }
+                    let start = if done {
+                        quiet(ui, t, "Convert to JPG", can).clicked()
+                    } else {
+                        primary(ui, t, "Convert to JPG", can)
+                    };
+                    if start && let Some(f) = folder.clone() {
+                        self.run_tool(ui.ctx(), "heic", move |say| {
+                            tools::Done::Text(tools::heic_to_jpg(&f, say))
+                        });
+                    }
+                }
+                "contacts" => {
+                    // Undoing leaves a message too, and there is then nothing to undo.
+                    let merged = matches!(
+                        self.tool_result("contacts"),
+                        Some(Ok(m)) if !m.starts_with("Removed")
+                    );
+                    if merged && let Some(f) = &folder {
+                        let data = f.join("data");
+                        if primary(ui, t, "Undo", true) {
+                            self.tool_msg = Some((
+                                "contacts",
+                                match fs::remove_file(data.join(tools::MERGED)) {
+                                    Ok(()) => Ok(format!(
+                                        "Removed {}. contacts.vcf was never changed.",
+                                        tools::MERGED
+                                    )),
+                                    Err(e) => Err(format!("Cannot remove {}: {e}", tools::MERGED)),
+                                },
+                            ));
+                        }
+                        if quiet(ui, t, "Open folder", true).clicked() {
+                            let _ = Command::new("explorer").arg(&data).spawn();
+                        }
+                    } else if primary(ui, t, "Merge duplicates", can)
+                        && let Some(f) = folder.clone()
+                    {
+                        self.run_tool(ui.ctx(), "contacts", move |_| {
+                            tools::Done::Text(tools::merge_contacts(&f))
+                        });
+                    }
+                }
+                "phone" => {
+                    let ready = can && serial.is_some() && !chosen.is_empty();
+                    if primary(ui, t, "Delete from phone…", ready)
+                        && let (Some(f), Some(serial)) = (folder.clone(), serial.clone())
+                    {
+                        self.run_tool(ui.ctx(), "phone", move |say| {
+                            say("Checking the files on the phone…".into());
+                            tools::Done::Matched(
+                                tools::chosen_on_phone(&f, &chosen)
+                                    .and_then(|wanted| tools::match_on_phone(&serial, &wanted)),
+                            )
+                        });
+                    }
+                    if quiet(ui, t, "Choose files…", can).clicked()
+                        && let Some(f) = folder.clone()
+                    {
+                        self.open_picker(ui.ctx(), f, true);
+                    }
+                }
+                _ => match &self.scrcpy {
+                    Some(exe) => {
+                        if primary(ui, t, "Open scrcpy", serial.is_some()) {
+                            let mut c = Command::new(exe);
+                            c.args(["-s", serial.as_deref().unwrap_or_default()]);
+                            // One adb for both apps: two different versions stop each other's server.
+                            if let Some(adb) = backup::adb_path() {
+                                c.env("ADB", adb);
                             }
-                            Some(f) => {
-                                let path = &group[f].0;
-                                let shown = path
-                                    .strip_prefix(folder.as_deref().unwrap_or(path))
-                                    .unwrap_or(path);
-                                let mut on = self.ticked.contains(path);
-                                if ui
-                                    .add_enabled(
-                                        !running,
-                                        egui::Checkbox::new(&mut on, shown.display().to_string()),
-                                    )
-                                    .on_hover_text(path.display().to_string())
-                                    .changed()
-                                {
-                                    if on {
-                                        self.ticked.insert(path.clone());
-                                    } else {
-                                        self.ticked.remove(path);
-                                    }
+                            #[cfg(windows)]
+                            std::os::windows::process::CommandExt::creation_flags(
+                                &mut c,
+                                0x0800_0000,
+                            );
+                            self.tool_msg = c
+                                .spawn()
+                                .err()
+                                .map(|e| ("scrcpy", Err(format!("scrcpy did not start: {e}"))));
+                        }
+                    }
+                    None => {
+                        ui.hyperlink_to(
+                            "Get scrcpy on GitHub",
+                            "https://github.com/Genymobile/scrcpy",
+                        );
+                    }
+                },
+            }
+        });
+    }
+
+    /// The copies found, with a tick on each one to delete.
+    fn dupes_list(&mut self, ui: &mut egui::Ui, t: &Tokens, folder: Option<&Path>, running: bool) {
+        let Some((groups, rows)) = &self.dupes else {
+            return;
+        };
+        let wrapped = |ui: &mut egui::Ui, text: RichText| {
+            ui.add(egui::Label::new(text).wrap());
+        };
+        if groups.is_empty() {
+            wrapped(ui, txt("No duplicates found", 18.0, 600.0, t.accent));
+            return;
+        }
+        let (n, bytes) = groups
+            .iter()
+            .flatten()
+            .filter(|(p, _)| self.ticked.contains(p))
+            .fold((0, 0), |(n, b), (_, s)| (n + 1, b + s));
+        wrapped(
+            ui,
+            txt(
+                &format!("{} files saved more than once", count(groups.len())),
+                18.0,
+                600.0,
+                t.accent,
+            ),
+        );
+        wrapped(
+            ui,
+            txt(
+                &format!(
+                    "{} ticked to delete ({}); one copy of each stays.",
+                    count(n),
+                    size(bytes)
+                ),
+                13.0,
+                400.0,
+                t.ink,
+            ),
+        );
+        // Rows of 22 px with 4 px between; show_rows takes the height without the gap.
+        const ROW: f32 = 26.0;
+        let height = (rows.len() as f32 * ROW - 4.0).min(320.0);
+        egui::ScrollArea::vertical()
+            .id_salt("dupes")
+            .max_height(height)
+            .min_scrolled_height(height)
+            .auto_shrink([false, true])
+            .show_rows(ui, ROW - 4.0, rows.len(), |ui, range| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                ui.spacing_mut().interact_size.y = ROW - 4.0;
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for &(g, f) in &rows[range] {
+                    let group = &groups[g];
+                    match f {
+                        None => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} copies, {} each",
+                                    group.len(),
+                                    size(group[0].1)
+                                ))
+                                .font(semibold(14.0)),
+                            );
+                        }
+                        Some(f) => {
+                            let path = &group[f].0;
+                            let shown = path.strip_prefix(folder.unwrap_or(path)).unwrap_or(path);
+                            let mut on = self.ticked.contains(path);
+                            if ui
+                                .add_enabled(
+                                    !running,
+                                    egui::Checkbox::new(&mut on, shown.display().to_string()),
+                                )
+                                .on_hover_text(path.display().to_string())
+                                .changed()
+                            {
+                                if on {
+                                    self.ticked.insert(path.clone());
+                                } else {
+                                    self.ticked.remove(path);
                                 }
                             }
                         }
                     }
-                });
-            // Every copy of a file ticked would delete it from the backup altogether.
-            let all_gone = groups
-                .iter()
-                .any(|g| g.iter().all(|(p, _)| self.ticked.contains(p)));
-            if ui
-                .add_enabled(
-                    can && !ticked.is_empty() && !all_gone,
-                    egui::Button::new("Delete ticked copies…"),
-                )
-                .on_disabled_hover_text(if all_gone {
-                    "Leave at least one copy of each file unticked."
-                } else {
-                    "Tick the copies to delete."
-                })
-                .clicked()
-            {
-                self.confirm = Some(Confirm::Copies(ticked));
+                }
+            });
+        // Every copy of a file ticked would delete it from the backup altogether.
+        if groups
+            .iter()
+            .any(|g| g.iter().all(|(p, _)| self.ticked.contains(p)))
+        {
+            wrapped(
+                ui,
+                txt(
+                    "Leave at least one copy of each file unticked.",
+                    12.0,
+                    400.0,
+                    t.error,
+                ),
+            );
+        }
+    }
+
+    fn dupes_buttons(&mut self, ui: &mut egui::Ui, t: &Tokens, folder: Option<PathBuf>, can: bool) {
+        let found: Vec<(PathBuf, u64)> = self
+            .dupes
+            .iter()
+            .flat_map(|(groups, _)| groups.iter().flatten())
+            .filter(|(p, _)| self.ticked.contains(p))
+            .cloned()
+            .collect();
+        let any = self.dupes.as_ref().is_some_and(|d| !d.0.is_empty());
+        let start = if any {
+            let all_gone = self.dupes.iter().any(|(groups, _)| {
+                groups
+                    .iter()
+                    .any(|g| g.iter().all(|(p, _)| self.ticked.contains(p)))
+            });
+            if primary(
+                ui,
+                t,
+                "Delete ticked copies…",
+                can && !found.is_empty() && !all_gone,
+            ) {
+                self.confirm = Some(Confirm::Copies(found));
             }
-        });
-
-        ui.add_space(8.0);
-        panel(ui, t, "HEIC photos to JPG", "", |ui| {
-            ui.label(muted("Saves a JPG copy of each HEIC photo in the backup's jpg folder, keeping its date and location. Many Windows apps cannot open HEIC."));
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(can, egui::Button::new("Convert to JPG"))
-                    .clicked()
-                    && let Some(f) = folder.clone()
-                {
-                    self.run_tool(ui.ctx(), "heic", move |say| {
-                        tools::Done::Text(tools::heic_to_jpg(&f, say))
-                    });
-                }
-                if let Some(f) = &folder
-                    && matches!(&self.tool_msg, Some(("heic", Ok(_))))
-                    && ui.button("Open jpg folder").clicked()
-                {
-                    let _ = Command::new("explorer").arg(f.join("jpg")).spawn();
-                }
+            quiet(ui, t, "Find again", can).clicked()
+        } else {
+            primary(ui, t, "Find duplicates", can)
+        };
+        if start && let Some(f) = folder {
+            self.dupes = None;
+            self.run_tool(ui.ctx(), "dupes", move |say| {
+                tools::Done::Dupes(tools::duplicates(&f, say))
             });
-            self.tool_note(ui, t, "heic");
-        });
-
-        ui.add_space(8.0);
-        panel(ui, t, "Duplicate contacts", "", |ui| {
-            ui.label(muted(&format!("Merges contacts with the same name, phone number or email into {}. Your contacts.vcf stays as it was.", tools::MERGED)));
-            let merged = matches!(&self.tool_msg, Some(("contacts", Ok(_))));
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(can, egui::Button::new("Merge duplicates"))
-                    .clicked()
-                    && let Some(f) = folder.clone()
-                {
-                    self.run_tool(ui.ctx(), "contacts", move |_| {
-                        tools::Done::Text(tools::merge_contacts(&f))
-                    });
-                }
-                if let Some(f) = &folder
-                    && merged
-                {
-                    let data = f.join("data");
-                    if ui.button("Open folder").clicked() {
-                        let _ = Command::new("explorer").arg(&data).spawn();
-                    }
-                    if ui.button("Undo").clicked() {
-                        self.tool_msg = Some((
-                            "contacts",
-                            match fs::remove_file(data.join(tools::MERGED)) {
-                                Ok(()) => Ok(format!(
-                                    "Removed {}. contacts.vcf was never changed.",
-                                    tools::MERGED
-                                )),
-                                Err(e) => Err(format!("Cannot remove {}: {e}", tools::MERGED)),
-                            },
-                        ));
-                    }
-                }
-            });
-            self.tool_note(ui, t, "contacts");
-        });
-
-        let serial = self.adb_serial();
-        ui.add_space(8.0);
-        panel(ui, t, "Free up space on the phone", "", |ui| {
-            ui.label(muted("Deletes files from the phone that are safely in this backup. Only files whose backup copy has the same size are deleted, and the app asks first."));
-            let chosen = self
-                .free_pick
-                .as_ref()
-                .filter(|(f, _)| Some(f) == folder.as_ref())
-                .map(|(_, c)| c.clone())
-                .unwrap_or_default();
-            ui.label(if chosen.is_empty() {
-                "No files chosen yet.".to_string()
-            } else {
-                format!("{} chosen.", files(chosen.len()))
-            });
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(can, egui::Button::new("Choose files…"))
-                    .clicked()
-                    && let Some(f) = folder.clone()
-                {
-                    self.open_picker(ui.ctx(), f, true);
-                }
-                let ready = can && serial.is_some() && !chosen.is_empty();
-                if ui
-                    .add_enabled(ready, egui::Button::new("Delete from phone…"))
-                    .on_disabled_hover_text(if serial.is_none() {
-                        "Connect the phone with USB debugging on."
-                    } else {
-                        "Choose the files first."
-                    })
-                    .clicked()
-                    && let (Some(f), Some(serial)) = (folder.clone(), serial.clone())
-                {
-                    self.run_tool(ui.ctx(), "phone", move |say| {
-                        say("Checking the files on the phone…".into());
-                        tools::Done::Matched(
-                            tools::chosen_on_phone(&f, &chosen)
-                                .and_then(|wanted| tools::match_on_phone(&serial, &wanted)),
-                        )
-                    });
-                }
-            });
-            self.tool_note(ui, t, "phone");
-        });
-
-        ui.add_space(8.0);
-        panel(ui, t, "See the phone's screen", "", |ui| {
-            ui.label(muted("scrcpy, a free app by Genymobile, shows the phone's screen on this computer and lets you use it with the mouse and keyboard."));
-            match &self.scrcpy {
-                Some(exe) => {
-                    if ui
-                        .add_enabled(serial.is_some(), egui::Button::new("Open scrcpy"))
-                        .on_disabled_hover_text("Connect the phone with USB debugging on.")
-                        .clicked()
-                    {
-                        let mut c = Command::new(exe);
-                        c.args(["-s", serial.as_deref().unwrap_or_default()]);
-                        // One adb for both apps: two different versions stop each other's server.
-                        if let Some(adb) = backup::adb_path() {
-                            c.env("ADB", adb);
-                        }
-                        #[cfg(windows)]
-                        std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000);
-                        self.tool_msg = c
-                            .spawn()
-                            .err()
-                            .map(|e| ("scrcpy", Err(format!("scrcpy did not start: {e}"))));
-                    }
-                }
-                None => {
-                    ui.label("scrcpy is not on this computer. Unzip it next to this app to use it from here.");
-                    ui.hyperlink_to(
-                        "Get scrcpy on GitHub",
-                        "https://github.com/Genymobile/scrcpy",
-                    );
-                }
-            }
-            self.tool_note(ui, t, "scrcpy");
-        });
+        }
     }
 
     /// Asks before a tool deletes anything; Esc or a click outside keeps the files.
@@ -438,4 +719,42 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// One tool as a picture button.
+fn tool_tile(ui: &mut egui::Ui, t: &Tokens, k: &Tool, on: bool, w: f32, locked: bool) -> bool {
+    let sense = if locked {
+        egui::Sense::hover()
+    } else {
+        egui::Sense::click()
+    };
+    let (rect, r) = ui.allocate_exact_size(vec2(w, 64.0), sense);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, !locked, on, k.name));
+    let edge = if on {
+        Stroke::new(2.0, t.accent)
+    } else if r.hovered() && !locked {
+        Stroke::new(1.0, t.border)
+    } else {
+        Stroke::new(1.0, t.line)
+    };
+    ui.painter()
+        .rect(rect, RADIUS, t.surface, edge, StrokeKind::Inside);
+    let ink = if on { t.accent } else { t.ink };
+    icon(
+        ui,
+        pos2(rect.center().x, rect.top() + 23.0),
+        k.glyph,
+        20.0,
+        ink,
+    );
+    let weight = if on { 600.0 } else { 400.0 };
+    put(
+        ui,
+        pos2(rect.center().x, rect.top() + 40.0),
+        Align2::CENTER_TOP,
+        txt(k.short, 12.0, weight, t.ink),
+        w - 8.0,
+    );
+    ring(ui, &r, rect, RADIUS, t);
+    r.clicked()
 }
