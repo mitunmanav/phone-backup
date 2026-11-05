@@ -1,6 +1,63 @@
 use crate::*;
+use egui::{Pos2, pos2};
+
+const ICON_PHONE: &str = "\u{E8EA}";
+const ICON_FOLDER: &str = "\u{E8B7}";
+/// Glyph, name and a note, for `KINDS` in order and then Apps and Contacts. The phone holds its
+/// contacts, texts, calls and calendar behind one switch, so they share a tile.
+const TILES: [(&str, &str, &str); 7] = [
+    ("\u{E91B}", KINDS[0], "All pictures"),
+    ("\u{E714}", KINDS[1], "Clips"),
+    ("\u{E8D6}", KINDS[2], "Music, voice"),
+    ("\u{E8A5}", KINDS[3], "PDFs, Office files"),
+    ("\u{E8B7}", KINDS[4], "Everything else"),
+    ("\u{E71D}", "Apps", "Without logins"),
+    ("\u{E77B}", "Contacts", "Texts, calls, more"),
+];
+
+/// How the running or last backup stands; `Done` holds how many things went wrong.
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Idle,
+    Running,
+    Done(usize),
+    Stopped,
+}
+
+/// Files that could not be copied, and what the phone refused to give.
+fn problems(done: &[Summary]) -> usize {
+    done.iter()
+        .map(|s| s.errors.len() + s.data.iter().filter(|d| !d.1).count())
+        .sum()
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        word.into()
+    } else {
+        format!("{word}s")
+    }
+}
+
+/// Switches one type of file. With files off altogether, turning one on means only that one.
+fn toggle_kind(pick: &mut Pick, k: usize) {
+    if !pick.files {
+        pick.files = true;
+        pick.kinds = [false; 5];
+    }
+    pick.kinds[k] = !pick.kinds[k];
+}
 
 impl App {
+    /// A few seconds in, so the first batch does not give a wild guess.
+    fn time_left_now(&self) -> Option<String> {
+        let spent = self.progress_from.elapsed().as_secs_f32();
+        // shortcut: estimate by file count, not bytes; switch to bytes if users see bad estimates
+        self.fraction
+            .filter(|f| *f > 0.0 && spent > 5.0)
+            .map(|f| time_left((spent * (1.0 - f) / f) as u64))
+    }
+
     /// Progress of the running job; Stop is in the command bar.
     pub(crate) fn progress(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         if let Some(f) = self.fraction {
@@ -17,15 +74,316 @@ impl App {
             }
             ui.add(egui::Label::new(&self.status).wrap());
         });
-        let spent = self.progress_from.elapsed().as_secs_f32();
-        // A few seconds in, so the first batch does not give a wild guess.
-        if let Some(f) = self.fraction.filter(|f| *f > 0.0 && spent > 5.0) {
-            // shortcut: estimate by file count, not bytes; switch to bytes if users see bad estimates
-            let left = spent * (1.0 - f) / f;
-            ui.label(RichText::new(time_left(left as u64)).color(t.muted));
+        if let Some(left) = self.time_left_now() {
+            ui.label(RichText::new(left).color(t.muted));
         }
         if !self.now.is_empty() {
             ui.add(egui::Label::new(RichText::new(&self.now).color(t.muted)).truncate());
+        }
+    }
+
+    /// How the running or last backup stands.
+    fn phase(&self) -> Phase {
+        match &self.result {
+            _ if self.busy.load(Ordering::Relaxed) => Phase::Running,
+            None => Phase::Idle,
+            Some(Ok(done)) => Phase::Done(problems(done)),
+            Some(Err(_)) => Phase::Stopped,
+        }
+    }
+
+    /// The cable from the phone at `a` to the folder at `b`; the copy travels a to b. With no
+    /// phone, the phone's end hangs at `loose`. Returns how plugged in and how sealed it looks.
+    fn cable(
+        &self,
+        ui: &egui::Ui,
+        t: &Tokens,
+        a: Pos2,
+        b: Pos2,
+        loose: Pos2,
+        sag: f32,
+    ) -> (f32, f32) {
+        let ctx = ui.ctx();
+        let p = ui.painter();
+        let secs = |s: f32| if self.motion { s } else { 0.0 };
+        let phase = self.phase();
+        let running = phase == Phase::Running;
+        let (adb, mtp) = self.connected();
+        let connected = (!adb.is_empty() || mtp.is_some() || running) as u8 as f32;
+        let plug = if self.motion {
+            spring(ctx, egui::Id::unique("plug"), connected, 0.45)
+        } else {
+            connected
+        };
+        let (axis, side) = (vec2(1.0, 0.0), vec2(0.0, sag));
+        let p0 = loose + (a - loose) * plug;
+        let span = b.x - p0.x;
+        let c1 = p0 + axis * span * 0.33 + side * (0.35 + 0.65 * plug);
+        let c2 = b - axis * span * 0.33 + side;
+        let pts = egui::epaint::CubicBezierShape::from_points_stroke(
+            [p0, c1, c2, b],
+            false,
+            Color32::TRANSPARENT,
+            Stroke::NONE,
+        )
+        .flatten(Some(0.15));
+        let mut len = vec![0.0f32];
+        for w in pts.windows(2) {
+            len.push(len[len.len() - 1] + w[0].distance(w[1]));
+        }
+        let total = len[len.len() - 1];
+        let at = |d: f32| {
+            let i = len.partition_point(|l| *l < d).clamp(1, pts.len() - 1);
+            let s = (d - len[i - 1]) / (len[i] - len[i - 1]).max(1e-3);
+            pts[i - 1] + (pts[i] - pts[i - 1]) * s.clamp(0.0, 1.0)
+        };
+        p.add(egui::Shape::line(pts.clone(), Stroke::new(3.0, t.border)));
+
+        // The copied part, lit as far as the copy has really gone.
+        let (target, known) = match phase {
+            Phase::Running => (self.fraction.unwrap_or(0.0), self.fraction.is_some()),
+            Phase::Stopped => (self.stopped_at.unwrap_or(0.0), false),
+            Phase::Done(_) => (1.0, false),
+            Phase::Idle => (0.0, false),
+        };
+        let fill = ctx.animate_value_with_time(egui::Id::unique("fill"), target, secs(0.35));
+        let reach = total * fill;
+        let done = matches!(phase, Phase::Done(_));
+        let sweep = ctx.animate_bool_with_time(egui::Id::unique("sweep"), done, secs(0.9));
+        if fill > 0.001 {
+            let sweep_x = if done && self.motion && sweep < 1.0 {
+                p0.x - 80.0 + (span + 160.0) * sweep
+            } else {
+                f32::MIN
+            };
+            let (accent, glint) = (t.accent, t.glint);
+            let lit = egui::epaint::PathStroke::new_uv(4.0, move |_, pos| {
+                let d = pos.x - sweep_x + 40.0;
+                let w = if (0.0..80.0).contains(&d) {
+                    (std::f32::consts::PI * d / 80.0).sin().powi(2)
+                } else {
+                    0.0
+                };
+                mix(accent, glint, w)
+            });
+            let steps = ((reach / 3.0) as usize).max(2);
+            let dense: Vec<Pos2> = (0..=steps)
+                .map(|i| at(reach * i as f32 / steps as f32))
+                .collect();
+            p.add(egui::Shape::line(dense, lit));
+        }
+        if running && self.motion {
+            // Files riding the cable; across all of it while the amount is not known yet.
+            let reach = if known { reach } else { total };
+            let gap = 64.0;
+            let mut d = (ctx.input(|i| i.time) as f32 * 120.0).rem_euclid(gap);
+            while d < reach {
+                let fade = (d / 24.0).min(1.0) * ((reach - d) / 24.0).min(1.0);
+                p.rect(
+                    Rect::from_center_size(at(d), vec2(8.0, 10.0)),
+                    2,
+                    t.glint.gamma_multiply(fade),
+                    Stroke::new(1.5, t.bg.gamma_multiply(fade)),
+                    StrokeKind::Outside,
+                );
+                d += gap;
+            }
+        }
+        if known {
+            let head = at(reach);
+            p.add(
+                egui::Shadow {
+                    offset: [0, 0],
+                    blur: 14,
+                    spread: 1,
+                    color: t.accent.gamma_multiply(0.5),
+                }
+                .as_shape(
+                    Rect::from_center_size(head, egui::Vec2::splat(10.0)),
+                    egui::CornerRadius::same(5),
+                ),
+            );
+            p.circle_filled(head, 5.0, t.accent);
+            p.circle_stroke(head, 5.0, Stroke::new(1.5, t.bg));
+        }
+        if running {
+            ctx.request_repaint_after(Duration::from_millis(if self.motion { 16 } else { 500 }));
+        }
+
+        // The tick lands only when nothing went wrong.
+        let seal = ctx.animate_bool_with_easing(
+            egui::Id::unique("seal"),
+            phase == Phase::Done(0),
+            egui::emath::easing::cubic_out,
+        );
+        let body = mix(t.border, t.ink, 0.55);
+        let d = (c1 - p0).normalized();
+        let d0 = (d + (axis - d) * plug).normalized();
+        connector(p, p0, -d0, body, t.border);
+        connector(p, b, axis, mix(body, t.accent, seal), t.border);
+        (plug, seal)
+    }
+
+    /// The cable across the top of the page and the words under its ends, all from real state.
+    fn hero(&mut self, ui: &mut egui::Ui, t: &Tokens, height: f32) {
+        // Half widths of the two glyphs at 36 points, so they line up with the words under them.
+        const PHONE: f32 = 11.0;
+        const FOLDER: f32 = 18.0;
+        let w = ui.available_width();
+        let narrow = w < 560.0;
+        let (rect, response) = ui.allocate_exact_size(vec2(w, height), egui::Sense::hover());
+        let (lx, rx) = (rect.left(), rect.right());
+        let by = rect.bottom() - if narrow { 42.0 } else { 46.0 };
+        let y = rect.top() + (by - rect.top() - 4.0) * 0.5;
+        let phone = pos2(lx + PHONE, y);
+        let folder = pos2(rx - FOLDER, y);
+        let a = pos2(phone.x + PHONE + 16.0, y);
+        let b = pos2(folder.x - FOLDER - 16.0, y);
+        let loose = pos2(b.x - (b.x - a.x) * 0.42, y + (by - y - 22.0).max(16.0));
+        let sag = if narrow { 16.0 } else { 30.0 };
+        let (plug, seal) = self.cable(ui, t, a, b, loose, sag);
+        icon(ui, phone, ICON_PHONE, 36.0, mix(t.muted, t.ink, plug));
+        icon(ui, folder, ICON_FOLDER, 36.0, mix(t.ink, t.accent, seal));
+        badge(ui, t, folder + vec2(FOLDER - 3.0, 17.0), seal);
+
+        // What each end says.
+        if self.free.as_ref().is_none_or(|(d, _)| *d != self.dest) {
+            self.free = Some((self.dest.clone(), backup::free_on(&self.dest)));
+        }
+        let free = self.free.as_ref().and_then(|f| f.1);
+        let free_words = free.map_or(String::new(), |f| format!("{} free on this PC", size(f)));
+        let dest_name = self.dest.file_name().map_or_else(
+            || self.dest.display().to_string(),
+            |n| n.to_string_lossy().into(),
+        );
+        let (adb, mtp) = self.connected();
+        let allow = self
+            .phones
+            .as_ref()
+            .is_some_and(|p| p.contains(&Phone::Unauthorized));
+        let phase = self.phase();
+        let (name, how) = match (adb.as_slice(), mtp) {
+            ([(model, wifi)], _) => (
+                model.clone(),
+                if *wifi {
+                    "Connected over Wi-Fi"
+                } else {
+                    "Connected by USB cable"
+                }
+                .to_string(),
+            ),
+            ([_, ..], _) => (
+                format!("{} phones", adb.len()),
+                adb.iter()
+                    .map(|(m, _)| m.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            (_, Some(name)) => (name, "File transfer mode".to_string()),
+            _ if phase == Phase::Running => ("Your phone".to_string(), String::new()),
+            _ if self.phones.is_none() => ("Looking for your phone".to_string(), String::new()),
+            _ if allow => (
+                "Tap Allow on your phone".to_string(),
+                "Unlock it to see the question".to_string(),
+            ),
+            _ => (
+                "No phone yet".to_string(),
+                "Plug it in with a USB cable and unlock it".to_string(),
+            ),
+        };
+        let percent = self
+            .fraction
+            .map(|f| format!("{:.0}%", (f * 100.0).floor()));
+        let (word, word_ink, word_note) = match phase {
+            Phase::Idle => (None, t.ink, String::new()),
+            Phase::Running => (percent, t.ink, self.time_left_now().unwrap_or_default()),
+            Phase::Stopped => (Some("Stopped".to_string()), t.ink, String::new()),
+            Phase::Done(n) => {
+                let copied: usize = match &self.result {
+                    Some(Ok(done)) => done.iter().map(|s| s.copied).sum(),
+                    _ => 0,
+                };
+                let note = if copied == 0 {
+                    "Nothing new to copy".to_string()
+                } else {
+                    format!("{} copied", files(copied))
+                };
+                if n == 0 {
+                    (Some("Backed up".to_string()), t.accent, note)
+                } else {
+                    (Some("Finished".to_string()), t.warning, note)
+                }
+            }
+        };
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Image,
+                true,
+                format!(
+                    "{name}. {how}. {}. {word_note}. Saves to {dest_name}. {free_words}.",
+                    word.as_deref().unwrap_or_default()
+                ),
+            )
+        });
+
+        let (title_size, sub_y) = if narrow {
+            (15.0, by + 22.0)
+        } else {
+            (18.0, by + 26.0)
+        };
+        let title = |s: &str| txt(s, title_size, 600.0, t.ink);
+        let sub = |s: &str| txt(s, 12.0, 400.0, t.muted);
+        let left_top = Align2::LEFT_TOP;
+        let full = rx - lx;
+        if narrow {
+            // Room for one end only: the folder's words join the phone's while idle.
+            let line = match phase {
+                Phase::Idle if adb.is_empty() && !how.is_empty() => how.clone(),
+                Phase::Idle if free_words.is_empty() => format!("To {dest_name}"),
+                Phase::Idle => format!("To {dest_name}, {free_words}"),
+                _ => word_note.clone(),
+            };
+            let name_max = if word.is_some() { full - 118.0 } else { full };
+            put(ui, pos2(lx, by), left_top, title(&name), name_max);
+            put(ui, pos2(lx, sub_y), left_top, sub(&line), full);
+        } else {
+            let right_max = full / 2.0 - 80.0;
+            let left_max = if word.is_some() {
+                right_max
+            } else {
+                full * 0.6
+            };
+            put(ui, pos2(lx, by), left_top, title(&name), left_max);
+            put(ui, pos2(lx, sub_y), left_top, sub(&how), left_max);
+            // Dropped 4 points so its baseline meets the larger name.
+            put(
+                ui,
+                pos2(rx, by + 4.0),
+                Align2::RIGHT_TOP,
+                txt(&dest_name, 13.0, 600.0, t.ink),
+                right_max,
+            );
+            put(
+                ui,
+                pos2(rx, sub_y),
+                Align2::RIGHT_TOP,
+                sub(&free_words),
+                right_max,
+            );
+        }
+        // Percent or outcome: in the middle, or at the right when narrow.
+        let (mid, mid_align) = if narrow {
+            (rx, Align2::RIGHT_TOP)
+        } else {
+            (rect.center().x, Align2::CENTER_TOP)
+        };
+        if let Some(word) = &word {
+            tabular(ui, pos2(mid, by), mid_align, word, |s| {
+                txt(s, title_size, 600.0, word_ink)
+            });
+        }
+        if !narrow {
+            put(ui, pos2(mid, sub_y), mid_align, sub(&word_note), 160.0);
         }
     }
 
@@ -36,50 +394,76 @@ impl App {
         let ready = !adb.is_empty() || mtp.is_some();
         // File transfer mode can only reach files.
         let mtp_only = adb.is_empty() && mtp.is_some();
-
-        let measured = self.measured();
-        let about = |bytes: u64| format!(" About {}.", size(bytes));
-        let files_size = measured.map(|(_, t)| about(t.total)).unwrap_or_default();
-        let apps_size = measured.map(|(apps, _)| about(apps)).unwrap_or_default();
-        let limits = match self.pick.limits() {
-            l if l.is_empty() => "Everything in the phone's storage and SD card.".into(),
-            l => l,
+        if !adb.is_empty() && !busy {
+            self.measure(ui.ctx());
+        }
+        // Sizes are of the first phone: with more, they would say the wrong thing.
+        let measured = if adb.len() == 1 {
+            self.measured().map(|(apps, t)| (apps, t.kinds, t.total))
+        } else {
+            None
         };
-        let can_choose = self.pick.files;
-        panel(ui, t, "What to back up", "", |ui| {
-            ui.add_enabled_ui(!busy, |ui| {
-                if choice(
-                    ui,
-                    t,
-                    true,
-                    &mut self.pick.files,
-                    "Photos, videos and files",
-                    &format!("{limits}{files_size}"),
-                    can_choose.then_some("Choose…"),
-                ) {
-                    self.choosing = true;
-                    self.measure(ui.ctx());
-                }
-                choice(
-                    ui,
-                    t,
-                    !mtp_only,
-                    &mut self.pick.apps,
-                    "Apps",
-                    &format!("The apps you installed, without their logins or data.{apps_size}"),
-                    None,
-                );
-                choice(
-                    ui,
-                    t,
-                    !mtp_only,
-                    &mut self.pick.data,
-                    "Contacts, calls, messages and calendar",
-                    "Some phones do not allow this over USB.",
-                    None,
-                );
+
+        // The cable takes what the tiles leave, so it grows with the window. The same height with
+        // or without a phone, so plugging one in moves nothing.
+        let width = ui.available_width();
+        let (cols, small) = tile_grid(width, 0.0, TILES.len());
+        let block = TILES.len().div_ceil(cols) as f32 * (small.y + TILE_GAP);
+        // Everything else the first screen must show: page margins, gap, heading, the Saves to row,
+        // Wi-Fi and report buttons, and any battery warnings and limits.
+        let low = self
+            .phones
+            .iter()
+            .flatten()
+            .filter(|p| {
+                matches!(
+                    p,
+                    Phone::Adb {
+                        battery: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count() as f32;
+        let limits_row = if self.pick.limits().is_empty() {
+            0.0
+        } else {
+            24.0
+        };
+        let rest = ui.clip_rect().height()
+            - 32.0
+            - 8.0
+            - HIT
+            - 28.0
+            - (HIT + 12.0)
+            - low * 28.0
+            - limits_row;
+        let min = if width < 560.0 { 136.0 } else { 148.0 };
+        let hero = (rest - block).clamp(min, 300.0);
+        self.hero(ui, t, hero);
+        ui.add_space(8.0);
+        self.battery_warnings(ui, t);
+
+        if ready {
+            ui.horizontal(|ui| {
+                ui.set_min_height(HIT);
+                let heading = if busy {
+                    "Backing up"
+                } else {
+                    "What to back up"
+                };
+                ui.label(txt(heading, 13.0, 600.0, t.ink));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if quiet(ui, t, "Choose folders…", !busy).clicked() {
+                        self.choosing = true;
+                    }
+                });
             });
-            // Where it goes; the folder itself is changed in Settings.
+            self.tiles(ui, t, rest - hero, busy, mtp_only, measured);
+            let limits = self.pick.limits();
+            if !limits.is_empty() {
+                ui.add(egui::Label::new(txt(&limits, 12.0, 400.0, t.muted)).wrap());
+            }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let full = self.dest.display().to_string();
@@ -93,30 +477,126 @@ impl App {
                     self.go(Tab::Settings);
                 }
             });
-        });
+            if adb.len() > 1 {
+                ui.label(muted("Each phone gets its own backup folder."));
+            }
+            if mtp_only {
+                if self.adb_ok {
+                    ui.label(muted(
+                        "Turn on USB debugging to include apps, contacts and messages.",
+                    ));
+                } else {
+                    ui.label(muted("USB debugging also needs adb, Google's free tool."));
+                    self.adb_missing(ui, t);
+                }
+                self.phone_help(ui, t);
+            }
+        } else if let Some(phones) = &self.phones {
+            let (allow, bad_usb) = (
+                phones.contains(&Phone::Unauthorized),
+                phones.contains(&Phone::UsbFailed),
+            );
+            if allow {
+                ui.add(
+                    egui::Label::new(
+                        "Unlock the phone. It asks whether to allow USB debugging from this computer.",
+                    )
+                    .wrap(),
+                );
+            } else {
+                ui.add_space(4.0);
+                ui.label(txt("Connect your phone", 13.0, 600.0, t.ink));
+                if bad_usb {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Windows found a USB device it cannot use. If that is your phone, unplug it, unlock it and plug it in again. Still nothing? Try another cable and USB port: some cables only charge.",
+                            )
+                            .color(t.error),
+                        )
+                        .wrap(),
+                    );
+                }
+                steps(
+                    ui,
+                    t,
+                    &[
+                        "Plug it into this computer with a USB cable.",
+                        "Unlock it, tap the USB notification and choose File transfer.",
+                        "For apps, contacts and messages, also turn on USB debugging.",
+                    ],
+                );
+                if !self.adb_ok {
+                    ui.label(muted("USB debugging also needs adb, Google's free tool."));
+                    self.adb_missing(ui, t);
+                }
+            }
+            self.phone_help(ui, t);
+        }
+        // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching the page.
+        ui.add_space(4.0);
+        self.phone_actions(ui, t, &|ui, label, enabled| quiet(ui, t, label, enabled));
+
         let files_on = self.pick.files && self.pick.kinds.contains(&true);
-        let picked = files_on || (!mtp_only && (self.pick.apps || self.pick.data));
+        let apps_on = !mtp_only && self.pick.apps;
+        let picked = files_on || apps_on || (!mtp_only && self.pick.data);
         let name = match (adb.as_slice(), mtp) {
             ([(model, _)], _) => model.clone(),
             ([_, ..], _) => format!("{} phones", adb.len()),
             (_, Some(name)) => name,
             _ => String::new(),
         };
+        // Words only, never a block: a repeat backup copies just what changed, and the backup
+        // itself checks the exact room it needs.
+        let needs = measured.map(|(apps, _, total)| {
+            let bytes = if files_on { total } else { 0 } + if apps_on { apps } else { 0 };
+            match self.free.as_ref().and_then(|f| f.1) {
+                Some(free) if bytes > free => {
+                    format!("Needs up to {}, only {} free", size(bytes), size(free))
+                }
+                _ => format!("About {}", size(bytes)),
+            }
+        });
+        let phase = self.phase();
+        let (title, note) = match phase {
+            Phase::Running => (
+                self.status.clone(),
+                match self.now.rsplit(['/', '\\']).next() {
+                    Some(file) if !file.is_empty() => file.to_string(),
+                    _ => "Keep the phone plugged in and unlocked.".into(),
+                },
+            ),
+            Phase::Done(0) => (
+                "Backup finished".into(),
+                "No problems. Report saved.".into(),
+            ),
+            Phase::Done(n) => (
+                format!("Finished with {n} {}", plural(n, "problem")),
+                "The list is in the report.".into(),
+            ),
+            Phase::Stopped => (
+                self.stopped_at.map_or("Backup stopped".into(), |f| {
+                    format!("Stopped at {:.0}%", (f * 100.0).floor())
+                }),
+                "Files copied so far are kept.".into(),
+            ),
+            Phase::Idle if !ready => ("Connect a phone to start".into(), String::new()),
+            Phase::Idle if !picked => {
+                ("Choose at least one thing to back up".into(), String::new())
+            }
+            Phase::Idle => (
+                format!("Ready to back up {name}"),
+                needs.unwrap_or_default(),
+            ),
+        };
+        let note = if !ready && !matches!(phase, Phase::Idle | Phase::Running) {
+            "Connect a phone to back up again.".into()
+        } else {
+            note
+        };
         Cmd {
-            title: if busy {
-                "Backing up…".into()
-            } else if !ready {
-                "Connect a phone to start".into()
-            } else if !picked {
-                "Tick at least one thing to back up".into()
-            } else {
-                format!("Ready to back up {name}")
-            },
-            note: if busy {
-                "Keep the phone plugged in and unlocked.".into()
-            } else {
-                String::new()
-            },
+            title,
+            note,
             label: if self.result.is_some() {
                 "Back up again"
             } else {
@@ -124,6 +604,59 @@ impl App {
             },
             enabled: ready && picked,
             plan: None,
+        }
+    }
+
+    /// What a backup can hold, as tiles filling the width and any spare height.
+    fn tiles(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Tokens,
+        room: f32,
+        busy: bool,
+        mtp_only: bool,
+        measured: Option<(u64, [u64; 5], u64)>,
+    ) {
+        let (cols, each) = tile_grid(ui.available_width(), room, TILES.len());
+        let full = ui.available_width();
+        let sized = |bytes: u64| match bytes {
+            0 => "None found".to_string(),
+            n => size(n),
+        };
+        for (row, chunk) in TILES.chunks(cols).enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = TILE_GAP;
+                for (k, (glyph, name, note)) in chunk.iter().enumerate() {
+                    let i = row * cols + k;
+                    let dim = i >= KINDS.len() && mtp_only;
+                    let line = match (i, measured) {
+                        _ if dim => "Not in this mode".to_string(),
+                        (0..5, Some((_, kinds, _))) => sized(kinds[i]),
+                        (5, Some((apps, ..))) => sized(apps),
+                        _ => (*note).to_string(),
+                    };
+                    let on = match i {
+                        5 => !dim && self.pick.apps,
+                        6 => !dim && self.pick.data,
+                        k => self.pick.files && self.pick.kinds[k],
+                    };
+                    // A lone tile on the last row takes the whole row.
+                    let this = if chunk.len() == 1 {
+                        vec2(full, each.y)
+                    } else {
+                        each
+                    };
+                    let item = (*glyph, *name, line.as_str());
+                    if tile(ui, t, item, on, busy, dim, this) {
+                        match i {
+                            5 => self.pick.apps = !self.pick.apps,
+                            6 => self.pick.data = !self.pick.data,
+                            k => toggle_kind(&mut self.pick, k),
+                        }
+                    }
+                }
+            });
+            ui.add_space(TILE_GAP - ui.spacing().item_spacing.y);
         }
     }
 
@@ -319,7 +852,8 @@ impl App {
                             (true, true) => format!("{}: backup finished", s.name),
                             (false, true) => format!("{}: backup finished with problems", s.name),
                         };
-                        ui.label(RichText::new(title).font(semibold(16.0)));
+                        let ink = if s.errors.is_empty() { t.ink } else { t.warning };
+                        ui.label(RichText::new(title).font(semibold(16.0)).color(ink));
                         let in_backup = files(s.files - s.errors.len().min(s.files));
                         if s.pick.files || s.pick.apps {
                             ui.label(if s.files == 0 {
@@ -357,13 +891,13 @@ impl App {
                         }
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Open backup folder").clicked() {
+                            if quiet(ui, t, "Open backup folder", true).clicked() {
                                 let _ = Command::new("explorer").arg(&s.root).spawn();
                             }
-                            if ui.button("Open report").clicked() {
+                            if quiet(ui, t, "Open report", true).clicked() {
                                 let _ = Command::new("explorer").arg(s.root.join(backup::REPORT)).spawn();
                             }
-                            if !s.errors.is_empty() && ui.button("Copy problem list").clicked() {
+                            if !s.errors.is_empty() && quiet(ui, t, "Copy problem list", true).clicked() {
                                 ui.ctx().copy_text(s.errors.join("\n"));
                             }
                         });
@@ -372,5 +906,47 @@ impl App {
             }
             None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_copy_errors_and_refused_data_as_problems() {
+        let summary = |errors: usize, data| Summary {
+            name: "Phone".into(),
+            root: PathBuf::new(),
+            files: 9,
+            copied: 9,
+            errors: vec!["x".into(); errors],
+            data,
+            notes: vec![],
+            full: true,
+            pick: Pick::default(),
+        };
+        assert_eq!(problems(&[summary(0, vec![("Contacts", true)])]), 0);
+        assert_eq!(
+            problems(&[
+                summary(2, vec![("Contacts", true), ("Messages", false)]),
+                summary(1, vec![]),
+            ]),
+            4
+        );
+    }
+
+    #[test]
+    fn first_tile_after_files_off_means_only_that_kind() {
+        let mut pick = Pick {
+            files: false,
+            kinds: [true; 5],
+            ..Pick::default()
+        };
+        toggle_kind(&mut pick, 1);
+        assert!(pick.files);
+        assert_eq!(pick.kinds, [false, true, false, false, false]);
+        toggle_kind(&mut pick, 1);
+        assert!(pick.files && !pick.kinds.contains(&true));
     }
 }

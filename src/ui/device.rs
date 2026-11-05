@@ -59,7 +59,6 @@ impl App {
 
     /// The phone, how it is connected, and how to connect one.
     pub(crate) fn device(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        let busy = self.busy.load(Ordering::Relaxed);
         let muted = |s: &str| RichText::new(s).color(t.muted);
         let (adb, mtp) = self.connected();
         let allow = self
@@ -154,6 +153,19 @@ impl App {
             }
         }
 
+        self.battery_warnings(ui, t);
+
+        // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching this card.
+        ui.add_space(12.0);
+        self.phone_actions(ui, t, &|ui, label, enabled| {
+            // Without a model name, adb gives a long Wi-Fi address instead.
+            ui.add_enabled(enabled, egui::Button::new(label).truncate())
+        });
+    }
+
+    /// One line for each phone low on battery and not charging.
+    pub(crate) fn battery_warnings(&self, ui: &mut egui::Ui, t: &Tokens) {
+        let many = self.connected().0.len() > 1;
         let low: Vec<(String, u8)> = self
             .phones
             .iter()
@@ -168,29 +180,37 @@ impl App {
             })
             .collect();
         for (model, level) in &low {
-            let who = if adb.len() > 1 {
+            let who = if many {
                 format!("{model}: battery")
             } else {
                 "Battery".into()
             };
-            ui.label(
-                RichText::new(format!(
-                    "{who} at {level}% and not charging. Charge the phone so it does not switch off mid-backup."
-                ))
-                .color(t.error),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{who} at {level}% and not charging. Charge the phone so it does not switch off mid-backup."
+                    ))
+                    .color(t.warning),
+                )
+                .wrap(),
             );
         }
+    }
 
-        // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching this card.
-        ui.add_space(12.0);
+    /// Connect over Wi-Fi and a report button per phone, drawn by `button`, with how the report
+    /// is going.
+    pub(crate) fn phone_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Tokens,
+        button: &dyn Fn(&mut egui::Ui, &str, bool) -> egui::Response,
+    ) {
+        let busy = self.busy.load(Ordering::Relaxed);
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(!busy, egui::Button::new("Connect over Wi-Fi…"))
-                .clicked()
-            {
+            if button(ui, "Connect over Wi-Fi…", !busy).clicked() {
                 self.wifi_open = true;
             }
-            self.report_buttons(ui, busy);
+            self.report_buttons(ui, busy, button);
         });
         if self.report_working {
             ui.horizontal(|ui| {
@@ -204,7 +224,12 @@ impl App {
     }
 
     /// A button per ADB phone to save a page about it, for printing or showing a buyer.
-    fn report_buttons(&mut self, ui: &mut egui::Ui, busy: bool) {
+    fn report_buttons(
+        &mut self,
+        ui: &mut egui::Ui,
+        busy: bool,
+        button: &dyn Fn(&mut egui::Ui, &str, bool) -> egui::Response,
+    ) {
         let phones: Vec<(String, String)> = self
             .phones
             .iter()
@@ -220,13 +245,7 @@ impl App {
             } else {
                 "Save phone report…".into()
             };
-            if ui
-                // Without a model name, adb gives a long Wi-Fi address instead.
-                .add_enabled(
-                    !busy && !self.report_working,
-                    egui::Button::new(label).truncate(),
-                )
-                .clicked()
+            if button(ui, &label, !busy && !self.report_working).clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .set_directory(&self.dest)
                     .set_file_name("phone-report.txt")

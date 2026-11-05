@@ -126,6 +126,10 @@ struct App {
     status: String,
     now: String,
     fraction: Option<f32>,
+    /// How far the last job had got when it ended.
+    stopped_at: Option<f32>,
+    /// The folder last asked about and the room left for it; None after a backup changes that.
+    free: Option<(PathBuf, Option<u64>)>,
     /// When the progress bar last appeared, for the time left.
     progress_from: Instant,
     result: Option<Result<Vec<Summary>, String>>,
@@ -230,14 +234,30 @@ impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         let ctx = &cc.egui_ctx;
 
-        // Windows' own Segoe UI, read from the system; egui's built-in font if it is missing.
+        // Windows 11's Segoe UI Variable, read from the system. Windows 10 only has the older
+        // Segoe UI files; egui's built-in font if those are missing too.
         let mut fonts = egui::FontDefinitions::default();
         let font_dir = PathBuf::from(env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
             .join("Fonts");
-        if let Ok(bytes) = fs::read(font_dir.join("segoeui.ttf")) {
-            fonts
-                .font_data
-                .insert("segoe".into(), Arc::new(egui::FontData::from_owned(bytes)));
+        let read = |file: &str| fs::read(font_dir.join(file)).ok();
+        let weight = |bytes: Vec<u8>, wght: f32| {
+            egui::FontData::from_owned(bytes).tweak(egui::FontTweak {
+                coords: egui::epaint::text::VariationCoords::new([
+                    (b"wght", wght),
+                    (b"opsz", 14.0),
+                ]),
+                ..Default::default()
+            })
+        };
+        let (regular, semibold_face) = match read("SegUIVar.ttf") {
+            Some(var) => (Some(weight(var.clone(), 400.0)), Some(weight(var, 600.0))),
+            None => (
+                read("segoeui.ttf").map(egui::FontData::from_owned),
+                read("seguisb.ttf").map(egui::FontData::from_owned),
+            ),
+        };
+        if let Some(face) = regular {
+            fonts.font_data.insert("segoe".into(), Arc::new(face));
             fonts
                 .families
                 .get_mut(&FontFamily::Proportional)
@@ -245,16 +265,25 @@ impl App {
                 .insert(0, "segoe".into());
         }
         let mut bold = fonts.families[&FontFamily::Proportional].clone();
-        if let Ok(bytes) = fs::read(font_dir.join("seguisb.ttf")) {
-            fonts.font_data.insert(
-                "segoe-sb".into(),
-                Arc::new(egui::FontData::from_owned(bytes)),
-            );
+        if let Some(face) = semibold_face {
+            fonts.font_data.insert("segoe-sb".into(), Arc::new(face));
             bold.insert(0, "segoe-sb".into());
         }
         fonts
             .families
             .insert(FontFamily::Name("semibold".into()), bold);
+        // Windows 11's icon font, or Windows 10's. A family must exist or egui panics, so without
+        // either the icons fall back to text.
+        let mut icons = fonts.families[&FontFamily::Proportional].clone();
+        if let Some(face) = read("SegoeIcons.ttf").or_else(|| read("SegMDL2.ttf")) {
+            fonts
+                .font_data
+                .insert("icons".into(), Arc::new(egui::FontData::from_owned(face)));
+            icons.insert(0, "icons".into());
+        }
+        fonts
+            .families
+            .insert(FontFamily::Name("icons".into()), icons);
         ctx.set_fonts(fonts);
 
         ctx.all_styles_mut(|s| {
@@ -269,6 +298,9 @@ impl App {
             .into();
             // Desktop sizes: 32 px controls, not 44 px touch targets.
             s.spacing.interact_size.y = 32.0;
+            if !motion_on() {
+                s.animation_time = 0.0;
+            }
             s.spacing.button_padding = vec2(12.0, 5.0);
             s.spacing.item_spacing = vec2(8.0, 8.0);
             s.spacing.icon_width = 18.0;
@@ -356,6 +388,8 @@ impl App {
             status: String::new(),
             now: String::new(),
             fraction: None,
+            stopped_at: None,
+            free: None,
             progress_from: Instant::now(),
             result: None,
             pair_addr: cc
@@ -420,9 +454,9 @@ impl App {
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         // update=working|new|same|failed also shows that result of Check for updates.
         if cfg!(debug_assertions) && test_run() {
@@ -499,6 +533,23 @@ impl App {
                         app.now = r"/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4".into();
                         app.fraction = Some(0.375);
                         app.progress_from = Instant::now() - Duration::from_secs(431);
+                    }
+                    "done" => {
+                        app.result = Some(Ok(vec![Summary {
+                            name: "Phone".into(),
+                            root: app.dest.clone(),
+                            files: 128_456,
+                            copied: 1_093,
+                            errors: vec![],
+                            data: vec![("Contacts", true), ("Messages", true)],
+                            notes: vec![],
+                            full: true,
+                            pick: Pick::default(),
+                        }]));
+                    }
+                    "stopped" => {
+                        app.result = Some(Err("You stopped the backup. Files copied so far are kept; press Back up again to continue.".into()));
+                        app.stopped_at = Some(0.62);
                     }
                     _ if word.starts_with("zoom=") => {
                         ctx.set_zoom_factor(word[5..].parse().unwrap_or(1.0))
@@ -648,6 +699,8 @@ impl eframe::App for App {
                 }
                 Msg::Done(r) => {
                     self.result = Some(r);
+                    self.stopped_at = self.fraction;
+                    self.free = None;
                     self.finished(ui.ctx());
                 }
                 Msg::Verified(folder, r) => {

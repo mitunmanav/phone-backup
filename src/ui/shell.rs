@@ -16,8 +16,12 @@ impl App {
             self.doc_page(ui, t);
             return None;
         }
+        if self.tab == Tab::Backup {
+            let cmd = self.backup_tab(ui, t);
+            self.backup_result(ui, t);
+            return Some(cmd);
+        }
         let job = |app: &mut Self, ui: &mut egui::Ui| match app.tab {
-            Tab::Backup => app.backup_tab(ui, t),
             Tab::Transfer => app.transfer_tab(ui, t),
             _ => app.restore_tab(ui, t),
         };
@@ -45,10 +49,7 @@ impl App {
             ui.add_space(8.0);
             panel(ui, t, "Progress", "", |ui| self.progress(ui, t));
         }
-        match self.tab {
-            Tab::Backup => self.backup_result(ui, t),
-            _ => self.restore_result(ui, t, cmd.plan.as_ref().map(|p| &p.0)),
-        }
+        self.restore_result(ui, t, cmd.plan.as_ref().map(|p| &p.0));
         Some(cmd)
     }
 
@@ -108,7 +109,10 @@ impl App {
                     egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(pad, 16))
                         .show(ui, |ui| {
-                            ui.set_max_width(ui.available_width().min(1040.0));
+                            // Back up runs edge to edge, so its cable spans the tabs and the bar.
+                            if self.tab != Tab::Backup || self.intro.is_some() {
+                                ui.set_max_width(ui.available_width().min(1040.0));
+                            }
                             match self.intro {
                                 Some(step) => {
                                     self.intro_page(ui, t, step);
@@ -192,14 +196,11 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if self.busy.load(Ordering::Relaxed) {
+                    let busy = self.busy.load(Ordering::Relaxed);
+                    if busy {
                         let stopping = backup::STOP.load(Ordering::Relaxed);
-                        let stop = egui::Button::new(if stopping { "Stopping…" } else { "Stop" })
-                            .min_size(vec2(120.0, 32.0));
-                        if ui
-                            .add_enabled(!stopping && self.job != Job::Delete, stop)
-                            .clicked()
-                        {
+                        let label = if stopping { "Stopping…" } else { "Stop" };
+                        if quiet(ui, t, label, !stopping && self.job != Job::Delete).clicked() {
                             backup::STOP.store(true, Ordering::Relaxed);
                         }
                     } else if primary(ui, t, cmd.label, cmd.enabled) {
@@ -212,16 +213,17 @@ impl App {
                     ui.add_space(4.0);
                     ui.with_layout(Layout::top_down(Align::Min), |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.add(
-                            egui::Label::new(RichText::new(&cmd.title).font(semibold(14.0))).wrap(),
-                        );
+                        // Level with the button's centre, with or without a note.
+                        ui.add_space(if cmd.note.is_empty() { 13.0 } else { 5.0 });
+                        // One line each while a job runs: its words change with every file, and
+                        // the bar must not jump as they do.
+                        let line = |text: RichText| {
+                            let label = egui::Label::new(text);
+                            if busy { label.truncate() } else { label.wrap() }
+                        };
+                        ui.add(line(txt(&cmd.title, 13.0, 600.0, t.ink)));
                         if !cmd.note.is_empty() {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&cmd.note).color(t.muted).size(12.0),
-                                )
-                                .wrap(),
-                            );
+                            ui.add(line(txt(&cmd.note, 12.0, 400.0, t.muted)));
                         }
                     });
                 });

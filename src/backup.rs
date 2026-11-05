@@ -289,6 +289,11 @@ fn free_space(_: &Path) -> Option<u64> {
     None
 }
 
+/// Free room for `path`, which may not exist yet: the nearest folder that does answers for it.
+pub fn free_on(path: &Path) -> Option<u64> {
+    path.ancestors().find_map(free_space)
+}
+
 /// 1_500_000_000 -> "1.5 GB", 350_000_000 -> "350 MB", 1_500 -> "2 KB"
 pub fn size(bytes: u64) -> String {
     if bytes <= 999_000 {
