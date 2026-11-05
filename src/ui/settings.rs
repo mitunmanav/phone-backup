@@ -119,6 +119,30 @@ impl App {
                     });
                 });
             });
+            if self.sound {
+                // Even columns, so the choices line up. A click plays it.
+                let w = ui.available_width();
+                let cols: usize = if w >= 736.0 {
+                    6
+                } else if w >= 364.0 {
+                    3
+                } else {
+                    2
+                };
+                let cell = (w - 8.0 * (cols as f32 - 1.0)) / cols as f32;
+                for (row, names) in backup::SOUNDS.chunks(cols).enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        for (k, (name, _)) in names.iter().enumerate() {
+                            let i = row * cols + k;
+                            if chip(ui, t, "\u{E768}", name, self.sound_pick == i, cell) {
+                                self.sound_pick = i;
+                                backup::play_sound(i);
+                            }
+                        }
+                    });
+                }
+            }
         });
         ui.add_space(6.0);
 

@@ -157,13 +157,100 @@ pub(super) fn now_text() -> String {
     String::new()
 }
 
-/// The Windows "done" sound.
-pub fn beep() {
-    // SAFETY: plays a system sound; no pointers involved. 0 is MB_OK.
-    #[cfg(windows)]
-    unsafe {
-        windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(0);
+/// Notes: pitch in Hz, then start and length in seconds.
+type Tune = &'static [(f32, f32, f32)];
+
+/// The tunes for the end of a job.
+pub const SOUNDS: [(&str, Tune); 6] = [
+    (
+        "Chime",
+        &[(523.3, 0.0, 0.5), (659.3, 0.12, 0.5), (784.0, 0.24, 0.9)],
+    ),
+    ("Bell", &[(880.0, 0.0, 1.6)]),
+    ("Two notes", &[(784.0, 0.0, 0.35), (1046.5, 0.18, 0.9)]),
+    (
+        "Marimba",
+        &[
+            (523.3, 0.0, 0.22),
+            (587.3, 0.1, 0.22),
+            (784.0, 0.2, 0.22),
+            (1046.5, 0.3, 0.6),
+        ],
+    ),
+    (
+        "Soft rise",
+        &[
+            (349.2, 0.0, 0.8),
+            (440.0, 0.22, 0.8),
+            (523.3, 0.44, 0.8),
+            (698.5, 0.66, 1.2),
+        ],
+    ),
+    (
+        "Little tune",
+        &[
+            (659.3, 0.0, 0.25),
+            (784.0, 0.14, 0.25),
+            (880.0, 0.28, 0.25),
+            (784.0, 0.42, 0.25),
+            (1046.5, 0.56, 0.9),
+        ],
+    ),
+];
+
+/// A 16-bit mono WAV in memory, ready for Windows to play.
+#[cfg(any(windows, test))]
+fn wav(notes: &[(f32, f32, f32)]) -> Vec<u8> {
+    const RATE: usize = 22050;
+    let end = notes.iter().map(|n| n.1 + n.2).fold(0.0, f32::max);
+    let mut mixed = vec![0.0f32; (end * RATE as f32) as usize + 1];
+    for (pitch, start, len) in notes {
+        let first = (start * RATE as f32) as usize;
+        for k in 0..(len * RATE as f32) as usize {
+            let at = k as f32 / RATE as f32;
+            // Quick attack, long fade, a quiet octave on top: a struck sound, not a beep.
+            let shape = (at / 0.006).min(1.0) * (-4.5 * at / len).exp();
+            let phase = std::f32::consts::TAU * pitch * at;
+            mixed[first + k] += shape * (phase.sin() + 0.22 * (phase * 2.0).sin());
+        }
     }
+    let data = (mixed.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + data as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&(RATE as u32).to_le_bytes());
+    out.extend_from_slice(&(RATE as u32 * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    for v in mixed {
+        out.extend_from_slice(&(((v * 0.35).clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+    }
+    out
+}
+
+/// Plays on its own thread so the window never waits; a new sound cuts off the last one.
+pub fn play_sound(i: usize) {
+    #[cfg(windows)]
+    std::thread::spawn(move || {
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT};
+        let bytes = wav(SOUNDS[i].1);
+        // SAFETY: without SND_ASYNC the call returns only when the sound ends, so `bytes` outlives it.
+        unsafe {
+            PlaySoundW(
+                bytes.as_ptr().cast(),
+                std::ptr::null_mut(),
+                SND_MEMORY | SND_NODEFAULT,
+            )
+        };
+    });
+    #[cfg(not(windows))]
+    let _ = i;
 }
 
 /// Facts that help someone fix a problem: app, Windows and adb versions and the phones adb sees.
@@ -186,4 +273,25 @@ pub fn diagnostics(dest: &Path) -> String {
         out(adb().arg("version")),
         out(adb().args(["devices", "-l"])),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sounds_are_valid_wav() {
+        for (_, notes) in SOUNDS {
+            let w = wav(notes);
+            assert_eq!(&w[..4], b"RIFF");
+            assert_eq!(
+                u32::from_le_bytes(w[4..8].try_into().unwrap()) as usize,
+                w.len() - 8
+            );
+            assert_eq!(
+                u32::from_le_bytes(w[40..44].try_into().unwrap()) as usize,
+                w.len() - 44
+            );
+        }
+    }
 }

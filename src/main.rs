@@ -174,8 +174,10 @@ struct App {
     motion: bool,
     /// The first-run step on screen; None once it is done or skipped.
     intro: Option<usize>,
-    /// Play the Windows sound when a backup or restore ends.
+    /// Play a sound when a backup or restore ends.
     sound: bool,
+    /// Which of `backup::SOUNDS` to play.
+    sound_pick: usize,
     /// The report of the last restore, for its Open report button.
     restore_report: Option<PathBuf>,
     job: Job,
@@ -438,6 +440,12 @@ impl App {
                 .is_some_and(|s| s.get_string("dest").is_none())
                 .then_some(0),
             sound: cc.storage.and_then(|s| s.get_string("sound")).as_deref() == Some("1"),
+            sound_pick: cc
+                .storage
+                .and_then(|s| s.get_string("sound_pick"))
+                .and_then(|s| s.parse().ok())
+                .filter(|&i| i < backup::SOUNDS.len())
+                .unwrap_or(0),
             restore_report: None,
             job: Job::Backup,
             verified: None,
@@ -473,7 +481,7 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-4>] [settings] [privacy] [license] [intro[=<step>]]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-4>] [settings] [sound] [privacy] [license] [intro[=<step>]]
         // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
@@ -519,6 +527,7 @@ impl App {
                     "tools" => app.tab = Tab::Tools,
                     _ if word.starts_with("tool=") => app.tool = word[5..].parse().unwrap_or(0),
                     "settings" => app.tab = Tab::Settings,
+                    "sound" => app.sound = true,
                     _ if word.starts_with("update=") => {
                         app.update_working = word == "update=working";
                         app.update = match &word[7..] {
@@ -614,7 +623,7 @@ impl App {
     /// in the background.
     fn finished(&self, ctx: &egui::Context) {
         if self.sound {
-            backup::beep();
+            backup::play_sound(self.sound_pick);
         }
         if !ctx.input(|i| i.focused) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -879,6 +888,7 @@ impl eframe::App for App {
         storage.set_string("pair_addr", self.pair_addr.clone());
         storage.set_string("connect_addr", self.connect_addr.clone());
         storage.set_string("sound", bit(self.sound).to_string());
+        storage.set_string("sound_pick", self.sound_pick.to_string());
         storage.set_string(
             "pick",
             [self.pick.files, self.pick.apps, self.pick.data]
