@@ -1,35 +1,141 @@
+use super::device::BRANDS;
 use crate::*;
 
 impl App {
-    /// Privacy or License, opened from Settings: a trail back, a heading, then short sections.
+    /// A way back. The page's own title says where you are.
+    fn trail(&mut self, ui: &mut egui::Ui, t: &Tokens, back: &str, to: Tab) {
+        if link(ui, t, &format!("‹ {back}")) {
+            self.go(to);
+        }
+    }
+
+    /// Big picture and one plain line, for pages you read.
+    fn doc_head(&self, ui: &mut egui::Ui, t: &Tokens, glyph: &str, title: &str, lede: &str) {
+        ui.horizontal_top(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(56.0), egui::Sense::hover());
+            icon(ui, r.center(), glyph, 44.0, t.accent);
+            ui.vertical(|ui| {
+                ui.label(txt(title, 20.0, 600.0, t.ink));
+                ui.add(egui::Label::new(txt(lede, 13.0, 400.0, t.muted)).wrap());
+            });
+        });
+        ui.add_space(14.0);
+    }
+
+    /// How to turn on USB debugging for each phone maker, and what to try when no phone shows up.
+    pub(crate) fn help_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        const USB: &str = "\u{E88E}";
+        let back = self.help_from;
+        let word = match back {
+            Tab::Settings => "Settings",
+            Tab::Restore => "Restore",
+            Tab::Transfer => "Transfer",
+            _ => "Back up",
+        };
+        self.trail(ui, t, word, back);
+        self.doc_head(
+            ui,
+            t,
+            USB,
+            "Turn on USB debugging",
+            "A switch on the phone that lets this PC read apps, contacts and messages. Pick your phone's brand.",
+        );
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+            for (i, (name, _)) in BRANDS.iter().enumerate() {
+                if chip(ui, t, "", name, self.brand == i, 0.0) {
+                    self.brand = i;
+                }
+            }
+        });
+        ui.add_space(12.0);
+        let steps = BRANDS[self.brand].1;
+        info_cards(
+            ui,
+            t,
+            &[
+                ("\u{E8EA}", "Step 1", steps[0]),
+                ("\u{E713}", "Step 2", steps[1]),
+                (
+                    USB,
+                    "Step 3",
+                    "Plug the phone in and tap Allow when it asks.",
+                ),
+            ],
+        );
+        ui.add_space(10.0);
+        ui.label(txt("Phone not showing up?", 15.0, 600.0, t.ink));
+        ui.add_space(8.0);
+        info_cards(
+            ui,
+            t,
+            &[
+                (
+                    USB,
+                    "Try another cable",
+                    "Some only charge. Plug it straight into the computer, not a hub.",
+                ),
+                (
+                    "\u{E72E}",
+                    "Unlock the phone",
+                    "Keep the screen on while it connects.",
+                ),
+                (
+                    "\u{E8B7}",
+                    "Choose File transfer",
+                    "Tap the USB notification on the phone and choose File transfer.",
+                ),
+                (
+                    "\u{E897}",
+                    "No question on the phone?",
+                    "In Developer options, tap Revoke USB debugging authorizations, then plug it in again.",
+                ),
+                (
+                    "\u{E896}",
+                    "USB driver",
+                    "Some phones need one on Windows. Get it from the phone maker's website.",
+                ),
+            ],
+        );
+    }
+
+    /// Privacy or License, opened from Settings: a trail back, a heading, then short cards.
     pub(crate) fn doc_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        ui.set_max_width(ui.available_width().min(600.0));
-        let (title, lede, parts): (&str, &str, &[(&str, &str)]) = if self.tab == Tab::Privacy {
+        let (glyph, title, lede, parts): (&str, &str, &str, &[(&str, &str, &str)]) = if self.tab
+            == Tab::Privacy
+        {
             (
+                "\u{EA18}",
                 "Privacy",
                 "Phone Backup keeps everything on your computer.",
                 &[
                     (
+                        "\u{E8EA}",
                         "What it reads",
                         "The phone you connect, to show what is on it. It copies only what you choose, and only when you start a backup, restore or tool.",
                     ),
                     (
+                        "\u{E88E}",
                         "The helper on your phone",
                         "When a backup includes contacts, call history, messages and the calendar, the app puts a small helper app on the phone to read them, and removes it when the backup ends. If the phone is unplugged first, the next backup removes it. It sends data only to your computer, over the USB debugging connection.",
                     ),
                     (
+                        "\u{E8B7}",
                         "Where your backups go",
                         "Into the backup folder you choose, as ordinary files. They are not encrypted, so anyone who can open that folder can read them. Keep it on a drive only you use.",
                     ),
                     (
+                        "\u{E774}",
                         "The internet",
                         "No account, ads or tracking. The app goes online only when you click Get adb, to download it from Google, or Check for updates, to ask GitHub for the newest version. It sends none of your data; those sites see your internet address, as any website does. Wi-Fi pairing talks only to your phone, on your own network. Links open in your browser, and only when you click them.",
                     ),
                     (
+                        "\u{E9D9}",
                         "Diagnostics",
                         "Save diagnostics writes a text file where you choose. Nothing is sent. Read it before you share it.",
                     ),
                     (
+                        "\u{E74D}",
                         "Removing your data",
                         "Deleting the app does not delete your backups: delete the backup folder to remove them. The app's settings are kept in your Windows user folder (AppData).",
                     ),
@@ -37,46 +143,37 @@ impl App {
             )
         } else {
             (
+                "\u{E8A5}",
                 "License",
                 "Phone Backup is free software under the GNU General Public License, version 3 or later. These are its only terms.",
                 &[
                     (
+                        "\u{E73E}",
                         "You may",
                         "Use it for anything, at home or at work. Read and change its source code. Share copies, changed or not.",
                     ),
                     (
+                        "\u{E72D}",
                         "If you share it",
                         "Include the source code or say where to get it, keep the same license, and mark what you changed.",
                     ),
                     (
+                        "\u{E7BA}",
                         "No warranty",
                         "It comes as is, without any warranty, and the authors are not liable for lost data or other damage. Keep a second copy of anything you cannot lose.",
                     ),
                     (
+                        "\u{E90F}",
                         "Other tools",
                         "adb comes from Google under its own terms, which you accept before it downloads. Screen mirroring uses scrcpy, under the Apache License 2.0.",
                     ),
                 ],
             )
         };
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if ui.link("Settings").clicked() {
-                self.go(Tab::Settings);
-            }
-            ui.label(RichText::new("›").color(t.muted));
-            ui.label(title);
-        });
-        ui.add_space(4.0);
-        ui.label(RichText::new(title).font(semibold(20.0)));
-        ui.add(egui::Label::new(RichText::new(lede).color(t.muted)).wrap());
-        for (head, body) in parts {
-            ui.add_space(12.0);
-            ui.label(RichText::new(*head).font(semibold(14.0)));
-            ui.add(egui::Label::new(*body).wrap());
-        }
+        self.trail(ui, t, "Settings", Tab::Settings);
+        self.doc_head(ui, t, glyph, title, lede);
+        info_cards(ui, t, parts);
         if self.tab == Tab::License {
-            ui.add_space(12.0);
             ui.hyperlink_to(
                 "Read the full license text",
                 "https://www.gnu.org/licenses/gpl-3.0.html",
@@ -196,7 +293,7 @@ impl App {
                 self.brand_steps(ui, t);
                 ui.add(
                     egui::Label::new(muted(
-                        "Rather not use a cable? Connect over Wi-Fi from the Back up page later.",
+                        "Rather not use a cable? Connect over Wi-Fi from the Back up or Settings page later.",
                     ))
                     .wrap(),
                 );

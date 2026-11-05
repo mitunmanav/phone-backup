@@ -57,103 +57,28 @@ impl App {
         (adb, mtp)
     }
 
-    /// The phone, how it is connected, and how to connect one.
-    pub(crate) fn device(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        let busy = self.busy.load(Ordering::Relaxed);
-        let muted = |s: &str| RichText::new(s).color(t.muted);
-        let (adb, mtp) = self.connected();
-        let allow = self
-            .phones
-            .as_ref()
-            .is_some_and(|p| p.contains(&Phone::Unauthorized));
-        // A filled plum dot once a phone is connected, an empty grey ring until then.
-        let heading = |ui: &mut egui::Ui, text: &str| {
-            ui.horizontal(|ui| {
-                let (dot, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
-                if adb.is_empty() && mtp.is_none() {
-                    ui.painter()
-                        .circle_stroke(dot.center(), 4.5, Stroke::new(1.5, t.border));
-                } else {
-                    ui.painter().circle_filled(dot.center(), 5.0, t.accent);
-                }
-                ui.heading(text);
-            });
-        };
-        match (&self.phones, adb.as_slice(), &mtp) {
-            (None, ..) => {
-                heading(ui, "Looking for your phone");
-            }
-            (Some(_), [(model, wifi)], _) => {
-                heading(ui, model);
-                ui.label(if *wifi {
-                    "Connected over Wi-Fi."
-                } else {
-                    "Connected by USB cable."
-                });
-            }
-            (Some(_), [_, ..], _) => {
-                heading(ui, &format!("{} phones connected", adb.len()));
-                ui.label(
-                    adb.iter()
-                        .map(|(m, _)| m.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                ui.label(muted("Each phone gets its own backup folder."));
-            }
-            (Some(_), [], Some(n)) => {
-                heading(ui, n);
-                ui.label(
-                    "Connected in File transfer mode, so only photos and files can be backed up.",
-                );
-                if self.adb_ok {
-                    ui.label(muted(
-                        "Turn on USB debugging to include apps, contacts and messages.",
-                    ));
-                } else {
-                    ui.label(muted("USB debugging also needs adb, Google's free tool."));
-                    self.adb_missing(ui, t);
-                }
-                self.phone_help(ui, t);
-            }
-            (Some(_), [], None) if allow => {
-                heading(ui, "Tap Allow on your phone");
-                ui.label(
-                    "Unlock the phone. It asks whether to allow USB debugging from this computer.",
-                );
-                self.phone_help(ui, t);
-            }
-            (Some(_), [], None) => {
-                heading(ui, "Connect your phone");
-                if self
-                    .phones
-                    .as_ref()
-                    .is_some_and(|p| p.contains(&Phone::UsbFailed))
-                {
-                    ui.label(
-                        RichText::new(
-                            "Windows found a USB device it cannot use. If that is your phone, unplug it, unlock it and plug it in again. Still nothing? Try another cable and USB port: some cables only charge.",
-                        )
-                        .color(t.error),
-                    );
-                }
-                steps(
-                    ui,
-                    t,
-                    &[
-                        "Plug it into this computer with a USB cable.",
-                        "Unlock it, tap the USB notification and choose File transfer.",
-                        "For apps, contacts and messages, also turn on USB debugging.",
-                    ],
-                );
-                if !self.adb_ok {
-                    ui.label(muted("USB debugging also needs adb, Google's free tool."));
-                    self.adb_missing(ui, t);
-                }
-                self.phone_help(ui, t);
-            }
+    /// How the phone with this serial stands, in a few words.
+    pub(crate) fn phone_note(&self, serial: &str) -> String {
+        let found = self.phones.iter().flatten().find_map(|p| match p {
+            Phone::Adb {
+                serial: s,
+                wifi,
+                level,
+                ..
+            } if s == serial => Some((*wifi, *level)),
+            _ => None,
+        });
+        match found {
+            Some((false, Some(l))) => format!("{l}% charged"),
+            Some((true, Some(l))) => format!("{l}% charged, over Wi-Fi"),
+            Some((true, None)) => "Connected over Wi-Fi".into(),
+            _ => "Connected by USB cable".into(),
         }
+    }
 
+    /// One line for each phone low on battery and not charging.
+    pub(crate) fn battery_warnings(&self, ui: &mut egui::Ui, t: &Tokens) {
+        let many = self.connected().0.len() > 1;
         let low: Vec<(String, u8)> = self
             .phones
             .iter()
@@ -168,29 +93,35 @@ impl App {
             })
             .collect();
         for (model, level) in &low {
-            let who = if adb.len() > 1 {
+            let who = if many {
                 format!("{model}: battery")
             } else {
                 "Battery".into()
             };
-            ui.label(
-                RichText::new(format!(
-                    "{who} at {level}% and not charging. Charge the phone so it does not switch off mid-backup."
-                ))
-                .color(t.error),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{who} at {level}% and not charging. Charge the phone so it does not switch off mid-backup."
+                    ))
+                    .color(t.warning),
+                )
+                .wrap(),
             );
         }
+    }
 
-        // Wi-Fi is a one-time setup, so it opens in a dialog instead of stretching this card.
-        ui.add_space(12.0);
+    /// Connect over Wi-Fi and a report button per phone, drawn by `button`, with how the report
+    /// is going.
+    pub(crate) fn phone_actions(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let busy = self.busy.load(Ordering::Relaxed);
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(!busy, egui::Button::new("Connect over Wi-Fi…"))
-                .clicked()
-            {
+            if quiet(ui, t, "Check again", true).clicked() {
+                self.adb_ok = backup::adb_installed();
+            }
+            if quiet(ui, t, "Connect over Wi-Fi…", !busy).clicked() {
                 self.wifi_open = true;
             }
-            self.report_buttons(ui, busy);
+            self.report_buttons(ui, t, busy);
         });
         if self.report_working {
             ui.horizontal(|ui| {
@@ -204,7 +135,7 @@ impl App {
     }
 
     /// A button per ADB phone to save a page about it, for printing or showing a buyer.
-    fn report_buttons(&mut self, ui: &mut egui::Ui, busy: bool) {
+    fn report_buttons(&mut self, ui: &mut egui::Ui, t: &Tokens, busy: bool) {
         let phones: Vec<(String, String)> = self
             .phones
             .iter()
@@ -220,13 +151,7 @@ impl App {
             } else {
                 "Save phone report…".into()
             };
-            if ui
-                // Without a model name, adb gives a long Wi-Fi address instead.
-                .add_enabled(
-                    !busy && !self.report_working,
-                    egui::Button::new(label).truncate(),
-                )
-                .clicked()
+            if quiet(ui, t, &label, !busy && !self.report_working).clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .set_directory(&self.dest)
                     .set_file_name("phone-report.txt")
@@ -245,32 +170,6 @@ impl App {
                 });
             }
         }
-    }
-
-    /// How to turn on USB debugging per phone maker, and what to try when no phone shows up.
-    /// Folded away: most people need neither.
-    pub(crate) fn phone_help(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        // Fixture screenshots open them; there is no click to do it.
-        let open = self.fixture == Fixture::Empty;
-        ui.add_space(4.0);
-        egui::CollapsingHeader::new("How to turn on USB debugging")
-            .default_open(open)
-            .show(ui, |ui| self.brand_steps(ui, t));
-        egui::CollapsingHeader::new("Phone not showing up?")
-            .default_open(open)
-            .show(ui, |ui| {
-                steps(
-                    ui,
-                    t,
-                    &[
-                        "Try another cable: some only charge. Plug it straight into the computer, not a hub.",
-                        "Unlock the phone and keep the screen on.",
-                        "Tap the USB notification on the phone and choose File transfer.",
-                        "With USB debugging on, tap Allow when the phone asks. No question? In Developer options, tap Revoke USB debugging authorizations, then plug it in again.",
-                        "Some phones need a USB driver on Windows: get it from the phone maker's website.",
-                    ],
-                );
-            });
     }
 
     /// USB debugging only helps once adb is on this computer. Google's terms come before its

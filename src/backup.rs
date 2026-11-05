@@ -32,7 +32,7 @@ fn stopped() -> bool {
 }
 
 const STOPPED: &str =
-    "You stopped the backup. Files copied so far are kept; press Back up again to continue.";
+    "You stopped the backup. Files copied so far are kept; press Try again to continue.";
 
 /// What the backup reports back to the window while it runs.
 pub enum Msg {
@@ -78,6 +78,8 @@ pub enum Phone {
         wifi: bool,
         /// The battery level, only when it is under 20% and the phone is not charging.
         battery: Option<u8>,
+        /// The battery level whenever the phone gives it.
+        level: Option<u8>,
     },
     /// Plugged in with USB debugging on, but "Allow" not tapped yet.
     Unauthorized,
@@ -287,6 +289,11 @@ fn free_space(path: &Path) -> Option<u64> {
 #[cfg(not(windows))]
 fn free_space(_: &Path) -> Option<u64> {
     None
+}
+
+/// Free room for `path`, which may not exist yet: the nearest folder that does answers for it.
+pub fn free_on(path: &Path) -> Option<u64> {
+    path.ancestors().find_map(free_space)
 }
 
 /// 1_500_000_000 -> "1.5 GB", 350_000_000 -> "350 MB", 1_500 -> "2 KB"
@@ -528,7 +535,8 @@ mod tests {
                     serial: "emulator-5554".into(),
                     model: "Pixel 8".into(),
                     wifi: false,
-                    battery: None
+                    battery: None,
+                    level: None
                 }
         );
         assert!(matches!(&phones[1], Phone::Adb { wifi: true, model, .. } if model == "SM G991B"));
@@ -568,6 +576,8 @@ mod tests {
         assert_eq!(low_battery(&dump(12, true)), None);
         assert_eq!(low_battery(&dump(20, false)), None);
         assert_eq!(low_battery(""), None);
+        assert_eq!(battery_level(&dump(82, true)), Some(82));
+        assert_eq!(battery_level(""), None);
     }
 
     #[test]

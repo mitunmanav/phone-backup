@@ -1,12 +1,12 @@
 use crate::*;
 
-/// Windows 11 colours: the window, a lighter page beside the page list, lighter panels on it.
+/// Neutral greys with copper as the only hue, apart from warnings and errors.
 pub(crate) struct Tokens {
     /// The window: the page list and the command bar sit on it.
     pub(crate) bg: Color32,
-    /// The page beside the page list: one step lighter than `bg`.
+    /// The page beside the page list: flush with `bg`.
     pub(crate) layer: Color32,
-    /// Panels on the page: one step lighter again.
+    /// Panels and dialogs on the page: one step away from `bg`.
     pub(crate) surface: Color32,
     pub(crate) field: Color32,
     pub(crate) line: Color32,
@@ -19,8 +19,12 @@ pub(crate) struct Tokens {
     /// Fill of the main button and progress, and links: at least 4.5:1 on every surface.
     pub(crate) accent: Color32,
     pub(crate) on_accent: Color32,
+    /// The light running along the backup cable.
+    pub(crate) glint: Color32,
     /// Behind what a finished job says.
     pub(crate) info: Color32,
+    /// Needs attention but nothing has failed, such as low battery.
+    pub(crate) warning: Color32,
     pub(crate) error: Color32,
 }
 
@@ -28,35 +32,39 @@ pub(crate) fn tokens(dark: bool) -> Tokens {
     let hex = |h: u32| Color32::from_rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
     if dark {
         Tokens {
-            bg: hex(0x202020),
-            layer: hex(0x272727),
-            surface: hex(0x2E2E2E),
-            field: hex(0x252525),
-            line: hex(0x3C3C3C),
-            border: hex(0x8A8A8A),
-            hover: hex(0x363636),
-            ink: hex(0xFFFFFF),
+            bg: hex(0x000000),
+            layer: hex(0x000000),
+            surface: hex(0x101010),
+            field: hex(0x000000),
+            line: hex(0x2C2C2C),
+            border: hex(0x8C8C8C),
+            hover: hex(0x1E1E1E),
+            ink: hex(0xF4F4F4),
             muted: hex(0xB0B0B0),
-            accent: hex(0x60CDFF),
-            on_accent: hex(0x00131C),
-            info: hex(0x1F3140),
-            error: hex(0xFF99A4),
+            accent: hex(0xE39C66),
+            on_accent: hex(0x1A0E05),
+            glint: hex(0xFFE0C4),
+            info: hex(0x29211A),
+            warning: hex(0xE8B44C),
+            error: hex(0xF2857B),
         }
     } else {
         Tokens {
-            bg: hex(0xF3F3F3),
-            layer: hex(0xFBFBFB),
+            bg: hex(0xF5F5F5),
+            layer: hex(0xF5F5F5),
             surface: hex(0xFFFFFF),
-            field: hex(0xF9F9F9),
-            line: hex(0xE0E0E0),
-            border: hex(0x8A8A8A),
-            hover: hex(0xEDEDED),
-            ink: hex(0x1A1A1A),
-            muted: hex(0x5E5E5E),
-            accent: hex(0x0067C0),
+            field: hex(0xF5F5F5),
+            line: hex(0xE2E2E2),
+            border: hex(0x858585),
+            hover: hex(0xECECEC),
+            ink: hex(0x141414),
+            muted: hex(0x5C5C5C),
+            accent: hex(0xA5531E),
             on_accent: hex(0xFFFFFF),
-            info: hex(0xEAF2FB),
-            error: hex(0xC42B1C),
+            glint: hex(0xE39C66),
+            info: hex(0xF8F1ED),
+            warning: hex(0x8A5A00),
+            error: hex(0xB3261E),
         }
     }
 }
@@ -69,7 +77,7 @@ pub(crate) fn visuals(dark: bool) -> egui::Visuals {
         egui::Visuals::light()
     };
     v.panel_fill = t.bg;
-    v.window_fill = t.layer;
+    v.window_fill = t.surface;
     v.extreme_bg_color = t.field;
     v.override_text_color = Some(t.ink);
     v.hyperlink_color = t.accent;
@@ -98,7 +106,7 @@ pub(crate) fn visuals(dark: bool) -> egui::Visuals {
     v
 }
 
-/// Windows' "Animation effects" setting. Off: pages and the tab pill change at once.
+/// Windows' "Animation effects" setting. Off: pages and the page marker change at once.
 pub(crate) fn motion_on() -> bool {
     #[cfg(windows)]
     {
@@ -123,4 +131,34 @@ pub(crate) fn motion_on() -> bool {
 
 pub(crate) fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("semibold".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let lum = |c: Color32| {
+            let c = egui::Rgba::from(c);
+            0.2126 * c.r() + 0.7152 * c.g() + 0.0722 * c.b()
+        };
+        let (a, b) = (lum(a), lum(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn text_and_edges_stay_readable_in_both_themes() {
+        for dark in [false, true] {
+            let t = tokens(dark);
+            for back in [t.bg, t.surface, t.field, t.hover, t.info] {
+                for text in [t.ink, t.muted, t.accent, t.warning, t.error] {
+                    assert!(contrast(text, back) >= 4.5, "{text:?} on {back:?}");
+                }
+            }
+            assert!(contrast(t.on_accent, t.accent) >= 4.5);
+            for back in [t.bg, t.surface, t.field] {
+                assert!(contrast(t.border, back) >= 3.0, "edge on {back:?}");
+            }
+        }
+    }
 }

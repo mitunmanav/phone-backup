@@ -1,8 +1,20 @@
 use crate::*;
 
 impl App {
-    /// The phone beside what to do with it (stacked when narrow), then progress and results.
-    /// Returns what the command bar offers; Settings has none.
+    pub(crate) fn logo_id(&mut self, ctx: &egui::Context) -> egui::TextureId {
+        self.logo
+            .get_or_insert_with(|| {
+                let (rgba, n) = logo_pixels();
+                ctx.load_texture(
+                    "logo",
+                    egui::ColorImage::from_rgba_unmultiplied([n, n], &rgba),
+                    egui::TextureOptions::LINEAR,
+                )
+            })
+            .id()
+    }
+
+    /// The page's body. Returns what the command bar offers; Settings has none.
     pub(crate) fn content(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<Cmd> {
         if self.tab == Tab::Settings {
             self.settings_page(ui, t);
@@ -16,40 +28,19 @@ impl App {
             self.doc_page(ui, t);
             return None;
         }
-        let job = |app: &mut Self, ui: &mut egui::Ui| match app.tab {
-            Tab::Backup => app.backup_tab(ui, t),
-            Tab::Transfer => app.transfer_tab(ui, t),
-            _ => app.restore_tab(ui, t),
-        };
-        let cmd = if ui.available_width() >= 640.0 {
-            ui.spacing_mut().item_spacing.x = 16.0;
-            let cmd = ui.columns_const(|[left, right]| {
-                // egui's columns are justified: wrapped text got stretched word gaps and buttons
-                // ran full width, unlike the narrow layout.
-                let plain = Layout::top_down(Align::Min);
-                left.spacing_mut().item_spacing.x = 8.0;
-                right.spacing_mut().item_spacing.x = 8.0;
-                left.with_layout(plain, |ui| {
-                    panel(ui, t, "Phone", "", |ui| self.device(ui, t))
-                });
-                right.with_layout(plain, |ui| job(self, ui)).inner
-            });
-            ui.spacing_mut().item_spacing.x = 8.0;
-            cmd
-        } else {
-            panel(ui, t, "Phone", "", |ui| self.device(ui, t));
-            ui.add_space(8.0);
-            job(self, ui)
-        };
-        if self.busy.load(Ordering::Relaxed) {
-            ui.add_space(8.0);
-            panel(ui, t, "Progress", "", |ui| self.progress(ui, t));
+        if self.tab == Tab::Help {
+            self.help_page(ui, t);
+            return None;
         }
-        match self.tab {
-            Tab::Backup => self.backup_result(ui, t),
-            _ => self.restore_result(ui, t, cmd.plan.as_ref().map(|p| &p.0)),
+        if self.tab == Tab::Backup {
+            let cmd = self.backup_tab(ui, t);
+            self.backup_result(ui, t);
+            return Some(cmd);
         }
-        Some(cmd)
+        if self.tab == Tab::Restore {
+            return Some(self.restore_tab(ui, t));
+        }
+        Some(self.transfer_tab(ui, t))
     }
 
     /// 0 to 1 over `secs` since the page changed, eased out; 1 at once with animations off.
@@ -76,9 +67,12 @@ impl App {
         if tab == Tab::Tools {
             self.scrcpy = tools::scrcpy_path();
         }
+        // These two pages share one result: it must not show up as the other's.
+        if tab != self.tab && tab != Tab::Help && matches!(self.tab, Tab::Restore | Tab::Transfer) {
+            self.restore_msg = None;
+        }
         self.tab = tab;
         self.tab_at = Instant::now();
-        self.pill.1 = self.pill.0;
     }
 
     /// The page's scrolling body, fading in when the page changes, and on Back up, Restore and
@@ -88,7 +82,7 @@ impl App {
         let bar = if self.intro.is_some()
             || matches!(
                 self.tab,
-                Tab::Settings | Tab::Tools | Tab::Read | Tab::Privacy | Tab::License
+                Tab::Settings | Tab::Tools | Tab::Read | Tab::Privacy | Tab::License | Tab::Help
             ) {
             0.0
         } else {
@@ -102,7 +96,7 @@ impl App {
                 // Its lists scroll by themselves, inside the height of the window.
                 if self.tab == Tab::Read {
                     egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(pad, 16))
+                        .inner_margin(egui::Margin::symmetric(pad, 14))
                         .show(ui, |ui| {
                             ui.set_max_width(ui.available_width().min(1040.0));
                             self.read_page(ui, t);
@@ -118,9 +112,25 @@ impl App {
                 }
                 area.show(ui, |ui| {
                     egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(pad, 16))
+                        .inner_margin(egui::Margin::symmetric(pad, 14))
                         .show(ui, |ui| {
-                            ui.set_max_width(ui.available_width().min(1040.0));
+                            // Says the job in plain words, so nobody has to guess the page.
+                            let head = match self.tab {
+                                Tab::Backup => "Copy this phone to your PC",
+                                Tab::Restore => "Put a backup back on a phone",
+                                Tab::Transfer => "Copy one phone straight to another",
+                                Tab::Tools => "Small jobs for your backups",
+                                Tab::Settings => "Settings",
+                                _ => "",
+                            };
+                            if self.intro.is_none() && !head.is_empty() {
+                                let size = if ui.available_width() < 560.0 {
+                                    17.0
+                                } else {
+                                    20.0
+                                };
+                                ui.add(egui::Label::new(txt(head, size, 600.0, t.ink)).truncate());
+                            }
                             match self.intro {
                                 Some(step) => {
                                     self.intro_page(ui, t, step);
@@ -142,58 +152,241 @@ impl App {
         }
     }
 
-    /// The app's name and the page tabs, with an accent pill that slides to the current tab.
-    /// The intro shows the name only.
-    pub(crate) fn top_bar(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        ui.horizontal(|ui| {
-            ui.set_min_height(34.0);
-            // The tabs need all the room on narrow windows.
-            if ui.available_width() >= 560.0 || self.intro.is_some() {
-                ui.label(RichText::new("Phone Backup").font(semibold(14.0)));
+    /// The pages: a side rail when `rail`, a strip across the top when not. The page marker is the
+    /// app's own cable, which swings across and plugs into the page you chose.
+    pub(crate) fn nav(&mut self, ui: &mut egui::Ui, t: &Tokens, area: Rect, rail: bool) {
+        const PHONE: &str = "\u{E8EA}";
+        const FOLDER: &str = "\u{E8B7}";
+        const NAV: [(&str, Tab, &str, &str); 5] = [
+            ("Back up", Tab::Backup, PHONE, FOLDER),
+            ("Restore", Tab::Restore, FOLDER, PHONE),
+            ("Transfer", Tab::Transfer, PHONE, PHONE),
+            ("Tools", Tab::Tools, "\u{E90F}", ""),
+            ("Settings", Tab::Settings, "\u{E713}", ""),
+        ];
+        ui.painter().rect_filled(area, 0, t.surface);
+        if rail {
+            ui.painter()
+                .vline(area.right(), area.y_range(), Stroke::new(1.0, t.line));
+            let logo = self.logo_id(ui.ctx());
+            let at = Rect::from_min_size(area.min + vec2(18.0, 16.0), egui::Vec2::splat(28.0));
+            ui.painter().image(
+                logo,
+                at,
+                Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            put(
+                ui,
+                egui::pos2(at.right() + 10.0, at.center().y),
+                Align2::LEFT_CENTER,
+                txt("Phone Backup", 13.0, 600.0, t.ink),
+                area.width() - 66.0,
+            );
+        } else {
+            ui.painter()
+                .hline(area.x_range(), area.bottom(), Stroke::new(1.0, t.line));
+        }
+        // The page cannot change while a job runs: its progress and Stop are on it.
+        let busy = self.busy.load(Ordering::Relaxed);
+        let mut lit = area;
+        let mut focused = false;
+        for (i, (name, tab, a, b)) in NAV.iter().enumerate() {
+            let rect = if rail {
+                let h = 50.0;
+                // Settings sits apart at the foot: it is not a job.
+                let top = if i == 4 {
+                    area.bottom() - h - 10.0
+                } else {
+                    area.top() + 56.0 + i as f32 * (h + 2.0)
+                };
+                Rect::from_min_size(
+                    egui::pos2(area.left() + 6.0, top),
+                    vec2(area.width() - 22.0, h),
+                )
+            } else {
+                let w = area.width() / 5.0;
+                Rect::from_min_size(area.min + vec2(i as f32 * w, 0.0), vec2(w, area.height()))
+            };
+            let on = self.tab == *tab
+                || (*tab == Tab::Settings && matches!(self.tab, Tab::Privacy | Tab::License))
+                || (*tab == Tab::Tools && self.tab == Tab::Read)
+                || (*tab == self.help_from && self.tab == Tab::Help);
+            let sense = if busy {
+                egui::Sense::hover()
+            } else {
+                egui::Sense::click()
+            };
+            let r = ui.interact(rect, egui::Id::unique(("nav", i)), sense);
+            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, !busy, on, *name));
+            focused |= r.has_focus();
+            let hover = if busy {
+                0.0
+            } else {
+                ui.ctx()
+                    .animate_bool_with_time(r.id.with("h"), r.hovered(), 0.1)
+            };
+            if on {
+                lit = rect;
             }
-            if self.intro.is_some() {
-                return;
+            if hover > 0.0 {
+                ui.painter()
+                    .rect_filled(rect, 6, t.hover.gamma_multiply(hover));
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                // The page cannot change while a job runs: its progress and Stop are on it.
-                ui.add_enabled_ui(!self.busy.load(Ordering::Relaxed), |ui| {
-                    let mut current = None;
-                    // Right to left, so the last tab comes first.
-                    for (tab, label) in [
-                        (Tab::Settings, "Settings"),
-                        (Tab::Tools, "Tools"),
-                        (Tab::Transfer, "Transfer"),
-                        (Tab::Restore, "Restore"),
-                        (Tab::Backup, "Back up"),
-                    ] {
-                        let on = self.tab == tab
-                            || (tab == Tab::Settings
-                                && matches!(self.tab, Tab::Privacy | Tab::License))
-                            || (tab == Tab::Tools && self.tab == Tab::Read);
-                        let r = nav_item(ui, t, label, on);
-                        if on {
-                            current = Some(r.rect);
-                        }
-                        if r.clicked() && self.tab != tab {
-                            self.go(tab);
-                        }
-                    }
-                    if let Some(rect) = current {
-                        let to = rect.center().x;
-                        // 0 until the tabs are first drawn: start in place, not at the left edge.
-                        let from = if self.pill.1 == 0.0 { to } else { self.pill.1 };
-                        let x = from + (to - from) * self.since_switch(ui.ctx(), 0.25);
-                        self.pill = (x, from);
-                        let pill = Rect::from_center_size(
-                            egui::pos2(x, rect.max.y - 1.5),
-                            vec2(16.0, 3.0),
-                        );
-                        ui.painter().rect_filled(pill, 2, t.accent);
-                    }
-                });
-            });
-        });
+            ring(ui, &r, rect, 6, t);
+            let ink = if on {
+                t.accent
+            } else {
+                mix(t.muted, t.ink, hover)
+            };
+            let (size, y, first, second) = if rail {
+                (
+                    17.0,
+                    rect.top() + 17.0,
+                    rect.left() + 18.0,
+                    rect.left() + 52.0,
+                )
+            } else {
+                let off = if b.is_empty() { 0.0 } else { 12.0 };
+                (
+                    15.0,
+                    rect.top() + 16.0,
+                    rect.center().x - off,
+                    rect.center().x + 12.0,
+                )
+            };
+            icon(ui, egui::pos2(first, y), a, size, ink);
+            if !b.is_empty() {
+                icon(ui, egui::pos2(second, y), b, size, ink);
+                let mid = (first + second) / 2.0;
+                // While this page's job runs, a file crosses between its two pictures.
+                if on && busy && self.motion {
+                    let reach = (second - first) * 0.3;
+                    let x = ((ui.input(|i| i.time) as f32 * 0.9).fract() * 2.0 - 1.0) * reach;
+                    ui.painter().rect_filled(
+                        Rect::from_center_size(egui::pos2(mid + x, y), vec2(5.0, 6.0)),
+                        1,
+                        t.accent,
+                    );
+                    ui.ctx().request_repaint_after(Duration::from_millis(33));
+                } else {
+                    icon(ui, egui::pos2(mid, y), "\u{E76C}", 8.0, ink);
+                }
+            }
+            let weight = if on { 600.0 } else { 400.0 };
+            if rail {
+                let text = if on {
+                    t.ink
+                } else {
+                    mix(t.muted, t.ink, hover)
+                };
+                put(
+                    ui,
+                    egui::pos2(rect.left() + 10.0, rect.top() + 29.0),
+                    Align2::LEFT_TOP,
+                    txt(name, 13.0, weight, text),
+                    rect.width() - 34.0,
+                );
+                // Every page has a socket the cable can plug into.
+                ui.painter().circle_stroke(
+                    egui::pos2(rect.right() - 10.0, rect.center().y),
+                    4.0,
+                    Stroke::new(1.0, t.border),
+                );
+            } else {
+                let text = if on { t.ink } else { t.muted };
+                put(
+                    ui,
+                    egui::pos2(rect.center().x, rect.top() + 27.0),
+                    Align2::CENTER_TOP,
+                    txt(name, 12.0, weight, text),
+                    rect.width() - 2.0,
+                );
+            }
+            if r.clicked() && !on {
+                self.go(*tab);
+            }
+            if !busy {
+                r.on_hover_cursor(egui::CursorIcon::PointingHand);
+            }
+        }
+        let ctx = ui.ctx().clone();
+        // Moving by keyboard, the marker goes straight there.
+        let still = !self.motion || focused;
+        let glide = |id: &str, v: f32| {
+            if still {
+                v
+            } else {
+                spring(&ctx, egui::Id::unique(id), v, 0.4)
+            }
+        };
+        let wire = Stroke::new(2.0, t.accent);
+        let p = ui.painter();
+        if rail {
+            let target = lit.center().y;
+            let y = glide("nav-y", target);
+            let pull = ((y - target).abs() / 18.0).min(1.0) * 7.0;
+            let socket = lit.right() - 10.0;
+            let gutter = area.right() - 7.0;
+            let start = egui::pos2(gutter, area.top() + 44.0);
+            let end = egui::pos2(gutter, y - 7.0);
+            let mut line = if still {
+                vec![start, end]
+            } else {
+                rope(
+                    &ctx,
+                    egui::Id::unique("nav-rope"),
+                    18,
+                    start,
+                    end,
+                    1.003,
+                    vec2(-0.012, 0.0),
+                    None,
+                )
+            };
+            let head = egui::pos2(socket + 13.0 + pull, y);
+            // A short rounded bend from the rail's edge into the plug.
+            for k in 1..=6 {
+                let s = k as f32 / 6.0;
+                line.push(
+                    end + (egui::pos2(gutter, y) - end) * 2.0 * s * (1.0 - s)
+                        + (head - end) * s * s,
+                );
+            }
+            p.add(egui::Shape::line(line, wire));
+            p.line_segment([head, head - vec2(7.0, 0.0)], Stroke::new(7.0, t.accent));
+            p.line_segment(
+                [head - vec2(7.0, 0.0), head - vec2(11.0, 0.0)],
+                Stroke::new(3.0, t.border),
+            );
+            if pull < 0.5 {
+                p.circle_filled(egui::pos2(socket, y), 3.0, t.accent);
+            }
+        } else {
+            let target = lit.center().x;
+            let x = glide("nav-x", target);
+            let pull = ((x - target).abs() / 18.0).min(1.0) * 4.0;
+            let base = area.bottom() - 1.5;
+            let (start, end) = (egui::pos2(area.left(), base), egui::pos2(x, base));
+            let line = if still {
+                vec![start, end]
+            } else {
+                rope(
+                    &ctx,
+                    egui::Id::unique("nav-rope-top"),
+                    18,
+                    start,
+                    end,
+                    1.0005,
+                    vec2(0.0, -0.01),
+                    None,
+                )
+            };
+            p.add(egui::Shape::line(line, wire));
+            let tip = egui::pos2(x, base - 7.0 + pull);
+            p.line_segment([egui::pos2(x, base), tip], Stroke::new(6.0, t.accent));
+            p.line_segment([tip, tip - vec2(0.0, 3.0)], Stroke::new(3.0, t.border));
+        }
     }
 
     /// The foot of the page: what will happen on the left, the main button (Stop while a job
@@ -205,36 +398,49 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if self.busy.load(Ordering::Relaxed) {
+                    let busy = self.busy.load(Ordering::Relaxed);
+                    if busy {
                         let stopping = backup::STOP.load(Ordering::Relaxed);
-                        let stop = egui::Button::new(if stopping { "Stopping…" } else { "Stop" })
-                            .min_size(vec2(120.0, 32.0));
-                        if ui
-                            .add_enabled(!stopping && self.job != Job::Delete, stop)
-                            .clicked()
-                        {
+                        let label = if stopping { "Stopping…" } else { "Stop" };
+                        if quiet(ui, t, label, !stopping && self.job != Job::Delete).clicked() {
                             backup::STOP.store(true, Ordering::Relaxed);
                         }
                     } else if primary(ui, t, cmd.label, cmd.enabled) {
-                        match cmd.plan {
-                            _ if self.tab == Tab::Transfer => self.transfer(ui.ctx(), cmd.plan),
-                            Some((plan, check)) => self.restore(ui.ctx(), plan, check),
-                            None => self.start(ui.ctx()),
+                        match (cmd.open, cmd.plan) {
+                            (Some(path), _) => {
+                                let _ = Command::new("explorer").arg(path).spawn();
+                            }
+                            (_, plan) if self.tab == Tab::Transfer => self.transfer(ui.ctx(), plan),
+                            (_, Some((plan, check))) => self.restore(ui.ctx(), plan, check),
+                            _ => self.start(ui.ctx()),
+                        }
+                    }
+                    // A finished or stopped job must not be the end of the road.
+                    if cmd.again && !busy {
+                        ui.add_space(4.0);
+                        if link(ui, t, "Start again") {
+                            if self.tab == Tab::Backup {
+                                self.result = None;
+                            } else {
+                                self.restore_msg = None;
+                                self.preview = None;
+                            }
                         }
                     }
                     ui.add_space(4.0);
                     ui.with_layout(Layout::top_down(Align::Min), |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.add(
-                            egui::Label::new(RichText::new(&cmd.title).font(semibold(14.0))).wrap(),
-                        );
+                        // Level with the button's centre, with or without a note.
+                        ui.add_space(if cmd.note.is_empty() { 13.0 } else { 5.0 });
+                        // One line each while a job runs: its words change with every file, and
+                        // the bar must not jump as they do.
+                        let line = |text: RichText| {
+                            let label = egui::Label::new(text);
+                            if busy { label.truncate() } else { label.wrap() }
+                        };
+                        ui.add(line(txt(&cmd.title, 13.0, 600.0, t.ink)));
                         if !cmd.note.is_empty() {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&cmd.note).color(t.muted).size(12.0),
-                                )
-                                .wrap(),
-                            );
+                            ui.add(line(txt(&cmd.note, 12.0, 400.0, t.muted)));
                         }
                     });
                 });

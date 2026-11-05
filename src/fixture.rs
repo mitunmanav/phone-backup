@@ -8,6 +8,7 @@ pub(crate) enum Fixture {
     Empty,
     One,
     Many,
+    Pixel,
 }
 
 impl App {
@@ -30,6 +31,7 @@ impl App {
             model: model.into(),
             wifi,
             battery,
+            level: battery.or(Some(82)),
         };
         self.restore_msg = None;
         self.export_msg = None;
@@ -146,6 +148,26 @@ impl App {
                 self.phones = Some(vec![Phone::Mtp { name: "Jo".into() }]);
                 self.backups = vec![saved("Jo", true, false, Some(1))];
             }
+            // One ordinary phone with USB debugging and a few backups: the everyday case.
+            Fixture::Pixel => {
+                self.phones = Some(vec![adb("Pixel 8 Pro", false, None)]);
+                self.backups = vec![
+                    saved("Pixel 8 Pro", true, true, Some(0)),
+                    saved("Pixel 8 Pro", true, true, Some(30)),
+                    saved("Galaxy S21", true, false, Some(190)),
+                ];
+                let list = [
+                    ("DCIM/Camera/a.jpg", 31_400_000_000),
+                    ("DCIM/Camera/a.mp4", 11_200_000_000),
+                    ("Music/a.mp3", 2_100_000_000),
+                    ("Documents/a.pdf", 3_500_000_000),
+                    ("Download/a.zip", 3_100_000_000),
+                ]
+                .iter()
+                .map(|(p, s)| (p.to_string(), *s))
+                .collect();
+                self.sizes = Some(("Pixel 8 Pro-serial".into(), Some((list, 4_300_000_000))));
+            }
             Fixture::Many => {
                 self.phones = Some(vec![
                     adb("Pixel 8", false, None),
@@ -158,6 +180,14 @@ impl App {
             }
         }
         self.chosen = self.backups.first().map(|b| b.path.clone());
+        self.preview = None;
+        if f != Fixture::Real {
+            self.scanned = self.dest.clone();
+        }
+    }
+
+    /// As if the chosen backup had just been checked.
+    pub(crate) fn fixture_checked(&mut self) {
         let first_adb = self.phones.iter().flatten().find_map(|p| match p {
             Phone::Adb { serial, .. } => Some(serial.clone()),
             _ => None,
@@ -166,8 +196,5 @@ impl App {
             let plan = (serial, path, true, true, None);
             (plan, Ok("Files: will copy 128,456 files (214.7 GB) to the phone. 1,284 files already on the phone will be skipped; nothing is replaced. This phone has no SD card named 3A1F-0C2B or 9C33-6BD5, so those files cannot be restored.\nApps: will install 212 of 214, for example com.northwindindustries.holdings.expensereports.enterprise, com.whatsapp, org.mozilla.firefox. The rest are already on the phone.".into()))
         });
-        if f != Fixture::Real {
-            self.scanned = self.dest.clone();
-        }
     }
 }

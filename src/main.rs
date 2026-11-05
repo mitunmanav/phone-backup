@@ -31,6 +31,10 @@ struct Cmd {
     enabled: bool,
     /// Restore only: what the main button runs, and whether it only checks.
     plan: Option<(Plan, bool)>,
+    /// A finished job: the main button opens this instead of running anything.
+    open: Option<PathBuf>,
+    /// A finished or stopped job: offer Start again, so it is not the end of the road.
+    again: bool,
 }
 
 /// Debug builds opened on PB_FIXTURE test data: they must not save their fake folder, zoom or
@@ -44,7 +48,15 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Phone Backup")
             .with_inner_size([960.0, 700.0])
-            .with_min_inner_size([360.0, 480.0]),
+            .with_min_inner_size([360.0, 540.0])
+            .with_icon({
+                let (rgba, n) = logo_pixels();
+                egui::IconData {
+                    rgba,
+                    width: n as u32,
+                    height: n as u32,
+                }
+            }),
         persist_window: !test_run(),
         ..Default::default()
     };
@@ -72,6 +84,8 @@ enum Tab {
     /// Pages opened from Settings.
     Privacy,
     License,
+    /// How to turn on USB debugging, opened from Back up or Settings.
+    Help,
 }
 
 /// What the running (or last) job is.
@@ -128,6 +142,10 @@ struct App {
     status: String,
     now: String,
     fraction: Option<f32>,
+    /// How far the last job had got when it ended.
+    stopped_at: Option<f32>,
+    /// The folder last asked about and the room left for it; None after a backup changes that.
+    free: Option<(PathBuf, Option<u64>)>,
     /// When the progress bar last appeared, for the time left.
     progress_from: Instant,
     result: Option<Result<Vec<Summary>, String>>,
@@ -141,6 +159,8 @@ struct App {
     qr: Option<qrcodegen::QrCode>,
     /// Which phone maker's USB debugging steps are shown.
     brand: usize,
+    /// The page the help page goes back to.
+    help_from: Tab,
     /// Height of the command bar last frame; its text wraps on narrow windows.
     bar_h: f32,
     /// Asking whether to stop a running backup before closing.
@@ -148,16 +168,18 @@ struct App {
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
     tab: Tab,
-    /// When the page (or intro step) last changed, for its fade and the tab pill's slide.
+    /// When the page (or intro step) last changed, for its fade.
     tab_at: Instant,
-    /// Where the tab pill was drawn last frame, and where its current slide started.
-    pill: (f32, f32),
+    /// The app's mark in the side rail, made the first time it is drawn.
+    logo: Option<egui::TextureHandle>,
     /// Windows' "Animation effects" setting.
     motion: bool,
     /// The first-run step on screen; None once it is done or skipped.
     intro: Option<usize>,
-    /// Play the Windows sound when a backup or restore ends.
+    /// Play a sound when a backup or restore ends.
     sound: bool,
+    /// Which of `backup::SOUNDS` to play.
+    sound_pick: usize,
     /// The report of the last restore, for its Open report button.
     restore_report: Option<PathBuf>,
     job: Job,
@@ -193,6 +215,8 @@ struct App {
     tool_tx: mpsc::Sender<tools::Done>,
     tool_rx: mpsc::Receiver<tools::Done>,
     /// The Tools panel whose job is running, and what it says.
+    /// Which tool the Tools page shows.
+    tool: usize,
     tool_busy: Option<&'static str>,
     tool_status: String,
     /// What the last tool said, and in which panel.
@@ -234,14 +258,30 @@ impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         let ctx = &cc.egui_ctx;
 
-        // Windows' own Segoe UI, read from the system; egui's built-in font if it is missing.
+        // Windows 11's Segoe UI Variable, read from the system. Windows 10 only has the older
+        // Segoe UI files; egui's built-in font if those are missing too.
         let mut fonts = egui::FontDefinitions::default();
         let font_dir = PathBuf::from(env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
             .join("Fonts");
-        if let Ok(bytes) = fs::read(font_dir.join("segoeui.ttf")) {
-            fonts
-                .font_data
-                .insert("segoe".into(), Arc::new(egui::FontData::from_owned(bytes)));
+        let read = |file: &str| fs::read(font_dir.join(file)).ok();
+        let weight = |bytes: Vec<u8>, wght: f32| {
+            egui::FontData::from_owned(bytes).tweak(egui::FontTweak {
+                coords: egui::epaint::text::VariationCoords::new([
+                    (b"wght", wght),
+                    (b"opsz", 14.0),
+                ]),
+                ..Default::default()
+            })
+        };
+        let (regular, semibold_face) = match read("SegUIVar.ttf") {
+            Some(var) => (Some(weight(var.clone(), 400.0)), Some(weight(var, 600.0))),
+            None => (
+                read("segoeui.ttf").map(egui::FontData::from_owned),
+                read("seguisb.ttf").map(egui::FontData::from_owned),
+            ),
+        };
+        if let Some(face) = regular {
+            fonts.font_data.insert("segoe".into(), Arc::new(face));
             fonts
                 .families
                 .get_mut(&FontFamily::Proportional)
@@ -249,16 +289,25 @@ impl App {
                 .insert(0, "segoe".into());
         }
         let mut bold = fonts.families[&FontFamily::Proportional].clone();
-        if let Ok(bytes) = fs::read(font_dir.join("seguisb.ttf")) {
-            fonts.font_data.insert(
-                "segoe-sb".into(),
-                Arc::new(egui::FontData::from_owned(bytes)),
-            );
+        if let Some(face) = semibold_face {
+            fonts.font_data.insert("segoe-sb".into(), Arc::new(face));
             bold.insert(0, "segoe-sb".into());
         }
         fonts
             .families
             .insert(FontFamily::Name("semibold".into()), bold);
+        // Windows 11's icon font, or Windows 10's. A family must exist or egui panics, so without
+        // either the icons fall back to text.
+        let mut icons = fonts.families[&FontFamily::Proportional].clone();
+        if let Some(face) = read("SegoeIcons.ttf").or_else(|| read("SegMDL2.ttf")) {
+            fonts
+                .font_data
+                .insert("icons".into(), Arc::new(egui::FontData::from_owned(face)));
+            icons.insert(0, "icons".into());
+        }
+        fonts
+            .families
+            .insert(FontFamily::Name("icons".into()), icons);
         ctx.set_fonts(fonts);
 
         ctx.all_styles_mut(|s| {
@@ -273,6 +322,9 @@ impl App {
             .into();
             // Desktop sizes: 32 px controls, not 44 px touch targets.
             s.spacing.interact_size.y = 32.0;
+            if !motion_on() {
+                s.animation_time = 0.0;
+            }
             s.spacing.button_padding = vec2(12.0, 5.0);
             s.spacing.item_spacing = vec2(8.0, 8.0);
             s.spacing.icon_width = 18.0;
@@ -360,6 +412,8 @@ impl App {
             status: String::new(),
             now: String::new(),
             fraction: None,
+            stopped_at: None,
+            free: None,
             progress_from: Instant::now(),
             result: None,
             pair_addr: cc
@@ -376,12 +430,13 @@ impl App {
             wifi_open: false,
             qr: None,
             brand: 0,
+            help_from: Tab::Backup,
             bar_h: 64.0,
             confirm_close: false,
             closing: false,
             tab: Tab::Backup,
             tab_at: Instant::now(),
-            pill: (0.0, 0.0),
+            logo: None,
             motion: motion_on(),
             // A first run has no saved backup folder yet.
             intro: cc
@@ -389,6 +444,12 @@ impl App {
                 .is_some_and(|s| s.get_string("dest").is_none())
                 .then_some(0),
             sound: cc.storage.and_then(|s| s.get_string("sound")).as_deref() == Some("1"),
+            sound_pick: cc
+                .storage
+                .and_then(|s| s.get_string("sound_pick"))
+                .and_then(|s| s.parse().ok())
+                .filter(|&i| i < backup::SOUNDS.len())
+                .unwrap_or(0),
             restore_report: None,
             job: Job::Backup,
             verified: None,
@@ -411,6 +472,7 @@ impl App {
             tidy_msg: None,
             tool_tx,
             tool_rx,
+            tool: 0,
             tool_busy: None,
             tool_status: String::new(),
             tool_msg: None,
@@ -424,10 +486,10 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [settings] [sound] [privacy] [license] [intro[=<step>]]
+        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         // update=working|new|same|failed also shows that result of Check for updates.
         if cfg!(debug_assertions) && test_run() {
@@ -437,6 +499,7 @@ impl App {
                 match word {
                     "privacy" => app.tab = Tab::Privacy,
                     "license" => app.tab = Tab::License,
+                    "help" => app.tab = Tab::Help,
                     _ if word.starts_with("intro") => {
                         app.intro = Some(word.get(6..).and_then(|n| n.parse().ok()).unwrap_or(0))
                     }
@@ -444,6 +507,8 @@ impl App {
                     "empty" => app.load_fixture(Fixture::Empty),
                     "one" => app.load_fixture(Fixture::One),
                     "many" => app.load_fixture(Fixture::Many),
+                    "pixel" => app.load_fixture(Fixture::Pixel),
+                    "checked" => app.fixture_checked(),
                     "restore" => app.tab = Tab::Restore,
                     "transfer" => app.tab = Tab::Transfer,
                     "delete" | "rename" | "copy" => {
@@ -465,7 +530,9 @@ impl App {
                         });
                     }
                     "tools" => app.tab = Tab::Tools,
+                    _ if word.starts_with("tool=") => app.tool = word[5..].parse().unwrap_or(0),
                     "settings" => app.tab = Tab::Settings,
+                    "sound" => app.sound = true,
                     _ if word.starts_with("update=") => {
                         app.update_working = word == "update=working";
                         app.update = match &word[7..] {
@@ -500,10 +567,41 @@ impl App {
                     }
                     "busy" => {
                         app.busy.store(true, Ordering::Relaxed);
+                        if app.tab != Tab::Backup {
+                            app.job = Job::Restore;
+                        }
                         app.status = "Copying 48,213 of 128,456 files…".into();
                         app.now = r"/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4".into();
                         app.fraction = Some(0.375);
                         app.progress_from = Instant::now() - Duration::from_secs(431);
+                    }
+                    "done" if app.tab != Tab::Backup => {
+                        app.restore_msg = Some(Ok("Copied 1,093 files back to the phone. 47,120 files were already there.".into()));
+                        app.restore_report = Some(app.dest.join("restore-report.txt"));
+                    }
+                    "stopped" if app.tab != Tab::Backup => {
+                        app.restore_msg = Some(Err(
+                            "You stopped the restore. Files copied so far stay on the phone."
+                                .into(),
+                        ));
+                        app.stopped_at = Some(0.62);
+                    }
+                    "done" => {
+                        app.result = Some(Ok(vec![Summary {
+                            name: "Phone".into(),
+                            root: app.dest.clone(),
+                            files: 128_456,
+                            copied: 1_093,
+                            errors: vec![],
+                            data: vec![("Contacts", true), ("Messages", true)],
+                            notes: vec![],
+                            full: true,
+                            pick: Pick::default(),
+                        }]));
+                    }
+                    "stopped" => {
+                        app.result = Some(Err("You stopped the backup. Files copied so far are kept; press Try again to continue.".into()));
+                        app.stopped_at = Some(0.62);
                     }
                     _ if word.starts_with("zoom=") => {
                         ctx.set_zoom_factor(word[5..].parse().unwrap_or(1.0))
@@ -546,7 +644,7 @@ impl App {
     /// in the background.
     fn finished(&self, ctx: &egui::Context) {
         if self.sound {
-            backup::beep();
+            backup::play_sound(self.sound_pick);
         }
         if !ctx.input(|i| i.focused) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -656,6 +754,7 @@ impl eframe::App for App {
                     Some(plan) => self.preview = Some((plan, r)),
                     None => {
                         self.restore_msg = Some(r);
+                        self.stopped_at = self.fraction;
                         self.finished(ui.ctx());
                     }
                 },
@@ -669,6 +768,8 @@ impl eframe::App for App {
                 }
                 Msg::Done(r) => {
                     self.result = Some(r);
+                    self.stopped_at = self.fraction;
+                    self.free = None;
                     self.finished(ui.ctx());
                 }
                 Msg::Verified(folder, r) => {
@@ -776,10 +877,12 @@ impl eframe::App for App {
         self.confirm_dialog(ui.ctx());
 
         // Esc leaves Privacy and License for Settings, where they open from.
-        if matches!(self.tab, Tab::Privacy | Tab::License)
-            && ui.input(|i| i.key_pressed(egui::Key::Escape))
-        {
-            self.go(Tab::Settings);
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            match self.tab {
+                Tab::Privacy | Tab::License => self.go(Tab::Settings),
+                Tab::Help => self.go(self.help_from),
+                _ => {}
+            }
         }
         // With the search box focused, Esc only leaves the box.
         if self.tab == Tab::Read
@@ -788,41 +891,25 @@ impl eframe::App for App {
         {
             self.go(Tab::Tools);
         }
-        let pad: i8 = if ui.available_width() >= 640.0 {
-            28
+        // A side rail when there is room, a strip across the top when not, nothing on the intro.
+        let full = ui.max_rect();
+        let main = if self.intro.is_some() {
+            full
+        } else if full.width() >= 720.0 {
+            const RAIL: f32 = 164.0;
+            let area = Rect::from_min_size(full.min, vec2(RAIL, full.height()));
+            self.nav(ui, &t, area, true);
+            full.with_min_x(area.right())
         } else {
-            16
+            let area = Rect::from_min_size(full.min, vec2(full.width(), 54.0));
+            self.nav(ui, &t, area, false);
+            full.with_min_y(area.bottom())
         };
-        egui::Panel::top("bar")
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin {
-                left: pad,
-                right: 8,
-                top: 6,
-                bottom: 0,
-            }))
-            .show(ui, |ui| self.top_bar(ui, &t));
-        egui::Frame::central_panel(ui.style())
-            .fill(t.bg)
-            .inner_margin(0)
-            .show(ui, |ui| {
-                // A lighter page under the tabs; its side and bottom edges sit just outside the
-                // window.
-                egui::Frame::new()
-                    .fill(t.layer)
-                    .stroke(Stroke::new(1.0, t.line))
-                    .outer_margin(egui::Margin {
-                        left: -1,
-                        top: 0,
-                        right: -1,
-                        bottom: -1,
-                    })
-                    .show(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        self.page(ui, &t, pad);
-                    });
-            });
+        let pad: i8 = if main.width() < 560.0 { 16 } else { 32 };
+        ui.painter().rect_filled(main, 0, t.layer);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
+            self.page(ui, &t, pad);
+        });
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -838,6 +925,7 @@ impl eframe::App for App {
         storage.set_string("pair_addr", self.pair_addr.clone());
         storage.set_string("connect_addr", self.connect_addr.clone());
         storage.set_string("sound", bit(self.sound).to_string());
+        storage.set_string("sound_pick", self.sound_pick.to_string());
         storage.set_string(
             "pick",
             [self.pick.files, self.pick.apps, self.pick.data]

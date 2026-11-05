@@ -56,14 +56,19 @@ pub fn detect() -> Vec<Phone> {
     }
     for p in &mut phones {
         if let Phone::Adb {
-            serial, battery, ..
+            serial,
+            battery,
+            level,
+            ..
         } = p
         {
             // Not stoppable like `shell`, for the same reason as phone_id.
             let out = logged(adb().args(["-s", serial, "shell", "dumpsys battery"]))
                 .map(|o| o.stdout)
                 .unwrap_or_default();
-            *battery = low_battery(&String::from_utf8_lossy(&out));
+            let out = String::from_utf8_lossy(&out);
+            *battery = low_battery(&out);
+            *level = battery_level(&out);
         }
     }
     if !phones.is_empty() {
@@ -136,6 +141,7 @@ pub(super) fn parse_adb_devices(text: &str) -> Vec<Phone> {
                     model,
                     wifi,
                     battery: None,
+                    level: None,
                 });
             }
             // "authorizing" is the moment the Allow prompt is on screen.
@@ -144,6 +150,13 @@ pub(super) fn parse_adb_devices(text: &str) -> Vec<Phone> {
         }
     }
     phones
+}
+
+/// The level from `dumpsys battery`.
+pub(super) fn battery_level(dumpsys: &str) -> Option<u8> {
+    dumpsys
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("level: ")?.parse().ok())
 }
 
 /// The level from `dumpsys battery` when it is under 20% and no charger (AC, USB, wireless,
@@ -479,7 +492,7 @@ pub(crate) fn connected(serial: &str) -> bool {
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "device")
 }
 
-pub(super) const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Back up again to continue.";
+pub(super) const DISCONNECTED: &str = "The phone was disconnected. Files copied so far are kept; plug it back in and press Try again to continue.";
 
 /// Why the running job must end now: Stop was pressed or the phone is gone. Output read from the
 /// phone just before this answered Some is cut short and must not be saved.
