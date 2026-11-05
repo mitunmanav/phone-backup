@@ -135,6 +135,31 @@ pub(crate) fn section(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).font(semibold(14.0)));
 }
 
+/// A part of the page that scrolls by itself. Reaches 10 points out on both sides, so the edges of
+/// chosen cards are not cut.
+pub(crate) fn own_scroll(
+    ui: &mut egui::Ui,
+    salt: &str,
+    height: f32,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let r = Rect::from_min_size(
+        ui.cursor().min - vec2(10.0, 0.0),
+        vec2(ui.available_width() + 20.0, height),
+    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt(salt)
+            .auto_shrink(false)
+            .max_height(height)
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(10, 0))
+                    .show(ui, add);
+            });
+    });
+}
+
 /// Numbered steps, each wrapped line lined up under its first.
 pub(crate) fn steps(ui: &mut egui::Ui, t: &Tokens, list: &[&str]) {
     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 9.0);

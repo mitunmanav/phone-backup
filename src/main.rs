@@ -548,10 +548,24 @@ impl App {
                     }
                     "busy" => {
                         app.busy.store(true, Ordering::Relaxed);
+                        if app.tab != Tab::Backup {
+                            app.job = Job::Restore;
+                        }
                         app.status = "Copying 48,213 of 128,456 files…".into();
                         app.now = r"/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4".into();
                         app.fraction = Some(0.375);
                         app.progress_from = Instant::now() - Duration::from_secs(431);
+                    }
+                    "done" if app.tab != Tab::Backup => {
+                        app.restore_msg = Some(Ok("Copied 1,093 files back to the phone. 47,120 files were already there.".into()));
+                        app.restore_report = Some(app.dest.join("restore-report.txt"));
+                    }
+                    "stopped" if app.tab != Tab::Backup => {
+                        app.restore_msg = Some(Err(
+                            "You stopped the restore. Files copied so far stay on the phone."
+                                .into(),
+                        ));
+                        app.stopped_at = Some(0.62);
                     }
                     "done" => {
                         app.result = Some(Ok(vec![Summary {
@@ -705,6 +719,7 @@ impl eframe::App for App {
                     Some(plan) => self.preview = Some((plan, r)),
                     None => {
                         self.restore_msg = Some(r);
+                        self.stopped_at = self.fraction;
                         self.finished(ui.ctx());
                     }
                 },

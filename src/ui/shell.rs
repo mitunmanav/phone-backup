@@ -25,10 +25,10 @@ impl App {
             self.backup_result(ui, t);
             return Some(cmd);
         }
-        let job = |app: &mut Self, ui: &mut egui::Ui| match app.tab {
-            Tab::Transfer => app.transfer_tab(ui, t),
-            _ => app.restore_tab(ui, t),
-        };
+        if self.tab == Tab::Restore {
+            return Some(self.restore_tab(ui, t));
+        }
+        let job = |app: &mut Self, ui: &mut egui::Ui| app.transfer_tab(ui, t);
         let cmd = if ui.available_width() >= 640.0 {
             ui.spacing_mut().item_spacing.x = 16.0;
             let cmd = ui.columns_const(|[left, right]| {
@@ -423,7 +423,12 @@ impl App {
                     if cmd.again && !busy {
                         ui.add_space(4.0);
                         if link(ui, t, "Start again") {
-                            self.result = None;
+                            if self.tab == Tab::Backup {
+                                self.result = None;
+                            } else {
+                                self.restore_msg = None;
+                                self.preview = None;
+                            }
                         }
                     }
                     ui.add_space(4.0);

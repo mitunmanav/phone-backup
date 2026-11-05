@@ -1,237 +1,683 @@
+use super::backup_tab::{Cord, Phase};
 use crate::*;
 
+/// "Today", "3 days ago": when a backup was made, to start a line.
+fn saved_when(days: Option<u64>) -> String {
+    let when = days_ago(days);
+    let mut letters = when.chars();
+    letters.next().map_or(String::new(), |first| {
+        first.to_uppercase().chain(letters).collect()
+    })
+}
+
+/// One saved backup, drawn as a folder. The chosen one opens to show what you can do with it, so
+/// nothing hides in a menu. Returns if it was pressed, the action pressed, and where its middle is.
+#[allow(clippy::too_many_arguments)]
+fn backup_card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    b: &backup::Saved,
+    label: &str,
+    on: bool,
+    locked: bool,
+    many: bool,
+    motion: bool,
+) -> (bool, Option<usize>, f32) {
+    const ACTIONS: [(&str, &str, &str); 6] = [
+        ("\u{E838}", "Open", "Opens the backup's folder."),
+        (
+            "\u{E8AC}",
+            "Rename",
+            "Gives the backup's folder a new name.",
+        ),
+        (
+            "\u{E9D5}",
+            "Verify",
+            "Checks every file against its checksum. Nothing changes.",
+        ),
+        (
+            "\u{EDE1}",
+            "Export",
+            "Saves contacts, calls and messages as files you can open, print or import, and sorts photos into year and month folders. The backup itself is not changed.",
+        ),
+        (
+            "\u{E8C8}",
+            "Copy",
+            "Copies this backup's files into another backup.",
+        ),
+        ("\u{E74D}", "Delete", "Moves the backup to the Recycle Bin."),
+    ];
+    let w = ui.available_width();
+    let id = egui::Id::unique(("backup", &b.path));
+    let open = if motion {
+        ui.ctx()
+            .animate_bool_with_easing(id.with("open"), on, egui::emath::easing::cubic_out)
+    } else {
+        on as u8 as f32
+    };
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 56.0 + 46.0 * open), egui::Sense::hover());
+    let top = Rect::from_min_size(rect.min, vec2(w, 56.0));
+    let sense = if locked {
+        egui::Sense::hover()
+    } else {
+        egui::Sense::click()
+    };
+    let r = ui.interact(top, id, sense);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, !locked, on, label));
+    let edge = if on {
+        Stroke::new(2.0, t.accent)
+    } else if r.hovered() && !locked {
+        Stroke::new(1.0, t.border)
+    } else {
+        Stroke::new(1.0, t.line)
+    };
+    ui.painter()
+        .rect(rect, 6, t.surface, edge, StrokeKind::Inside);
+    ring(ui, &r, rect, 6, t);
+    let folder_ink = if on { t.accent } else { t.muted };
+    icon(
+        ui,
+        egui::pos2(rect.left() + 26.0, top.center().y),
+        ICON_FOLDER,
+        24.0,
+        folder_ink,
+    );
+    let size_at = egui::pos2(rect.right() - 14.0, top.top() + 11.0);
+    let bytes = b.bytes.map_or(String::new(), size);
+    let shown = put(
+        ui,
+        size_at,
+        Align2::RIGHT_TOP,
+        txt(&bytes, 13.0, 400.0, t.ink),
+        80.0,
+    );
+    let tx = rect.left() + 50.0;
+    let name_at = egui::pos2(tx, top.top() + 11.0);
+    put(
+        ui,
+        name_at,
+        Align2::LEFT_TOP,
+        txt(label, 13.0, 600.0, t.ink),
+        shown.left() - tx - 10.0,
+    );
+    let holds = match (b.files, b.apps) {
+        (true, true) => "Photos, files and apps",
+        (true, false) => "Photos and files",
+        _ => "Apps",
+    };
+    let line = format!("{}: {holds}", saved_when(b.age_days));
+    let line_at = egui::pos2(tx, top.top() + 30.0);
+    put(
+        ui,
+        line_at,
+        Align2::LEFT_TOP,
+        txt(&line, 12.0, 400.0, t.muted),
+        rect.right() - tx - 14.0,
+    );
+    let mut action = None;
+    if open > 0.5 {
+        let fade = (open - 0.5) * 2.0;
+        let cell_w = (w - 12.0) / ACTIONS.len() as f32;
+        for (k, (glyph, name, hint)) in ACTIONS.iter().enumerate() {
+            // Copying needs another backup to copy into.
+            let live = !locked && (k != 4 || many);
+            let cell = Rect::from_min_size(
+                rect.min + vec2(6.0 + k as f32 * cell_w, 54.0),
+                vec2(cell_w, 46.0),
+            );
+            let sense = if live {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            };
+            let a = ui.interact(cell, id.with(k), sense).on_hover_text(*hint);
+            a.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, live, *name));
+            if a.hovered() && live {
+                ui.painter().rect_filled(cell, 6, t.hover);
+            }
+            ring(ui, &a, cell, 6, t);
+            let ink = if live { t.ink } else { t.muted }.gamma_multiply(fade);
+            icon(ui, cell.center_top() + vec2(0.0, 15.0), glyph, 14.0, ink);
+            put(
+                ui,
+                cell.center_top() + vec2(0.0, 25.0),
+                Align2::CENTER_TOP,
+                txt(name, 12.0, 400.0, ink),
+                cell_w - 2.0,
+            );
+            if a.clicked() {
+                action = Some(k);
+            }
+        }
+    }
+    (r.clicked(), action, top.center().y)
+}
+
+const ICON_PHONE: &str = "\u{E8EA}";
+const ICON_FOLDER: &str = "\u{E8B7}";
+
 impl App {
+    /// How the running or last restore stands. A check is not a restore.
+    pub(crate) fn restore_phase(&self) -> Phase {
+        match &self.restore_msg {
+            _ if self.busy.load(Ordering::Relaxed) => {
+                if self.job == Job::Restore && self.checking.is_none() {
+                    Phase::Running
+                } else {
+                    Phase::Idle
+                }
+            }
+            None => Phase::Idle,
+            Some(Ok(_)) => Phase::Done(0),
+            Some(Err(_)) => Phase::Stopped,
+        }
+    }
+
+    /// What the main button would restore, while there is something to restore.
+    fn restore_plan(&self) -> Option<Plan> {
+        let phone = self.adb_phone()?;
+        let chosen = self
+            .backups
+            .iter()
+            .find(|b| Some(&b.path) == self.chosen.as_ref())?;
+        let only = self
+            .only
+            .as_ref()
+            .filter(|(folder, ..)| *folder == chosen.path)
+            .map(|(_, picked, _)| picked.clone());
+        // A choice the chosen backup has nothing for is ignored, not run.
+        let files =
+            self.restore_files && chosen.files && only.as_ref().is_none_or(|o| !o.is_empty());
+        let apps = self.restore_apps && chosen.apps;
+        (files || apps).then(|| {
+            (
+                phone.0,
+                chosen.path.clone(),
+                files,
+                apps,
+                only.filter(|_| files),
+            )
+        })
+    }
+
+    /// The page: the backups beside the phone when there is room, the cable across the top when not.
     pub(crate) fn restore_tab(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Cmd {
-        let busy = self.busy.load(Ordering::Relaxed);
-        let muted = |s: &str| RichText::new(s).color(t.muted);
-        let phone = self.phones.iter().flatten().find_map(|p| match p {
-            Phone::Adb { serial, model, .. } => Some((serial.clone(), model.clone())),
-            _ => None,
+        let plan = self.restore_plan();
+        let width = ui.available_width();
+        if width >= 730.0 {
+            self.restore_columns(ui, t, plan.as_ref());
+        } else {
+            self.restore_band(ui, t, plan.as_ref());
+        }
+        self.restore_cmd(plan)
+    }
+
+    fn restore_columns(&mut self, ui: &mut egui::Ui, t: &Tokens, plan: Option<&Plan>) {
+        let top = ui.cursor().min;
+        let height = (ui.clip_rect().bottom() - top.y - 14.0).max(240.0);
+        let area = Rect::from_min_size(top, vec2(ui.available_width(), height));
+        ui.allocate_rect(area, egui::Sense::hover());
+        let gutter = (area.width() * 0.16).clamp(130.0, 280.0);
+        let col = (area.width() - gutter) / 2.0;
+        let list = Rect::from_min_size(area.min, vec2(col, height));
+        let right = Rect::from_min_max(egui::pos2(area.right() - col, area.top()), area.max);
+        let mut row = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+            own_scroll(ui, "backups", height, |ui| row = self.backup_list(ui, t));
         });
 
-        let found = match self.backups.len() {
-            0 => String::new(),
-            n => format!("{} found", count(n)),
-        };
-        panel(ui, t, "Choose a backup", &found, |ui| {
-            if self.backups.is_empty() {
-                ui.label(format!("No backups in {} yet.", self.scanned.display()));
-                ui.label(muted(
-                    "Back up a phone first, or find the folder that holds your backups.",
-                ));
-            }
-            ui.add_enabled_ui(!busy, |ui| {
-                // A long list scrolls in place, so Restore stays in view. Rows are one height and the
-                // list shows a whole number of them, so no row is cut in half.
-                // 2 + 22 (name) + 22 (note row) = 46, plus a little air.
-                const ROW: f32 = 48.0;
-                let gap = ui.spacing().item_spacing.y;
-                let shown = self.backups.len().min(5) as f32;
-                let height = shown * (ROW + gap) - gap;
-                // Inside the page's own scroll area egui shrinks a list to the page space left in
-                // view, cutting rows on short windows; the minimum makes the page scroll instead.
-                egui::ScrollArea::vertical()
-                    .id_salt("backups")
-                    .max_height(height)
-                    .min_scrolled_height(height)
-                    .auto_shrink([false, true])
-                    .show_rows(ui, ROW, self.backups.len(), |ui, rows| {
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                        for b in &self.backups[rows] {
-                            let label = Self::label(&self.backups, b);
-                            let holds = match (b.files, b.apps) {
-                                (true, true) => "Photos, files and apps",
-                                (true, false) => "Photos and files",
-                                _ => "Apps",
-                            };
-                            let width = ui.available_width();
-                            ui.allocate_ui_with_layout(
-                                vec2(width, ROW),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    ui.set_min_size(vec2(width, ROW));
-                                    ui.spacing_mut().interact_size.y = 22.0;
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.add_space(2.0);
-                                    let on = self.chosen.as_ref() == Some(&b.path);
-                                    if ui
-                                        .radio(on, RichText::new(&label).font(semibold(14.0)))
-                                        .on_hover_text(&label)
-                                        .clicked()
-                                    {
-                                        self.chosen = Some(b.path.clone());
-                                    }
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(
-                                            ui.spacing().icon_width + ui.spacing().icon_spacing,
-                                        );
-                                        ui.label(
-                                            // Size and date first: on a narrow window the end is cut.
-                                            RichText::new(match b.bytes {
-                                                Some(n) => format!(
-                                                    "{}, backed up {}. {holds}.",
-                                                    size(n),
-                                                    days_ago(b.age_days)
-                                                ),
-                                                None => format!(
-                                                    "Backed up {}. {holds}.",
-                                                    days_ago(b.age_days)
-                                                ),
-                                            })
-                                            .color(t.muted)
-                                            .size(12.0),
-                                        );
-                                    });
-                                },
-                            );
-                        }
-                    });
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    if let Some(path) = self.chosen.clone().filter(|_| !self.backups.is_empty()) {
-                        if ui.button("Open folder").clicked() {
-                            let _ = Command::new("explorer").arg(&path).spawn();
-                        }
-                        if ui.button("Rename…").clicked() {
-                            let name = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default();
-                            self.ask = Some(Ask::Rename(path.clone(), name, None));
-                        }
-                        if self.backups.len() > 1 && ui.button("Copy into…").clicked() {
-                            self.ask = Some(Ask::Copy(path.clone(), None));
-                        }
-                        if ui.button("Delete…").clicked() {
-                            self.ask = Some(Ask::Delete(path));
-                        }
-                    }
-                    if ui.button("Find another backup").clicked()
-                        && let Some(dir) = rfd::FileDialog::new()
-                            .set_directory(&self.dest)
-                            .pick_folder()
-                    {
-                        self.chosen = Some(dir.clone());
-                        self.scan(&dir);
-                    }
-                    if let Some(path) = self.chosen.clone()
-                        && ui.button("Verify backup").clicked()
-                    {
-                        self.verify(ui.ctx(), path);
-                    }
-                    let chosen = self.chosen.clone().filter(|c| self.backups.iter().any(|b| &b.path == c));
-                    if ui
-                        .add_enabled(chosen.is_some(), egui::Button::new("Export"))
-                        .on_hover_text("Saves contacts, calls and messages as files you can open, print or import, and sorts photos into year and month folders. The backup itself is not changed.")
-                        .on_disabled_hover_text("Choose a backup first")
-                        .clicked()
-                        && let Some(folder) = chosen
-                    {
-                        self.export(ui.ctx(), folder);
-                    }
-                });
+        let phase = self.restore_phase();
+        let phone = egui::pos2(right.left() + 11.0, area.top() + 22.0);
+        let b = egui::pos2(right.left() - 16.0, phone.y);
+        let connected = self.adb_phone().is_some();
+        let (mut plug, mut seal) = (connected as u8 as f32, 0.0);
+        if let Some(y) = row {
+            let target = y.clamp(list.top() + 20.0, list.bottom() - 20.0);
+            // The plug glides to the new folder, and the cable swings slack while it travels.
+            let now = if self.motion {
+                spring(ui.ctx(), egui::Id::unique("restore-plug"), target, 0.55)
+            } else {
+                target
+            };
+            let a = egui::pos2(list.right() + 16.0, now);
+            let loose = egui::pos2(a.x + (b.x - a.x) * 0.58, b.y + 44.0);
+            (plug, seal) = self.cable(
+                ui,
+                t,
+                Cord {
+                    id: "restore",
+                    a,
+                    b,
+                    loose,
+                    sag: 12.0 + (target - now).abs() * 0.5,
+                    phase,
+                    connected,
+                    phone_at_b: true,
+                    coil: None,
+                },
+            );
+        }
+        let ink = mix(mix(t.muted, t.ink, plug), t.accent, seal);
+        icon(ui, phone, ICON_PHONE, 36.0, ink);
+        badge(ui, t, phone + vec2(12.0, 17.0), seal);
+        let tx = right.left() + 36.0;
+        let max = right.width() - 136.0;
+        let (name, note) = self.restore_phone_words();
+        let at = |dy: f32| egui::pos2(tx, area.top() + dy);
+        put(
+            ui,
+            at(4.0),
+            Align2::LEFT_TOP,
+            txt(&name, 15.0, 600.0, t.ink),
+            max,
+        );
+        put(
+            ui,
+            at(25.0),
+            Align2::LEFT_TOP,
+            txt(&note, 12.0, 400.0, t.muted),
+            max,
+        );
+        let words = (
+            egui::pos2(right.right(), area.top() + 2.0),
+            Some(egui::pos2(right.right(), area.top() + 25.0)),
+            Align2::RIGHT_TOP,
+        );
+        self.mid_words(ui, t, words, 18.0, phase, "Restored", !connected);
+
+        let rows = Rect::from_min_max(egui::pos2(right.left(), area.top() + 54.0), right.max);
+        let room = rows.height() - 2.0 * HIT - 16.0;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rows), |ui| {
+            own_scroll(ui, "restore-rows", rows.height(), |ui| {
+                self.restore_rows(ui, t, room);
+                self.restore_result(ui, t, plan);
             });
         });
+    }
+
+    fn restore_band(&mut self, ui: &mut egui::Ui, t: &Tokens, plan: Option<&Plan>) {
+        let w = ui.available_width();
+        let narrow = w < 560.0;
+        let (cols, each) = tile_grid(w, 0.0, 4);
+        let block = 4usize.div_ceil(cols) as f32 * (each.y + TILE_GAP);
+        let rest = ui.clip_rect().bottom() - ui.cursor().top() - 14.0 - 8.0 - HIT;
+        let hero = (rest - block).clamp(if narrow { 136.0 } else { 148.0 }, 300.0);
+        let (rect, _) = ui.allocate_exact_size(vec2(w, hero), egui::Sense::hover());
+        let (lx, rx) = (rect.left(), rect.right());
+        let by = rect.bottom() - if narrow { 42.0 } else { 46.0 };
+        let y = rect.top() + (by - rect.top() - 4.0) * 0.5;
+        let (folder, phone) = (egui::pos2(lx + 18.0, y), egui::pos2(rx - 11.0, y));
+        let a = egui::pos2(folder.x + 34.0, y);
+        let b = egui::pos2(phone.x - 27.0, y);
+        let loose = egui::pos2(a.x + (b.x - a.x) * 0.42, y + (by - y - 22.0).max(16.0));
+        let phase = self.restore_phase();
+        let connected = self.adb_phone().is_some();
+        let sag = if narrow { 16.0 } else { 30.0 };
+        let (plug, seal) = self.cable(
+            ui,
+            t,
+            Cord {
+                id: "restore",
+                a,
+                b,
+                loose,
+                sag,
+                phase,
+                connected,
+                phone_at_b: true,
+                coil: None,
+            },
+        );
+        icon(ui, folder, ICON_FOLDER, 36.0, t.ink);
+        let ink = mix(mix(t.muted, t.ink, plug), t.accent, seal);
+        icon(ui, phone, ICON_PHONE, 36.0, ink);
+        badge(ui, t, phone + vec2(8.0, 17.0), seal);
 
         let chosen = self
             .backups
             .iter()
             .find(|b| Some(&b.path) == self.chosen.as_ref());
+        let name = chosen.map_or("No backup chosen".to_string(), |b| {
+            Self::label(&self.backups, b)
+        });
+        let when = chosen.map_or(String::new(), |b| saved_when(b.age_days));
+        let (phone_name, note) = self.restore_phone_words();
+        let sub_y = by + if narrow { 22.0 } else { 26.0 };
+        let (full, left) = (rx - lx, (rx - lx) / 2.0 - 80.0);
+        let title = |s: &str| txt(s, 15.0, 600.0, t.ink);
+        let sub = |s: &str| txt(s, 12.0, 400.0, t.muted);
+        if narrow {
+            let max = full - 118.0;
+            put(
+                ui,
+                egui::pos2(lx, by + 2.0),
+                Align2::LEFT_TOP,
+                title(&name),
+                max,
+            );
+            let to = if phase == Phase::Stopped && !connected {
+                format!("{phone_name} unplugged")
+            } else {
+                format!("To {phone_name}")
+            };
+            put(ui, egui::pos2(lx, sub_y), Align2::LEFT_TOP, sub(&to), full);
+            let words = (egui::pos2(rx, by), None, Align2::RIGHT_TOP);
+            self.mid_words(ui, t, words, 15.0, phase, "Restored", !connected);
+        } else {
+            put(
+                ui,
+                egui::pos2(lx, by + 2.0),
+                Align2::LEFT_TOP,
+                title(&name),
+                left,
+            );
+            put(
+                ui,
+                egui::pos2(lx, sub_y),
+                Align2::LEFT_TOP,
+                sub(&when),
+                left,
+            );
+            put(
+                ui,
+                egui::pos2(rx, by + 2.0),
+                Align2::RIGHT_TOP,
+                title(&phone_name),
+                left,
+            );
+            put(
+                ui,
+                egui::pos2(rx, sub_y),
+                Align2::RIGHT_TOP,
+                sub(&note),
+                left,
+            );
+            let x = rect.center().x;
+            let words = (
+                egui::pos2(x, by),
+                Some(egui::pos2(x, sub_y)),
+                Align2::CENTER_TOP,
+            );
+            self.mid_words(ui, t, words, 18.0, phase, "Restored", !connected);
+        }
+        ui.add_space(8.0);
+        // What to restore comes first so it shows at once, unless a backup must be chosen first.
+        if chosen.is_none() {
+            self.backup_list(ui, t);
+            ui.add_space(18.0);
+            self.restore_rows(ui, t, 0.0);
+        } else {
+            self.restore_rows(ui, t, 0.0);
+            ui.add_space(18.0);
+            self.backup_list(ui, t);
+        }
+        self.restore_result(ui, t, plan);
+    }
+
+    /// The phone's name and state, or what to do without one.
+    fn restore_phone_words(&self) -> (String, String) {
+        match self.adb_phone() {
+            Some((serial, model)) => (model, self.phone_note(&serial)),
+            None => (
+                "No phone yet".to_string(),
+                "Plug it in with USB debugging on".to_string(),
+            ),
+        }
+    }
+
+    /// What can come back from the chosen backup.
+    fn restore_rows(&mut self, ui: &mut egui::Ui, t: &Tokens, room: f32) {
+        let locked = self.busy.load(Ordering::Relaxed) || self.restore_phase() != Phase::Idle;
+        let chosen = self
+            .backups
+            .iter()
+            .find(|b| Some(&b.path) == self.chosen.as_ref());
         let (has_files, has_apps) = chosen.map_or((false, false), |b| (b.files, b.apps));
-        let only = self
+        let path = chosen.map(|b| b.path.clone());
+        let picked = self
             .only
             .as_ref()
-            .filter(|(folder, ..)| Some(folder) == chosen.map(|b| &b.path));
-        let mut pick = false;
-        ui.add_space(8.0);
-        panel(ui, t, "What to restore", "", |ui| {
-            ui.add_enabled_ui(!busy, |ui| {
-                let can_pick = has_files && self.restore_files;
-                let note = match only {
-                    Some((_, chosen, total)) if can_pick => format!(
-                        "{} of {} chosen. Files the phone already has are skipped.",
-                        count(chosen.len()),
-                        files(*total)
-                    ),
-                    _ if can_pick => "All files. Files the phone already has are skipped.".into(),
-                    _ => "Files the phone already has are skipped, never replaced.".into(),
-                };
-                pick = choice(
-                    ui,
-                    t,
-                    has_files,
-                    &mut self.restore_files,
-                    "Photos, videos and files",
-                    &note,
-                    can_pick.then_some("Choose files…"),
-                );
-                choice(
-                    ui,
-                    t,
-                    has_apps,
-                    &mut self.restore_apps,
-                    "Apps",
-                    "Reinstalls missing apps. Their logins and data do not come back.",
-                    None,
-                );
+            .filter(|(folder, ..)| Some(folder) == path.as_ref())
+            .map(|(_, picked, total)| (picked.len(), *total));
+
+        let w = ui.available_width();
+        let (r, _) = ui.allocate_exact_size(vec2(w, HIT), egui::Sense::hover());
+        let at = egui::pos2(r.left(), r.center().y);
+        put(
+            ui,
+            at,
+            Align2::LEFT_CENTER,
+            txt("What to restore", 13.0, 600.0, t.ink),
+            w,
+        );
+
+        const NOT_IN: &str = "Not in backup";
+        const NOT_YET: &str = "Not yet";
+        let files_line = match picked {
+            _ if !has_files => NOT_IN.to_string(),
+            Some((n, total)) => format!("{} of {}", count(n), files(total)),
+            None => "All files".to_string(),
+        };
+        let items = [
+            (
+                "\u{E91B}",
+                "Photos, videos and files",
+                files_line.as_str(),
+                self.restore_files && has_files,
+                !has_files,
+            ),
+            (
+                "\u{E71D}",
+                "Apps",
+                if has_apps { "Without logins" } else { NOT_IN },
+                self.restore_apps && has_apps,
+                !has_apps,
+            ),
+            ("\u{E77B}", "Contacts", NOT_YET, false, true),
+            ("\u{E8BD}", "Messages", NOT_YET, false, true),
+        ];
+        let (cols, each) = tile_grid(w, room, items.len());
+        for (row, chunk) in items.chunks(cols).enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = TILE_GAP;
+                for (k, (glyph, name, line, on, dim)) in chunk.iter().enumerate() {
+                    if tile(ui, t, (glyph, name, line), *on, locked, *dim, each) {
+                        match row * cols + k {
+                            0 => self.restore_files = !self.restore_files,
+                            _ => self.restore_apps = !self.restore_apps,
+                        }
+                    }
+                }
+            });
+            ui.add_space(TILE_GAP - ui.spacing().item_spacing.y);
+        }
+        ui.add_space(6.0);
+        let label = match picked {
+            Some((n, total)) => format!("Choose files ({} of {})…", count(n), count(total)),
+            None => "Choose files…".to_string(),
+        };
+        let can = !locked && has_files && self.restore_files;
+        if quiet(ui, t, &label, can).clicked()
+            && let Some(path) = path
+        {
+            self.open_picker(ui.ctx(), path, false);
+        }
+        ui.add(
+            egui::Label::new(txt(
+                "Files the phone already has are skipped, never replaced. Apps come back without their logins and data.",
+                12.0,
+                400.0,
+                t.muted,
+            ))
+            .wrap(),
+        );
+    }
+
+    /// The backups in the folder. Returns where the chosen one sits, so the cable can leave from it.
+    fn backup_list(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<f32> {
+        let locked = self.busy.load(Ordering::Relaxed) || self.restore_phase() != Phase::Idle;
+        let w = ui.available_width();
+        let mut find = false;
+        ui.allocate_ui_with_layout(vec2(w, HIT), Layout::left_to_right(Align::Center), |ui| {
+            ui.label(txt("Your backups", 13.0, 600.0, t.ink));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                find = quiet(ui, t, "Find another…", !locked).clicked();
             });
         });
-        let only = only.map(|(_, chosen, _)| chosen.clone());
-        let files_on =
-            self.restore_files && has_files && only.as_ref().is_none_or(|o| !o.is_empty());
-        let picked = files_on || (self.restore_apps && has_apps);
-        let path = chosen.map(|b| b.path.clone());
-        if pick && let Some(path) = &path {
-            self.open_picker(ui.ctx(), path.clone(), false);
+        if find
+            && let Some(dir) = rfd::FileDialog::new()
+                .set_directory(&self.dest)
+                .pick_folder()
+        {
+            self.chosen = Some(dir.clone());
+            self.scan(&dir);
         }
+        let (line, _) = ui.allocate_exact_size(vec2(w, 22.0), egui::Sense::hover());
+        let y = line.center().y;
+        icon(
+            ui,
+            egui::pos2(line.left() + 9.0, y),
+            ICON_FOLDER,
+            14.0,
+            t.muted,
+        );
+        let full = self.scanned.display().to_string();
+        let shown = put(
+            ui,
+            egui::pos2(line.left() + 24.0, y),
+            Align2::LEFT_CENTER,
+            txt(&short_path(ui, &full), 12.0, 400.0, t.muted),
+            w - 24.0,
+        );
+        ui.interact(shown, ui.scope_id().with("scanned"), egui::Sense::hover())
+            .on_hover_text(&full);
+        ui.add_space(4.0);
+        if self.backups.is_empty() {
+            ui.add(
+                egui::Label::new(txt(
+                    "No backups in this folder yet. Back up a phone first, or find the folder that holds your backups.",
+                    12.0,
+                    400.0,
+                    t.muted,
+                ))
+                .wrap(),
+            );
+        }
+        let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 4.0);
+        let mut row = None;
+        let mut action = None;
+        let mut pressed = None;
+        for b in &self.backups {
+            let on = self.chosen.as_ref() == Some(&b.path);
+            let label = Self::label(&self.backups, b);
+            let many = self.backups.len() > 1;
+            let (press, act, y) = backup_card(ui, t, b, &label, on, locked, many, self.motion);
+            if press {
+                pressed = Some(b.path.clone());
+            }
+            if on {
+                row = Some(y);
+            }
+            if let Some(a) = act {
+                action = Some((a, b.path.clone()));
+            }
+        }
+        ui.spacing_mut().item_spacing.y = gap;
+        if pressed.is_some() {
+            self.chosen = pressed;
+        }
+        match action {
+            Some((0, path)) => {
+                let _ = Command::new("explorer").arg(path).spawn();
+            }
+            Some((1, path)) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.ask = Some(Ask::Rename(path, name, None));
+            }
+            Some((2, path)) => self.verify(ui.ctx(), path),
+            Some((3, path)) => self.export(ui.ctx(), path),
+            Some((4, path)) => self.ask = Some(Ask::Copy(path, None)),
+            Some((_, path)) => self.ask = Some(Ask::Delete(path)),
+            None => {}
+        }
+        row
+    }
 
-        // A ticked box the chosen backup has nothing for is ignored, not run.
-        let plan: Option<Plan> = match (&phone, &path) {
-            (Some((serial, _)), Some(path)) if picked => Some((
-                serial.clone(),
-                path.clone(),
-                files_on,
-                self.restore_apps && has_apps,
-                only.filter(|_| files_on),
-            )),
-            _ => None,
-        };
-        // Any change to the phone, backup or ticks after a check means checking again.
+    /// What the command bar says and offers.
+    fn restore_cmd(&self, plan: Option<Plan>) -> Cmd {
+        let busy = self.busy.load(Ordering::Relaxed);
+        let phase = self.restore_phase();
         let checked = matches!(self.preview_for(plan.as_ref()), Some(Ok(_)));
-        let title = match &phone {
-            _ if busy && self.job == Job::Verify => "Checking the backup…".into(),
-            _ if busy && self.job == Job::Copy => "Copying between backups…".into(),
-            _ if busy && self.job == Job::Delete => "Deleting the backup…".into(),
-            _ if busy && self.checking.is_some() => "Checking…".into(),
-            _ if busy && self.job == Job::Export => "Exporting…".into(),
-            _ if busy => "Restoring…".into(),
-            None => "Connect the phone with USB debugging on to restore to it".into(),
-            _ if path.is_none() => "Choose a backup to restore".into(),
-            _ if !picked => "Tick at least one thing to restore".into(),
-            Some((_, model)) => format!("Restores to {model}"),
+        let phone = self.adb_phone().is_some();
+        let percent = self
+            .fraction
+            .map_or(String::new(), |f| format!(" {:.0}%", (f * 100.0).floor()));
+        let (title, note): (String, String) = match phase {
+            Phase::Running => (
+                self.status.clone(),
+                match self.now.rsplit(['/', '\\']).next() {
+                    Some(file) if !file.is_empty() => file.to_string(),
+                    _ => "Keep the phone plugged in and unlocked.".into(),
+                },
+            ),
+            _ if busy => (
+                match self.job {
+                    Job::Verify => format!("Checking the backup…{percent}"),
+                    Job::Copy => format!("Copying between backups…{percent}"),
+                    Job::Delete => "Deleting the backup…".into(),
+                    Job::Export => format!("Exporting…{percent}"),
+                    _ => "Checking…".into(),
+                },
+                self.status.clone(),
+            ),
+            Phase::Done(_) => ("Restore finished".into(), "No errors. Report saved.".into()),
+            Phase::Stopped => (
+                self.stopped_at.map_or("Restore stopped".into(), |f| {
+                    format!("Stopped at {:.0}%", (f * 100.0).floor())
+                }),
+                if phone {
+                    "Copied files are safe.".into()
+                } else {
+                    "Connect a phone to try again.".into()
+                },
+            ),
+            Phase::Idle if !phone => (
+                "Connect a phone to restore".into(),
+                "With USB debugging on.".into(),
+            ),
+            Phase::Idle if self.backups.is_empty() => {
+                ("No backups to restore yet".into(), String::new())
+            }
+            Phase::Idle if self.chosen.is_none() => {
+                ("Choose a backup to restore".into(), String::new())
+            }
+            Phase::Idle if plan.is_none() => ("Pick something to restore".into(), String::new()),
+            Phase::Idle if checked => ("Ready to restore".into(), "Nothing changes yet.".into()),
+            Phase::Idle => (
+                "Ready to check".into(),
+                "Changes nothing on the phone.".into(),
+            ),
+        };
+        let open = match phase {
+            Phase::Done(_) => self.restore_report.clone(),
+            _ => None,
         };
         Cmd {
             title,
-            note: if busy && self.job == Job::Verify {
-                "Nothing in the backup or on the phone changes.".into()
-            } else if busy && self.job == Job::Export {
-                "The backup itself is not changed.".into()
-            } else if busy && self.job == Job::Restore {
-                "Keep the phone plugged in and unlocked.".into()
-            } else if plan.is_some() && !busy {
-                "Nothing changes on the phone until you press Restore now.".into()
-            } else {
-                String::new()
+            note,
+            label: match phase {
+                Phase::Done(_) => "Open report",
+                Phase::Stopped => "Try again",
+                _ if checked => "Restore now",
+                _ => "Check restore",
             },
-            label: if checked {
-                "Restore now"
-            } else {
-                "Check restore"
-            },
-            enabled: plan.is_some(),
+            enabled: open.is_some() || (plan.is_some() && !matches!(phase, Phase::Done(_))),
             plan: plan.map(|p| (p, !checked)),
-            open: None,
-            again: false,
+            open,
+            again: matches!(phase, Phase::Done(_) | Phase::Stopped),
         }
     }
 
@@ -325,7 +771,6 @@ impl App {
                         .font(semibold(16.0)),
                     );
                     ui.label(m);
-                    self.open_restore_report(ui);
                 });
             }
             Some(Err(e)) => {

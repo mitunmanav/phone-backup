@@ -17,11 +17,27 @@ const TILES: [(&str, &str, &str); 7] = [
 
 /// How the running or last backup stands; `Done` holds how many things went wrong.
 #[derive(Clone, Copy, PartialEq)]
-enum Phase {
+pub(crate) enum Phase {
     Idle,
     Running,
     Done(usize),
     Stopped,
+}
+
+/// One job's cable: what it joins and how that job stands.
+pub(crate) struct Cord<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) a: Pos2,
+    pub(crate) b: Pos2,
+    /// Where the phone's end hangs with no phone.
+    pub(crate) loose: Pos2,
+    pub(crate) sag: f32,
+    pub(crate) phase: Phase,
+    pub(crate) connected: bool,
+    /// The phone is at `b`, for a copy onto a phone.
+    pub(crate) phone_at_b: bool,
+    /// Stands upright as a coiled cord that can be pulled around inside this box.
+    pub(crate) coil: Option<Rect>,
 }
 
 /// Files that could not be copied, and what the phone refused to give.
@@ -50,7 +66,7 @@ fn toggle_kind(pick: &mut Pick, k: usize) {
 
 impl App {
     /// A few seconds in, so the first batch does not give a wild guess.
-    fn time_left_now(&self) -> Option<String> {
+    pub(crate) fn time_left_now(&self) -> Option<String> {
         let spent = self.progress_from.elapsed().as_secs_f32();
         // shortcut: estimate by file count, not bytes; switch to bytes if users see bad estimates
         self.fraction
@@ -92,52 +108,135 @@ impl App {
         }
     }
 
-    /// The cable from the phone at `a` to the folder at `b`; the copy travels a to b. With no
-    /// phone, the phone's end hangs at `loose`. Returns how plugged in and how sealed it looks.
-    fn cable(
-        &self,
-        ui: &egui::Ui,
-        t: &Tokens,
-        a: Pos2,
-        b: Pos2,
-        loose: Pos2,
-        sag: f32,
-    ) -> (f32, f32) {
-        let ctx = ui.ctx();
-        let p = ui.painter();
+    /// Draws a cable; the copy travels a to b. Returns how plugged in and how sealed it looks.
+    pub(crate) fn cable(&self, ui: &egui::Ui, t: &Tokens, cord: Cord) -> (f32, f32) {
+        let Cord {
+            id,
+            a,
+            b,
+            loose,
+            sag,
+            phase,
+            connected,
+            phone_at_b,
+            coil,
+        } = cord;
+        let vertical = coil.is_some();
+        let ctx = ui.ctx().clone();
+        let key = |word: &str| egui::Id::unique((word, id));
+        // The coil can be pulled over the tiles, so it paints above them.
+        let above = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, key("layer")));
+        let p = if vertical { &above } else { ui.painter() };
         let secs = |s: f32| if self.motion { s } else { 0.0 };
-        let phase = self.phase();
         let running = phase == Phase::Running;
-        let (adb, mtp) = self.connected();
-        let connected = (!adb.is_empty() || mtp.is_some() || running) as u8 as f32;
+        let connected = (connected || running) as u8 as f32;
         let plug = if self.motion {
-            spring(ctx, egui::Id::unique("plug"), connected, 0.45)
+            spring(&ctx, key("plug"), connected, 0.45)
         } else {
             connected
         };
-        let (axis, side) = (vec2(1.0, 0.0), vec2(0.0, sag));
-        let p0 = loose + (a - loose) * plug;
-        let span = b.x - p0.x;
-        let c1 = p0 + axis * span * 0.33 + side * (0.35 + 0.65 * plug);
-        let c2 = b - axis * span * 0.33 + side;
-        let pts = egui::epaint::CubicBezierShape::from_points_stroke(
-            [p0, c1, c2, b],
+        let axis = if vertical {
+            vec2(0.0, 1.0)
+        } else {
+            vec2(1.0, 0.0)
+        };
+        let side = vec2(axis.y, axis.x) * sag;
+        let (p0, p3) = if phone_at_b {
+            (a, loose + (b - loose) * plug)
+        } else {
+            (loose + (a - loose) * plug, b)
+        };
+        let span = (p3 - p0).dot(axis);
+        let slack = 0.35 + 0.65 * plug;
+        let c1 = p0 + axis * span * 0.33 + side * if phone_at_b { 1.0 } else { slack };
+        let c2 = p3 - axis * span * 0.33 + side * if phone_at_b { slack } else { 1.0 };
+        let measure = |pts: &[Pos2]| {
+            let mut len = vec![0.0f32];
+            for w in pts.windows(2) {
+                len.push(len[len.len() - 1] + w[0].distance(w[1]));
+            }
+            len
+        };
+        let walk = |pts: &[Pos2], len: &[f32], d: f32| {
+            let i = len.partition_point(|l| *l < d).clamp(1, pts.len() - 1);
+            let s = (d - len[i - 1]) / (len[i] - len[i - 1]).max(1e-3);
+            pts[i - 1] + (pts[i] - pts[i - 1]) * s.clamp(0.0, 1.0)
+        };
+        let mut pts = egui::epaint::CubicBezierShape::from_points_stroke(
+            [p0, c1, c2, p3],
             false,
             Color32::TRANSPARENT,
             Stroke::NONE,
         )
         .flatten(Some(0.15));
-        let mut len = vec![0.0f32];
-        for w in pts.windows(2) {
-            len.push(len[len.len() - 1] + w[0].distance(w[1]));
+        let mut len = measure(&pts);
+        // A coiled phone cord you can pull: drag it anywhere, let go and it springs back.
+        if let Some(bounds) = coil {
+            let rope_id = key("coil");
+            let was: Option<Vec<Pos2>> = ctx
+                .data(|d| d.get_temp::<(Vec<Pos2>, Vec<Pos2>)>(rope_id))
+                .map(|r| r.0);
+            let mut zone = Rect::from_two_pos(p0, p3).expand2(vec2(30.0, 0.0));
+            if let Some(w) = &was {
+                zone = zone.union(Rect::from_points(w).expand(14.0));
+            }
+            let mut grab = None;
+            if self.motion {
+                let r = ui.interact(zone, rope_id.with("drag"), egui::Sense::drag());
+                let near = |q: Pos2| {
+                    was.as_ref()
+                        .and_then(|w| {
+                            w.iter()
+                                .enumerate()
+                                .map(|(i, c)| (i, c.distance(q)))
+                                .min_by(|a, b| a.1.total_cmp(&b.1))
+                        })
+                        .filter(|m| m.1 < 18.0)
+                };
+                let held_id = rope_id.with("held");
+                if r.drag_started()
+                    && let Some(m) = r.interact_pointer_pos().and_then(near)
+                {
+                    ctx.data_mut(|d| d.insert_temp(held_id, m.0));
+                }
+                if !r.dragged() {
+                    ctx.data_mut(|d| d.remove::<usize>(held_id));
+                }
+                let held = ctx.data(|d| d.get_temp::<usize>(held_id));
+                if let (Some(i), Some(q)) = (held, r.interact_pointer_pos()) {
+                    grab = Some((i, bounds.shrink(10.0).clamp(q)));
+                    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                } else if r.hover_pos().and_then(near).is_some() {
+                    ctx.set_cursor_icon(egui::CursorIcon::Grab);
+                }
+            }
+            let line = if self.motion {
+                rope(&ctx, rope_id, 28, p0, p3, 1.01, vec2(0.03, 0.0), grab)
+            } else {
+                pts.clone()
+            };
+            let line_len = measure(&line);
+            let reach = line_len[line_len.len() - 1];
+            // A fixed number of turns: pulling spreads the coils and thins them.
+            let rest = p0.distance(p3).max(1.0);
+            let turns = rest * 0.3;
+            let thin = (rest / reach.max(1.0)).clamp(0.35, 1.0);
+            let dots = ((reach / 1.2) as usize).max(2);
+            pts = (0..=dots)
+                .map(|i| {
+                    let d = reach * i as f32 / dots as f32;
+                    let turn = d / reach.max(1.0) * turns;
+                    let fade = (d.min(reach - d) / 20.0).min(1.0);
+                    walk(&line, &line_len, d)
+                        + vec2(turn.sin() * 7.0, turn.cos() * 3.5) * fade * thin
+                })
+                .collect();
+            len = measure(&pts);
         }
         let total = len[len.len() - 1];
-        let at = |d: f32| {
-            let i = len.partition_point(|l| *l < d).clamp(1, pts.len() - 1);
-            let s = (d - len[i - 1]) / (len[i] - len[i - 1]).max(1e-3);
-            pts[i - 1] + (pts[i] - pts[i - 1]) * s.clamp(0.0, 1.0)
-        };
-        p.add(egui::Shape::line(pts.clone(), Stroke::new(3.0, t.border)));
+        let at = |d: f32| walk(&pts, &len, d);
+        let wire = if vertical { 2.0 } else { 3.0 };
+        p.add(egui::Shape::line(pts.clone(), Stroke::new(wire, t.border)));
 
         // The copied part, lit as far as the copy has really gone.
         let (target, known) = match phase {
@@ -146,19 +245,21 @@ impl App {
             Phase::Done(_) => (1.0, false),
             Phase::Idle => (0.0, false),
         };
-        let fill = ctx.animate_value_with_time(egui::Id::unique("fill"), target, secs(0.35));
+        let fill = ctx.animate_value_with_time(key("fill"), target, secs(0.35));
         let reach = total * fill;
         let done = matches!(phase, Phase::Done(_));
-        let sweep = ctx.animate_bool_with_time(egui::Id::unique("sweep"), done, secs(0.9));
+        let sweep = ctx.animate_bool_with_time(key("sweep"), done, secs(0.9));
+        let along = move |q: Pos2| if vertical { q.y } else { q.x };
         if fill > 0.001 {
             let sweep_x = if done && self.motion && sweep < 1.0 {
-                p0.x - 80.0 + (span + 160.0) * sweep
+                along(p0) - 80.0 + (span + 160.0) * sweep
             } else {
                 f32::MIN
             };
             let (accent, glint) = (t.accent, t.glint);
-            let lit = egui::epaint::PathStroke::new_uv(4.0, move |_, pos| {
-                let d = pos.x - sweep_x + 40.0;
+            let width = if vertical { 3.0 } else { 4.0 };
+            let lit = egui::epaint::PathStroke::new_uv(width, move |_, pos| {
+                let d = along(pos) - sweep_x + 40.0;
                 let w = if (0.0..80.0).contains(&d) {
                     (std::f32::consts::PI * d / 80.0).sin().powi(2)
                 } else {
@@ -166,7 +267,8 @@ impl App {
                 };
                 mix(accent, glint, w)
             });
-            let steps = ((reach / 3.0) as usize).max(2);
+            let step = if vertical { 1.2 } else { 3.0 };
+            let steps = ((reach / step) as usize).max(2);
             let dense: Vec<Pos2> = (0..=steps)
                 .map(|i| at(reach * i as f32 / steps as f32))
                 .collect();
@@ -212,16 +314,55 @@ impl App {
 
         // The tick lands only when nothing went wrong.
         let seal = ctx.animate_bool_with_easing(
-            egui::Id::unique("seal"),
+            key("seal"),
             phase == Phase::Done(0),
             egui::emath::easing::cubic_out,
         );
         let body = mix(t.border, t.ink, 0.55);
-        let d = (c1 - p0).normalized();
-        let d0 = (d + (axis - d) * plug).normalized();
+        let settle = |d: egui::Vec2| (d + (axis - d) * plug).normalized();
+        let (d0, d3) = if phone_at_b {
+            (axis, settle((p3 - c2).normalized()))
+        } else {
+            (settle((c1 - p0).normalized()), axis)
+        };
         connector(p, p0, -d0, body, t.border);
-        connector(p, b, axis, mix(body, t.accent, seal), t.border);
+        connector(p, p3, d3, mix(body, t.accent, seal), t.border);
         (plug, seal)
+    }
+
+    /// Percent or outcome for a copy onto a phone, at `mid`, with its note at `sub` when given.
+    pub(crate) fn mid_words(
+        &self,
+        ui: &egui::Ui,
+        t: &Tokens,
+        (mid, sub, align): (Pos2, Option<Pos2>, Align2),
+        size: f32,
+        phase: Phase,
+        done_word: &str,
+        unplugged: bool,
+    ) {
+        let note = |text: &str| {
+            if let Some(at) = sub {
+                put(ui, at, align, txt(text, 12.0, 400.0, t.muted), 160.0);
+            }
+        };
+        match phase {
+            Phase::Idle => {}
+            Phase::Running => {
+                let percent = format!("{:.0}%", (self.fraction.unwrap_or(0.0) * 100.0).floor());
+                tabular(ui, mid, align, &percent, |s| txt(s, size, 600.0, t.ink));
+                note(&self.time_left_now().unwrap_or_default());
+            }
+            Phase::Stopped => {
+                put(ui, mid, align, txt("Stopped", size, 600.0, t.ink), 150.0);
+                if unplugged {
+                    note("Phone unplugged");
+                }
+            }
+            Phase::Done(_) => {
+                put(ui, mid, align, txt(done_word, size, 600.0, t.accent), 150.0);
+            }
+        }
     }
 
     /// The cable across the top of the page and the words under its ends, all from real state.
@@ -241,7 +382,22 @@ impl App {
         let b = pos2(folder.x - FOLDER - 16.0, y);
         let loose = pos2(b.x - (b.x - a.x) * 0.42, y + (by - y - 22.0).max(16.0));
         let sag = if narrow { 16.0 } else { 30.0 };
-        let (plug, seal) = self.cable(ui, t, a, b, loose, sag);
+        let (adb, mtp) = self.connected();
+        let (plug, seal) = self.cable(
+            ui,
+            t,
+            Cord {
+                id: "backup",
+                a,
+                b,
+                loose,
+                sag,
+                phase: self.phase(),
+                connected: !adb.is_empty() || mtp.is_some(),
+                phone_at_b: false,
+                coil: None,
+            },
+        );
         icon(ui, phone, ICON_PHONE, 36.0, mix(t.muted, t.ink, plug));
         icon(ui, folder, ICON_FOLDER, 36.0, mix(t.ink, t.accent, seal));
         badge(ui, t, folder + vec2(FOLDER - 3.0, 17.0), seal);
@@ -256,7 +412,6 @@ impl App {
             || self.dest.display().to_string(),
             |n| n.to_string_lossy().into(),
         );
-        let (adb, mtp) = self.connected();
         let allow = self
             .phones
             .as_ref()
