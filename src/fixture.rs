@@ -8,6 +8,7 @@ pub(crate) enum Fixture {
     Empty,
     One,
     Many,
+    Pixel,
 }
 
 impl App {
@@ -145,6 +146,15 @@ impl App {
             Fixture::One => {
                 self.phones = Some(vec![Phone::Mtp { name: "Jo".into() }]);
                 self.backups = vec![saved("Jo", true, false, Some(1))];
+            }
+            // One ordinary phone with USB debugging and a few backups: the everyday case.
+            Fixture::Pixel => {
+                self.phones = Some(vec![adb("Pixel 8 Pro", false, Some(82))]);
+                self.backups = vec![
+                    saved("Pixel 8 Pro", true, true, Some(0)),
+                    saved("Pixel 8 Pro", true, true, Some(30)),
+                    saved("Galaxy S21", true, false, Some(190)),
+                ];
             }
             Fixture::Many => {
                 self.phones = Some(vec![

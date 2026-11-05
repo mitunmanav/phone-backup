@@ -453,7 +453,7 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
         // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
@@ -473,6 +473,7 @@ impl App {
                     "empty" => app.load_fixture(Fixture::Empty),
                     "one" => app.load_fixture(Fixture::One),
                     "many" => app.load_fixture(Fixture::Many),
+                    "pixel" => app.load_fixture(Fixture::Pixel),
                     "restore" => app.tab = Tab::Restore,
                     "transfer" => app.tab = Tab::Transfer,
                     "delete" | "rename" | "copy" => {
