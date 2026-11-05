@@ -292,7 +292,10 @@ impl App {
                 .iter()
                 .position(|b| Some(&b.path) == self.chosen.as_ref())
                 .map_or("Choose a backup".to_string(), |i| options[i].clone());
-            let room = (full - 64.0 - 132.0, !running && !options.is_empty());
+            // A narrow page gives the name the whole row, with Find another under it.
+            let beside = full >= 480.0;
+            let name_w = full - 64.0 - if beside { 132.0 } else { 0.0 };
+            let room = (name_w, !running && !options.is_empty());
             if let Some(n) = chooser(
                 ui,
                 t,
@@ -308,14 +311,17 @@ impl App {
                 self.tool_msg = None;
             }
             let end = Rect::from_min_max(pos2(row.right() - 124.0, row.top()), row.max);
-            let find = ui
-                .scope_builder(
+            let find = if beside {
+                ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(end)
                         .layout(Layout::right_to_left(Align::Center)),
                     |ui| quiet(ui, t, "Find another…", !running),
                 )
-                .inner;
+                .inner
+            } else {
+                quiet(ui, t, "Find another…", !running)
+            };
             if find.clicked()
                 && let Some(dir) = rfd::FileDialog::new()
                     .set_directory(&self.dest)
