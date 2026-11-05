@@ -470,10 +470,10 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [settings] [privacy] [license] [intro[=<step>]]
         // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         // update=working|new|same|failed also shows that result of Check for updates.
         if cfg!(debug_assertions) && test_run() {
@@ -492,6 +492,7 @@ impl App {
                     "one" => app.load_fixture(Fixture::One),
                     "many" => app.load_fixture(Fixture::Many),
                     "pixel" => app.load_fixture(Fixture::Pixel),
+                    "checked" => app.fixture_checked(),
                     "restore" => app.tab = Tab::Restore,
                     "transfer" => app.tab = Tab::Transfer,
                     "delete" | "rename" | "copy" => {

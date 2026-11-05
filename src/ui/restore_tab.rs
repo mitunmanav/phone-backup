@@ -261,7 +261,8 @@ impl App {
         icon(ui, phone, ICON_PHONE, 36.0, ink);
         badge(ui, t, phone + vec2(12.0, 17.0), seal);
         let tx = right.left() + 36.0;
-        let max = right.width() - 136.0;
+        // Leaves room for the percent or outcome at the right edge, when there is one.
+        let max = right.width() - if phase == Phase::Idle { 36.0 } else { 136.0 };
         let (name, note) = self.restore_phone_words();
         let at = |dy: f32| egui::pos2(tx, area.top() + dy);
         put(
@@ -461,7 +462,7 @@ impl App {
         let items = [
             (
                 "\u{E91B}",
-                "Photos, videos and files",
+                "Photos, files",
                 files_line.as_str(),
                 self.restore_files && has_files,
                 !has_files,

@@ -180,6 +180,14 @@ impl App {
             }
         }
         self.chosen = self.backups.first().map(|b| b.path.clone());
+        self.preview = None;
+        if f != Fixture::Real {
+            self.scanned = self.dest.clone();
+        }
+    }
+
+    /// As if the chosen backup had just been checked.
+    pub(crate) fn fixture_checked(&mut self) {
         let first_adb = self.phones.iter().flatten().find_map(|p| match p {
             Phone::Adb { serial, .. } => Some(serial.clone()),
             _ => None,
@@ -188,8 +196,5 @@ impl App {
             let plan = (serial, path, true, true, None);
             (plan, Ok("Files: will copy 128,456 files (214.7 GB) to the phone. 1,284 files already on the phone will be skipped; nothing is replaced. This phone has no SD card named 3A1F-0C2B or 9C33-6BD5, so those files cannot be restored.\nApps: will install 212 of 214, for example com.northwindindustries.holdings.expensereports.enterprise, com.whatsapp, org.mozilla.firefox. The rest are already on the phone.".into()))
         });
-        if f != Fixture::Real {
-            self.scanned = self.dest.clone();
-        }
     }
 }
