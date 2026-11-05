@@ -2,6 +2,7 @@ mod backup_tab;
 mod device;
 mod docs;
 mod picker;
+mod read_page;
 mod restore_tab;
 mod settings;
 mod shell;
@@ -12,5 +13,6 @@ mod widgets;
 mod wifi;
 
 pub(crate) use picker::*;
+pub(crate) use read_page::*;
 pub(crate) use theme::*;
 pub(crate) use widgets::*;

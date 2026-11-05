@@ -15,7 +15,17 @@ struct Tool {
 
 const ICON_PHONE: &str = "\u{E8EA}";
 
-const TOOLS: [Tool; 5] = [
+const TOOLS: [Tool; 6] = [
+    Tool {
+        id: "read",
+        short: "Read",
+        name: "Read this backup",
+        note: "See its messages, contacts, call history and calendar here, without a phone.",
+        glyph: "\u{E736}",
+        safe: "",
+        input: ("\u{E8B7}", "Your backup"),
+        output: ("\u{E736}", "Read it here"),
+    },
     Tool {
         id: "dupes",
         short: "Find copies",
@@ -128,7 +138,7 @@ impl App {
     pub(crate) fn tools_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let width = ui.available_width();
         let locked = self.tool_busy.is_some();
-        let cols = if width >= 560.0 { 5.0 } else { 3.0 };
+        let cols = if width >= 672.0 { 6.0 } else { 3.0 };
         let each = (width - 8.0 * (cols - 1.0)) / cols - 0.5;
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
@@ -188,7 +198,7 @@ impl App {
         let y = r.center().y - 12.0;
         let (lx, rx) = (r.left() + r.width() * 0.24, r.right() - r.width() * 0.24);
         let done = matches!(self.tool_result(k.id), Some(Ok(_)))
-            || (self.tool == 0 && self.dupes.as_ref().is_some_and(|d| !d.0.is_empty()));
+            || (k.id == "dupes" && self.dupes.as_ref().is_some_and(|d| !d.0.is_empty()));
         let seal = ctx.animate_bool_with_easing(
             egui::Id::unique("stage-seal"),
             done,
@@ -412,12 +422,22 @@ impl App {
             if self.tool_busy == Some(k.id) {
                 let stopping = tools::STOP.load(Ordering::Relaxed);
                 let label = if stopping { "Stopping…" } else { "Stop" };
-                if quiet(ui, t, label, !stopping && k.id != "phone").clicked() {
+                if quiet(ui, t, label, !stopping && !matches!(k.id, "phone" | "read")).clicked() {
                     tools::STOP.store(true, Ordering::Relaxed);
                 }
                 return;
             }
             match k.id {
+                "read" => {
+                    if primary(ui, t, "Open", can)
+                        && let Some(f) = folder.clone()
+                    {
+                        self.run_tool(ui.ctx(), "read", move |say| {
+                            say("Reading the backup…".into());
+                            tools::Done::Book(export::book(&f))
+                        });
+                    }
+                }
                 "dupes" => self.dupes_buttons(ui, t, folder.clone(), can),
                 "heic" => {
                     let done = matches!(self.tool_result("heic"), Some(Ok(_)));

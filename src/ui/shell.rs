@@ -58,6 +58,8 @@ impl App {
 
     /// Opens a page, reading the backup folder for the pages that list its backups.
     pub(crate) fn go(&mut self, tab: Tab) {
+        // Messages stay in memory only while they are on screen.
+        self.reading = None;
         if matches!(tab, Tab::Restore | Tab::Tools) {
             let dest = self.dest.clone();
             self.scan(&dest);
@@ -80,7 +82,7 @@ impl App {
         let bar = if self.intro.is_some()
             || matches!(
                 self.tab,
-                Tab::Settings | Tab::Tools | Tab::Privacy | Tab::License | Tab::Help
+                Tab::Settings | Tab::Tools | Tab::Read | Tab::Privacy | Tab::License | Tab::Help
             ) {
             0.0
         } else {
@@ -91,6 +93,16 @@ impl App {
         let cmd = ui
             .scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 ui.multiply_opacity(fade);
+                // Its lists scroll by themselves, inside the height of the window.
+                if self.tab == Tab::Read {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(pad, 14))
+                        .show(ui, |ui| {
+                            ui.set_max_width(ui.available_width().min(1040.0));
+                            self.read_page(ui, t);
+                        });
+                    return None;
+                }
                 let mut area = egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .id_salt((self.tab as u8, self.intro.is_some()));
@@ -198,6 +210,7 @@ impl App {
             };
             let on = self.tab == *tab
                 || (*tab == Tab::Settings && matches!(self.tab, Tab::Privacy | Tab::License))
+                || (*tab == Tab::Tools && self.tab == Tab::Read)
                 || (*tab == self.help_from && self.tab == Tab::Help);
             let sense = if busy {
                 egui::Sense::hover()
