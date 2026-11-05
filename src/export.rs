@@ -3,9 +3,9 @@
 //! Reads the backup; writes only inside its `exports` folder.
 
 use crate::backup::{self, Msg, count, files};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::UNIX_EPOCH;
 
@@ -31,20 +31,9 @@ pub fn export(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
         write("contacts.html", contacts_html(&contacts))?;
         made.push("contacts");
     }
-    // Messages and calls show the contact's name where the number matches one.
-    let mut names = BTreeMap::new();
-    for (name, fields) in &contacts {
-        for (kind, value) in fields {
-            if *kind == "TEL" && !name.is_empty() {
-                names.entry(number_key(value)).or_insert(name.clone());
-            }
-        }
-    }
+    let names = names(&contacts);
     if let Some(text) = read("call_log.txt") {
-        let mut calls = rows(&text, &["number", "name", "date", "duration", "type"]);
-        for c in calls.iter_mut().filter(|c| c[1].is_empty()) {
-            c[1] = names.get(&number_key(&c[0])).cloned().unwrap_or_default();
-        }
+        let calls = calls(&text, &names);
         write("calls.csv", calls_csv(&calls))?;
         write("calls.html", calls_html(&calls))?;
         made.push("call history");
@@ -58,19 +47,7 @@ pub fn export(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
     }
     // Backups from before the calendar was saved have no calendar.txt.
     if let Some(text) = read("calendar.txt") {
-        let events = rows(
-            &text,
-            &[
-                "title",
-                "dtstart",
-                "dtend",
-                "allDay",
-                "eventLocation",
-                "description",
-                "rrule",
-            ],
-        );
-        write("calendar.ics", ics(&events))?;
+        write("calendar.ics", ics(&rows(&text, &EVENT_KEYS)))?;
         made.push("calendar");
     }
 
@@ -94,6 +71,211 @@ pub fn export(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
             out.display()
         )),
     }
+}
+
+/// One conversation on the Read page, oldest message first.
+pub struct Thread {
+    pub who: String,
+    pub messages: Vec<Said>,
+}
+
+/// A picture message's attachments: name, and the saved file if it can be found.
+type Files = Vec<(String, Option<PathBuf>)>;
+
+/// One text or picture message on the Read page.
+pub struct Said {
+    pub when: String,
+    /// Sent by the phone's owner.
+    pub me: bool,
+    pub text: String,
+    pub files: Files,
+}
+
+/// What the Read page shows. Contacts, calls and events are [title, details] rows.
+pub struct Book {
+    pub threads: Vec<Thread>,
+    pub contacts: Vec<[String; 2]>,
+    pub calls: Vec<[String; 2]>,
+    pub events: Vec<[String; 2]>,
+}
+
+/// Reads a backup's messages, contacts, calls and calendar for the Read page. Newest come first,
+/// contacts by name. Only reads.
+pub fn book(root: &Path) -> Result<Book, String> {
+    let read = |name: &str| fs::read_to_string(root.join("data").join(name)).unwrap_or_default();
+    let people = people(&read("contacts.txt"));
+    let names = names(&people);
+
+    let mut all: Vec<(Message, Files)> = messages(&read("sms.txt"), &names)
+        .into_iter()
+        .map(|m| (m, Vec::new()))
+        .collect();
+    all.extend(picture_messages(root, &read("mms.txt"), &names));
+    all.sort_by_key(|(m, _)| (number_key(&m.1), m.0));
+    let mut threads: Vec<(i64, Thread)> = all
+        .chunk_by(|a, b| number_key(&a.0.1) == number_key(&b.0.1))
+        .map(|chat| {
+            let last = &chat[chat.len() - 1].0;
+            let who = match who(&last.1, &last.2) {
+                w if w.is_empty() => "Unknown number".to_string(),
+                w => w,
+            };
+            let messages = chat
+                .iter()
+                .map(|((ms, _, _, me, text), files)| Said {
+                    when: when(&ms.to_string()),
+                    me: *me,
+                    text: text.clone(),
+                    files: files.clone(),
+                })
+                .collect();
+            (last.0, Thread { who, messages })
+        })
+        .collect();
+    threads.sort_by_key(|t| std::cmp::Reverse(t.0));
+    let threads: Vec<Thread> = threads.into_iter().map(|t| t.1).collect();
+
+    let mut contacts: Vec<[String; 2]> = contact_rows(&people)
+        .map(|c| {
+            let details = [c[1].as_str(), c[2].as_str()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ");
+            if c[0].is_empty() {
+                [details, String::new()]
+            } else {
+                [c[0].clone(), details]
+            }
+        })
+        .collect();
+    contacts.sort_by_key(|c| c[0].to_lowercase());
+
+    let mut calls = calls(&read("call_log.txt"), &names);
+    calls.sort_by_key(|c| std::cmp::Reverse(c[2].parse::<i64>().unwrap_or(0)));
+    let calls: Vec<[String; 2]> = call_rows(&calls)
+        .map(|c| {
+            let title = match who(&c[1], &c[2]) {
+                w if w.is_empty() => "Private number".to_string(),
+                w => w,
+            };
+            [title, format!("{}, {}, {}", c[0], c[3], c[4])]
+        })
+        .collect();
+
+    let mut events = rows(&read("calendar.txt"), &EVENT_KEYS);
+    events.sort_by_key(|e| std::cmp::Reverse(e[1].parse::<i64>().unwrap_or(0)));
+    let events: Vec<[String; 2]> = events.iter().map(|e| event_row(e)).collect();
+
+    if threads.is_empty() && contacts.is_empty() && calls.is_empty() && events.is_empty() {
+        return Err("This backup has no messages, contacts, calls or calendar to read.".into());
+    }
+    Ok(Book {
+        threads,
+        contacts,
+        calls,
+        events,
+    })
+}
+
+/// Picture messages from mms.txt, which holds three lists. Attachments are saved as
+/// `data/mms/<part id>_<name>`; backups from before part ids were saved give names without files.
+fn picture_messages(
+    root: &Path,
+    text: &str,
+    names: &BTreeMap<String, String>,
+) -> Vec<(Message, Files)> {
+    // adb on Windows ends each line with \r\n.
+    let text = text.replace("\r\n", "\n");
+    let Some((list, rest)) = text.split_once("\nParts:\n") else {
+        return Vec::new();
+    };
+    let Some((parts, addresses)) = rest.rsplit_once("\nAddresses:\n") else {
+        return Vec::new();
+    };
+    let mut part_rows = rows(parts.trim_end(), &["_id", "mid", "ct", "cl", "text"]);
+    if part_rows.is_empty() {
+        part_rows = rows(parts.trim_end(), &["mid", "ct", "cl", "text"]);
+        part_rows
+            .iter_mut()
+            .for_each(|p| p.insert(0, String::new()));
+    }
+    let address_rows = rows(addresses, &["msg_id", "address", "type"]);
+    let saved: HashMap<String, PathBuf> = fs::read_dir(root.join("data").join("mms"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            Some((name.split_once('_')?.0.to_string(), e.path()))
+        })
+        .collect();
+
+    rows(list.trim_end(), &["_id", "date", "msg_box", "sub"])
+        .iter()
+        .map(|m| {
+            // Box 1 is received; the others are from the owner. These dates are in seconds.
+            let me = m[2] != "1";
+            let ms = m[1].parse::<i64>().unwrap_or(0).saturating_mul(1000);
+            let parts: Vec<_> = part_rows.iter().filter(|p| p[1] == m[0]).collect();
+            let text: Vec<&str> = parts
+                .iter()
+                .filter(|p| p[2] == "text/plain")
+                .map(|p| p[4].as_str())
+                .collect();
+            let text = match text.join("\n") {
+                t if t.is_empty() => m[3].clone(),
+                t => t,
+            };
+            let files = parts
+                .iter()
+                .filter(|p| !["", "text/plain", "application/smil"].contains(&p[2].as_str()))
+                .map(|p| {
+                    let name = if p[3].is_empty() { "Attachment" } else { &p[3] };
+                    (name.to_string(), saved.get(&p[0]).cloned())
+                })
+                .collect();
+            // Address type 137 is the sender, 151 a recipient; "No result found." can follow it.
+            // shortcut: a group message files under one person, until the page shows group chats.
+            let want = if me { "151" } else { "137" };
+            let people = || {
+                address_rows
+                    .iter()
+                    .filter(|a| a[0] == m[0] && !a[1].is_empty() && a[1] != "insert-address-token")
+            };
+            let number = people()
+                .find(|a| a[2].starts_with(want))
+                .or(people().next())
+                .map_or(String::new(), |a| a[1].clone());
+            let name = names.get(&number_key(&number)).cloned().unwrap_or_default();
+            ((ms, number, name, me, text), files)
+        })
+        .collect()
+}
+
+/// [title, "2026-10-31 14:05, place, Repeats, description"], on one line.
+fn event_row(e: &[String]) -> [String; 2] {
+    let [title, start, _, all_day, place, about, rrule] = e else {
+        return Default::default();
+    };
+    // All-day events are stored as UTC midnights, so local time could show the day before.
+    let date = start
+        .parse()
+        .ok()
+        .and_then(|ms| time(ms, false))
+        .filter(|_| all_day == "1");
+    let start = date.map_or(when(start), |[y, m, d, ..]| {
+        format!("{y}-{m:02}-{d:02}, all day")
+    });
+    let about = about.split_whitespace().collect::<Vec<_>>().join(" ");
+    let repeats = if rrule.is_empty() { "" } else { "Repeats" };
+    let details = [start.as_str(), place, repeats, &about]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let title = if title.is_empty() { "No title" } else { title };
+    [title.to_string(), details]
 }
 
 /// `content query` output as one list of values per row, in `keys` order. "Row: 0 a=1, b=x, y"
@@ -159,11 +341,47 @@ pub fn people(text: &str) -> Vec<Person> {
     by_id.into_values().collect()
 }
 
-/// The last ten digits, so "+91 98765-43210" and "09876543210" match.
+/// The last ten digits, so "+91 98765-43210" and "09876543210" match. A sender with no digits,
+/// such as "VM-HDFCBK", is its own name: each stays a separate conversation.
 fn number_key(number: &str) -> String {
     let digits: Vec<char> = number.chars().filter(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return number.to_lowercase();
+    }
     digits[digits.len().saturating_sub(10)..].iter().collect()
 }
+
+/// Contact names by number: messages and calls show the name where the number matches one.
+fn names(contacts: &[Person]) -> BTreeMap<String, String> {
+    let mut names = BTreeMap::new();
+    for (name, fields) in contacts {
+        for (kind, value) in fields {
+            if *kind == "TEL" && !name.is_empty() {
+                names.entry(number_key(value)).or_insert(name.clone());
+            }
+        }
+    }
+    names
+}
+
+/// Calls from call_log.txt: number, name (from contacts if the phone gave none), date, duration, type.
+fn calls(text: &str, names: &BTreeMap<String, String>) -> Vec<Vec<String>> {
+    let mut calls = rows(text, &["number", "name", "date", "duration", "type"]);
+    for c in calls.iter_mut().filter(|c| c[1].is_empty()) {
+        c[1] = names.get(&number_key(&c[0])).cloned().unwrap_or_default();
+    }
+    calls
+}
+
+const EVENT_KEYS: [&str; 7] = [
+    "title",
+    "dtstart",
+    "dtend",
+    "allDay",
+    "eventLocation",
+    "description",
+    "rrule",
+];
 
 /// One text message: (phone time in ms, number, contact name, sent by the phone's owner, text).
 type Message = (i64, String, String, bool, String);
@@ -744,6 +962,118 @@ mod tests {
             fs::read_to_string(out.join("calls.csv"))
                 .unwrap()
                 .contains(",+15550100,\"Ann \"\"A\"\" Lee\",Incoming,1:01")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_a_backup_for_the_read_page() {
+        let root = std::env::temp_dir().join(format!("pb-book-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("data");
+        fs::create_dir_all(&data).unwrap();
+        assert!(book(&root).is_err());
+        fs::write(
+            data.join("contacts.txt"),
+            "Row: 0 contact_id=1, mimetype=vnd.android.cursor.item/phone_v2, display_name=zed, data1=+91 98765 43210\n\
+             Row: 1 contact_id=2, mimetype=vnd.android.cursor.item/email_v2, display_name=Ann, data1=a@b.c\n",
+        )
+        .unwrap();
+        fs::write(
+            data.join("sms.txt"),
+            "Row: 0 address=VM-HDFCBK, date=3000, type=1, body=Paid\n\
+             Row: 1 address=AX-AMAZON, date=1000, type=1, body=Sale\n\
+             Row: 2 address=+919876543210, date=2000, type=2, body=Hi\n\
+             Row: 3 address=09876543210, date=1500, type=1, body=Hello\nthere\n",
+        )
+        .unwrap();
+        fs::write(
+            data.join("call_log.txt"),
+            "Row: 0 number=NULL, name=NULL, date=1000, duration=0, type=3\n\
+             Row: 1 number=+919876543210, name=NULL, date=2000, duration=61, type=1\n",
+        )
+        .unwrap();
+        let start = 1_767_225_600_000i64;
+        fs::write(
+            data.join("calendar.txt"),
+            format!("Row: 0 title=Old, dtstart=1000, dtend=NULL, allDay=0, eventLocation=NULL, description=NULL, rrule=NULL\n\
+                     Row: 1 title=NULL, dtstart={start}, dtend=NULL, allDay=1, eventLocation=Home, description=Line\nmore, rrule=FREQ=YEARLY\n"),
+        )
+        .unwrap();
+        let b = book(&root).unwrap();
+        // Senders with no digits stay apart, and the newest conversation comes first.
+        let who: Vec<_> = b.threads.iter().map(|t| t.who.as_str()).collect();
+        assert_eq!(who, ["VM-HDFCBK", "zed (+919876543210)", "AX-AMAZON"]);
+        // The same number written two ways is one conversation, oldest message first.
+        let chat = &b.threads[1].messages;
+        assert_eq!((chat[0].me, chat[0].text.as_str()), (false, "Hello\nthere"));
+        assert_eq!((chat[1].me, chat[1].text.as_str()), (true, "Hi"));
+        assert_eq!(b.contacts[0], ["Ann", "a@b.c"]);
+        assert_eq!(b.contacts[1], ["zed", "+91 98765 43210"]);
+        assert!(b.calls[0][0].starts_with("zed"));
+        assert!(b.calls[0][1].ends_with(", Incoming, 1:01"));
+        assert_eq!(b.calls[1][0], "Private number");
+        assert_eq!(b.events[0][0], "No title");
+        assert!(!b.events[0][1].contains('\n'));
+        assert!(b.events[0][1].ends_with(", Home, Repeats, Line more"));
+        assert_eq!(b.events[1][0], "Old");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_picture_messages() {
+        let root = std::env::temp_dir().join(format!("pb-book-mms-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("data");
+        fs::create_dir_all(data.join("mms")).unwrap();
+        fs::write(data.join("mms").join("9_pic.jpg"), "x").unwrap();
+        fs::write(
+            data.join("sms.txt"),
+            "Row: 0 address=+919876543210, date=2000000, type=1, body=Later\n",
+        )
+        .unwrap();
+        let mms = "Row: 0 _id=1, date=1000, msg_box=1, sub=NULL\n\
+                   Row: 1 _id=2, date=3000, msg_box=2, sub=Trip\n\
+                   \nParts:\n\
+                   Row: 0 _id=8, mid=1, ct=application/smil, cl=NULL, text=<smil/>\n\
+                   Row: 1 _id=9, mid=1, ct=image/jpeg, cl=pic.jpg, text=NULL\n\
+                   Row: 2 _id=10, mid=1, ct=text/plain, cl=NULL, text=Two\nlines\n\
+                   Row: 3 _id=11, mid=2, ct=video/mp4, cl=NULL, text=NULL\n\
+                   \nAddresses:\n\
+                   Row: 0 msg_id=1, address=+919876543210, type=137\n\
+                   Row: 1 msg_id=1, address=+1000, type=151\n\
+                   No result found.\n\
+                   Row: 0 msg_id=2, address=insert-address-token, type=137\n\
+                   Row: 1 msg_id=2, address=+919876543210, type=151\n";
+        fs::write(data.join("mms.txt"), mms.replace('\n', "\r\n")).unwrap();
+        let b = book(&root).unwrap();
+        // Dates in seconds sort among text messages in ms, in one conversation with the texts.
+        assert_eq!(b.threads.len(), 1);
+        let chat = &b.threads[0].messages;
+        assert_eq!(chat.len(), 3);
+        assert_eq!(chat[0].text, "Two\nlines");
+        assert!(!chat[0].me);
+        assert_eq!(chat[0].files.len(), 1);
+        assert_eq!(chat[0].files[0].0, "pic.jpg");
+        assert!(chat[0].files[0].1.as_ref().unwrap().ends_with("9_pic.jpg"));
+        assert_eq!(chat[1].text, "Later");
+        // No text: the subject shows. Not saved: the name shows without a file.
+        assert_eq!(chat[2].text, "Trip");
+        assert!(chat[2].me);
+        assert_eq!(chat[2].files, [("Attachment".to_string(), None)]);
+
+        // A backup from before part ids were saved still reads, without the file.
+        let old = mms
+            .replace("_id=8, mid", "mid")
+            .replace("_id=9, mid", "mid");
+        let old = old
+            .replace("_id=10, mid", "mid")
+            .replace("_id=11, mid", "mid");
+        fs::write(data.join("mms.txt"), old).unwrap();
+        let b = book(&root).unwrap();
+        assert_eq!(
+            b.threads[0].messages[0].files,
+            [("pic.jpg".to_string(), None)]
         );
         let _ = fs::remove_dir_all(&root);
     }

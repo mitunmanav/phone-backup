@@ -56,7 +56,7 @@ impl App {
                 ui.add(egui::Label::new(&self.tool_status).wrap());
             });
             let stopping = tools::STOP.load(Ordering::Relaxed);
-            if which != "phone"
+            if !matches!(which, "phone" | "read")
                 && ui
                     .add_enabled(
                         !stopping,
@@ -123,6 +123,22 @@ impl App {
         });
         let folder = self.chosen.clone().filter(|_| !self.backups.is_empty());
         let can = folder.is_some() && !running;
+
+        ui.add_space(8.0);
+        panel(ui, t, "Read this backup", "", |ui| {
+            ui.label(muted(
+                "See its messages, contacts, call history and calendar here, without a phone.",
+            ));
+            if ui.add_enabled(can, egui::Button::new("Open")).clicked()
+                && let Some(f) = folder.clone()
+            {
+                self.run_tool(ui.ctx(), "read", move |say| {
+                    say("Reading the backup…".into());
+                    tools::Done::Book(export::book(&f))
+                });
+            }
+            self.tool_note(ui, t, "read");
+        });
 
         ui.add_space(8.0);
         panel(ui, t, "Duplicate files", "", |ui| {

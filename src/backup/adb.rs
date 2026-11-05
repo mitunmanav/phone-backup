@@ -743,7 +743,7 @@ pub(super) fn adb_backup_run(
         ("Messages", "sms.txt", "content query --uri content://sms --projection address:date:type:body"),
         ("Calendar", "calendar.txt", "content query --uri content://com.android.calendar/events --projection title:dtstart:dtend:allDay:eventLocation:description:rrule"),
         // Senders live under each message (mms/<id>/addr), so one loop on the phone reads them all.
-        ("Picture messages", "mms.txt", "content query --uri content://mms --projection _id:date:msg_box:sub; echo; echo Parts:; content query --uri content://mms/part --projection mid:ct:cl:text; echo; echo Addresses:; for id in $(content query --uri content://mms --projection _id | grep _id= | sed 's/.*_id=//'); do content query --uri content://mms/$id/addr --projection msg_id:address:type; done"),
+        ("Picture messages", "mms.txt", "content query --uri content://mms --projection _id:date:msg_box:sub; echo; echo Parts:; content query --uri content://mms/part --projection _id:mid:ct:cl:text; echo; echo Addresses:; for id in $(content query --uri content://mms --projection _id | grep _id= | sed 's/.*_id=//'); do content query --uri content://mms/$id/addr --projection msg_id:address:type; done"),
     ]
     .into_iter()
     .filter(|_| pick.data)

@@ -1079,6 +1079,16 @@ mod tests {
             .find(|e| e.file_name().to_string_lossy().ends_with("_e2e.jpg"))
             .expect("the picture of the picture message");
         assert_eq!(fs::read_to_string(pic.path()).unwrap(), "JPEGDATA\n");
+        // The Read page finds the message and its saved attachment.
+        let book = crate::export::book(&first.root).unwrap();
+        let said = book
+            .threads
+            .iter()
+            .flat_map(|t| &t.messages)
+            .find(|m| m.text == "Hello from MMS")
+            .expect("the picture message in a conversation");
+        assert_eq!(said.files.len(), 1);
+        assert_eq!(said.files[0].1.as_deref(), Some(pic.path().as_path()));
         let wa = e2e.join("WhatsApp/Media/WhatsApp Images");
         assert!(wa.join("IMG-received.jpg").exists());
         assert!(!wa.join("Sent").exists() && !e2e.join(".cache").exists());
