@@ -52,38 +52,6 @@ pub(crate) fn result_box(t: &Tokens) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(16, 12))
 }
 
-/// One page tab: ink text on the current tab, muted on the others, and a fill on hover. The
-/// accent pill under the current tab is drawn by the top bar, so it can slide.
-pub(crate) fn nav_item(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool) -> egui::Response {
-    let color = if on && ui.is_enabled() {
-        t.ink
-    } else {
-        t.muted
-    };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.into(), FontId::proportional(14.0), color);
-    let width = galley.size().x
-        + if ui.available_width() < 400.0 {
-            16.0
-        } else {
-            24.0
-        };
-    let (rect, r) = ui.allocate_exact_size(vec2(width, 34.0), egui::Sense::click());
-    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, ui.is_enabled(), on, label));
-    if r.hovered() {
-        ui.painter().rect_filled(rect, 4, t.hover);
-    }
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, color);
-    // egui draws no focus for a hand-made widget.
-    if r.has_focus() {
-        ui.painter()
-            .rect_stroke(rect, 4, Stroke::new(2.0, t.ink), StrokeKind::Inside);
-    }
-    r
-}
-
 /// A settings row: its name, and a note under it, on the left; its control on the right; a
 /// hairline under it.
 pub(crate) fn row(
@@ -336,8 +304,124 @@ pub(crate) fn badge(ui: &egui::Ui, t: &Tokens, c: Pos2, seal: f32) {
     }
 }
 
+/// A loose cable: `n` points on a string held at `a` and `b`, pushed by `push`, with `grab` holding
+/// one point somewhere else. Repaints only while it moves.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rope(
+    ctx: &egui::Context,
+    id: egui::Id,
+    n: usize,
+    a: Pos2,
+    b: Pos2,
+    slack: f32,
+    push: egui::Vec2,
+    grab: Option<(usize, Pos2)>,
+) -> Vec<Pos2> {
+    let (mut pts, mut prev) = ctx
+        .data(|d| d.get_temp::<(Vec<Pos2>, Vec<Pos2>)>(id))
+        .filter(|r| r.0.len() == n)
+        .unwrap_or_else(|| {
+            let line: Vec<Pos2> = (0..n)
+                .map(|i| a + (b - a) * (i as f32 / (n - 1) as f32))
+                .collect();
+            (line.clone(), line)
+        });
+    let seg = a.distance(b) * slack / (n - 1) as f32;
+    let steps = ((ctx.input(|i| i.stable_dt) * 120.0).ceil() as usize).clamp(1, 4);
+    let mut moved = 0.0f32;
+    for _ in 0..steps {
+        for i in 0..n {
+            let v = (pts[i] - prev[i]) * 0.975;
+            prev[i] = pts[i];
+            pts[i] += v + push;
+            moved = moved.max(v.length());
+        }
+        for _ in 0..14 {
+            pts[0] = a;
+            pts[n - 1] = b;
+            if let Some((i, at)) = grab {
+                pts[i] = at;
+            }
+            for i in 0..n - 1 {
+                let d = pts[i + 1] - pts[i];
+                let len = d.length().max(1e-3);
+                if len > seg {
+                    let fix = d * ((len - seg) / len * 0.5);
+                    pts[i] += fix;
+                    pts[i + 1] -= fix;
+                }
+            }
+        }
+        pts[0] = a;
+        pts[n - 1] = b;
+    }
+    if moved > 0.03 || grab.is_some() {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|d| d.insert_temp(id, (pts.clone(), prev)));
+    pts
+}
+
+/// The app's mark, a phone with a copper cable: RGBA pixels and the side length.
+pub(crate) fn logo_pixels() -> (Vec<u8>, usize) {
+    let n = 64usize;
+    let (tile, copper, white) = ([0x0B, 0x6E, 0x63], [0xE3, 0x9C, 0x66], [255, 255, 255]);
+    let round = |x: f32, y: f32, l: f32, top: f32, r: f32, b: f32, rad: f32| {
+        let dx = (l + rad - x).max(x - (r - rad)).max(0.0);
+        let dy = (top + rad - y).max(y - (b - rad)).max(0.0);
+        x >= l && x <= r && y >= top && y <= b && dx * dx + dy * dy <= rad * rad
+    };
+    let cable: Vec<Pos2> = (0..=40)
+        .map(|i| {
+            let s = i as f32 / 40.0;
+            let m = 1.0 - s;
+            let at = |a: f32, b: f32, c: f32, d: f32| {
+                m * m * m * a + 3.0 * m * m * s * b + 3.0 * m * s * s * c + s * s * s * d
+            };
+            pos2(at(13.0, 13.0, 26.0, 26.0), at(24.0, 31.0, 31.0, 14.0))
+        })
+        .collect();
+    let mut rgba = Vec::with_capacity(n * n * 4);
+    for py in 0..n {
+        for px in 0..n {
+            let (mut sum, mut hits) = ([0u32; 3], 0u32);
+            for sy in 0..3 {
+                for sx in 0..3 {
+                    let x = (px as f32 + (sx as f32 + 0.5) / 3.0) / 2.0;
+                    let y = (py as f32 + (sy as f32 + 0.5) / 3.0) / 2.0;
+                    if !round(x, y, 0.0, 0.0, 32.0, 32.0, 7.0) {
+                        continue;
+                    }
+                    let on_cable = cable.iter().any(|c| c.distance_sq(pos2(x, y)) < 1.7);
+                    let c = if round(x, y, 9.0, 6.5, 17.0, 21.0, 1.0) {
+                        tile
+                    } else if round(x, y, 7.0, 4.0, 19.0, 24.0, 2.5) {
+                        white
+                    } else if on_cable || round(x, y, 24.0, 8.0, 28.0, 14.0, 0.8) {
+                        copper
+                    } else {
+                        tile
+                    };
+                    for i in 0..3 {
+                        sum[i] += c[i] as u32;
+                    }
+                    hits += 1;
+                }
+            }
+            let d = hits.max(1);
+            rgba.extend_from_slice(&[
+                (sum[0] / d) as u8,
+                (sum[1] / d) as u8,
+                (sum[2] / d) as u8,
+                (hits * 255 / 9) as u8,
+            ]);
+        }
+    }
+    (rgba, n)
+}
+
 /// egui draws no focus for a hand-made widget.
-fn ring(ui: &egui::Ui, r: &egui::Response, rect: Rect, radius: u8, t: &Tokens) {
+pub(crate) fn ring(ui: &egui::Ui, r: &egui::Response, rect: Rect, radius: u8, t: &Tokens) {
     if r.has_focus() {
         ui.painter().rect_stroke(
             rect.expand(3.0),
@@ -697,7 +781,15 @@ pub(crate) fn time_left(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::tile_grid;
+    use super::{logo_pixels, tile_grid};
+
+    #[test]
+    fn logo_is_opaque_inside_and_clear_at_the_corners() {
+        let (rgba, n) = logo_pixels();
+        assert_eq!(rgba.len(), n * n * 4);
+        assert_eq!(rgba[3], 0);
+        assert_eq!(rgba[(n * n / 2 + n / 2) * 4 + 3], 255);
+    }
 
     #[test]
     fn three_or_more_across_leave_no_lone_tile() {

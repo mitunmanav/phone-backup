@@ -44,7 +44,15 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Phone Backup")
             .with_inner_size([960.0, 700.0])
-            .with_min_inner_size([360.0, 480.0]),
+            .with_min_inner_size([360.0, 540.0])
+            .with_icon({
+                let (rgba, n) = logo_pixels();
+                egui::IconData {
+                    rgba,
+                    width: n as u32,
+                    height: n as u32,
+                }
+            }),
         persist_window: !test_run(),
         ..Default::default()
     };
@@ -150,10 +158,10 @@ struct App {
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
     tab: Tab,
-    /// When the page (or intro step) last changed, for its fade and the tab pill's slide.
+    /// When the page (or intro step) last changed, for its fade.
     tab_at: Instant,
-    /// Where the tab pill was drawn last frame, and where its current slide started.
-    pill: (f32, f32),
+    /// The app's mark in the side rail, made the first time it is drawn.
+    logo: Option<egui::TextureHandle>,
     /// Windows' "Animation effects" setting.
     motion: bool,
     /// The first-run step on screen; None once it is done or skipped.
@@ -411,7 +419,7 @@ impl App {
             closing: false,
             tab: Tab::Backup,
             tab_at: Instant::now(),
-            pill: (0.0, 0.0),
+            logo: None,
             motion: motion_on(),
             // A first run has no saved backup folder yet.
             intro: cc
@@ -805,41 +813,25 @@ impl eframe::App for App {
         {
             self.go(Tab::Settings);
         }
-        let pad: i8 = if ui.available_width() >= 640.0 {
-            28
+        // A side rail when there is room, a strip across the top when not, nothing on the intro.
+        let full = ui.max_rect();
+        let main = if self.intro.is_some() {
+            full
+        } else if full.width() >= 720.0 {
+            const RAIL: f32 = 164.0;
+            let area = Rect::from_min_size(full.min, vec2(RAIL, full.height()));
+            self.nav(ui, &t, area, true);
+            full.with_min_x(area.right())
         } else {
-            16
+            let area = Rect::from_min_size(full.min, vec2(full.width(), 54.0));
+            self.nav(ui, &t, area, false);
+            full.with_min_y(area.bottom())
         };
-        egui::Panel::top("bar")
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin {
-                left: pad,
-                right: 8,
-                top: 6,
-                bottom: 0,
-            }))
-            .show(ui, |ui| self.top_bar(ui, &t));
-        egui::Frame::central_panel(ui.style())
-            .fill(t.bg)
-            .inner_margin(0)
-            .show(ui, |ui| {
-                // A lighter page under the tabs; its side and bottom edges sit just outside the
-                // window.
-                egui::Frame::new()
-                    .fill(t.layer)
-                    .stroke(Stroke::new(1.0, t.line))
-                    .outer_margin(egui::Margin {
-                        left: -1,
-                        top: 0,
-                        right: -1,
-                        bottom: -1,
-                    })
-                    .show(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        self.page(ui, &t, pad);
-                    });
-            });
+        let pad: i8 = if main.width() < 560.0 { 16 } else { 32 };
+        ui.painter().rect_filled(main, 0, t.layer);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
+            self.page(ui, &t, pad);
+        });
     }
 
     fn persist_egui_memory(&self) -> bool {

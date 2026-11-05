@@ -430,8 +430,10 @@ impl App {
         } else {
             24.0
         };
-        let rest = ui.clip_rect().height()
-            - 32.0
+        // The body starts below the page heading, which this leaves out.
+        let rest = ui.clip_rect().bottom()
+            - ui.cursor().top()
+            - 14.0
             - 8.0
             - HIT
             - 28.0

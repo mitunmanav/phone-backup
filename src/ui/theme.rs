@@ -106,7 +106,7 @@ pub(crate) fn visuals(dark: bool) -> egui::Visuals {
     v
 }
 
-/// Windows' "Animation effects" setting. Off: pages and the tab pill change at once.
+/// Windows' "Animation effects" setting. Off: pages and the page marker change at once.
 pub(crate) fn motion_on() -> bool {
     #[cfg(windows)]
     {
