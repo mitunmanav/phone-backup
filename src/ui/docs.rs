@@ -26,10 +26,11 @@ impl App {
     pub(crate) fn help_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         const USB: &str = "\u{E88E}";
         let back = self.help_from;
-        let word = if back == Tab::Settings {
-            "Settings"
-        } else {
-            "Back up"
+        let word = match back {
+            Tab::Settings => "Settings",
+            Tab::Restore => "Restore",
+            Tab::Transfer => "Transfer",
+            _ => "Back up",
         };
         self.trail(ui, t, word, back);
         self.doc_head(
@@ -293,7 +294,7 @@ impl App {
                 self.brand_steps(ui, t);
                 ui.add(
                     egui::Label::new(muted(
-                        "Rather not use a cable? Connect over Wi-Fi from the Back up page later.",
+                        "Rather not use a cable? Connect over Wi-Fi from the Back up or Settings page later.",
                     ))
                     .wrap(),
                 );

@@ -74,30 +74,6 @@ impl App {
             .map(|f| time_left((spent * (1.0 - f) / f) as u64))
     }
 
-    /// Progress of the running job; Stop is in the command bar.
-    pub(crate) fn progress(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        if let Some(f) = self.fraction {
-            ui.add(
-                egui::ProgressBar::new(f)
-                    .fill(t.accent)
-                    .desired_height(10.0)
-                    .corner_radius(5),
-            );
-        }
-        ui.horizontal(|ui| {
-            if self.fraction.is_none() {
-                ui.add(egui::Spinner::new().size(16.0));
-            }
-            ui.add(egui::Label::new(&self.status).wrap());
-        });
-        if let Some(left) = self.time_left_now() {
-            ui.label(RichText::new(left).color(t.muted));
-        }
-        if !self.now.is_empty() {
-            ui.add(egui::Label::new(RichText::new(&self.now).color(t.muted)).truncate());
-        }
-    }
-
     /// How the running or last backup stands.
     fn phase(&self) -> Phase {
         match &self.result {
@@ -752,13 +728,13 @@ impl App {
 
     /// How to get a phone connected: the help page, and Wi-Fi when `wifi`. Without adb, the way
     /// to get it comes first.
-    fn connect_help(&mut self, ui: &mut egui::Ui, t: &Tokens, wifi: bool) {
+    pub(crate) fn connect_help(&mut self, ui: &mut egui::Ui, t: &Tokens, wifi: bool) {
         ui.horizontal_wrapped(|ui| {
             if !self.adb_ok && quiet(ui, t, "Get adb in Settings", true).clicked() {
                 self.go(Tab::Settings);
             }
             if quiet(ui, t, "How to turn on USB debugging", true).clicked() {
-                self.help_from = Tab::Backup;
+                self.help_from = self.tab;
                 self.go(Tab::Help);
             }
             if wifi && quiet(ui, t, "Connect over Wi-Fi", true).clicked() {

@@ -428,7 +428,12 @@ impl App {
 
     /// What can come back from the chosen backup.
     fn restore_rows(&mut self, ui: &mut egui::Ui, t: &Tokens, room: f32) {
-        let locked = self.busy.load(Ordering::Relaxed) || self.restore_phase() != Phase::Idle;
+        let phase = self.restore_phase();
+        let locked = self.busy.load(Ordering::Relaxed) || phase != Phase::Idle;
+        self.battery_warnings(ui, t);
+        if phase == Phase::Idle && self.adb_phone().is_none() {
+            self.connect_help(ui, t, !self.busy.load(Ordering::Relaxed));
+        }
         let chosen = self
             .backups
             .iter()
@@ -452,46 +457,12 @@ impl App {
             w,
         );
 
-        const NOT_IN: &str = "Not in backup";
-        const NOT_YET: &str = "Not yet";
         let files_line = match picked {
-            _ if !has_files => NOT_IN.to_string(),
             Some((n, total)) => format!("{} of {}", count(n), files(total)),
             None => "All files".to_string(),
         };
-        let items = [
-            (
-                "\u{E91B}",
-                "Photos, files",
-                files_line.as_str(),
-                self.restore_files && has_files,
-                !has_files,
-            ),
-            (
-                "\u{E71D}",
-                "Apps",
-                if has_apps { "Without logins" } else { NOT_IN },
-                self.restore_apps && has_apps,
-                !has_apps,
-            ),
-            ("\u{E77B}", "Contacts", NOT_YET, false, true),
-            ("\u{E8BD}", "Messages", NOT_YET, false, true),
-        ];
-        let (cols, each) = tile_grid(w, room, items.len());
-        for (row, chunk) in items.chunks(cols).enumerate() {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = TILE_GAP;
-                for (k, (glyph, name, line, on, dim)) in chunk.iter().enumerate() {
-                    if tile(ui, t, (glyph, name, line), *on, locked, *dim, each) {
-                        match row * cols + k {
-                            0 => self.restore_files = !self.restore_files,
-                            _ => self.restore_apps = !self.restore_apps,
-                        }
-                    }
-                }
-            });
-            ui.add_space(TILE_GAP - ui.spacing().item_spacing.y);
-        }
+        let has = (has_files, has_apps);
+        self.onto_tiles(ui, t, room, &files_line, has, locked, phase);
         ui.add_space(6.0);
         let label = match picked {
             Some((n, total)) => format!("Choose files ({} of {})…", count(n), count(total)),
@@ -512,6 +483,69 @@ impl App {
             ))
             .wrap(),
         );
+    }
+
+    /// What can go onto a phone, as tiles. `has` says if there are (files, apps) to copy at all.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn onto_tiles(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Tokens,
+        room: f32,
+        files_line: &str,
+        (has_files, has_apps): (bool, bool),
+        locked: bool,
+        phase: Phase,
+    ) {
+        const NOT_IN: &str = "Not in backup";
+        const NOT_YET: &str = "Not yet";
+        let line = |has: bool, on: bool, line: &'static str| match (has, phase) {
+            (false, _) => NOT_IN,
+            (_, Phase::Done(0)) if on => "Copied",
+            _ => line,
+        };
+        let (files_on, apps_on) = (
+            self.restore_files && has_files,
+            self.restore_apps && has_apps,
+        );
+        let copied = line(has_files, files_on, "");
+        let items = [
+            (
+                "\u{E91B}",
+                "Photos, files",
+                if copied.is_empty() {
+                    files_line
+                } else {
+                    copied
+                },
+                files_on,
+                !has_files,
+            ),
+            (
+                "\u{E71D}",
+                "Apps",
+                line(has_apps, apps_on, "Without logins"),
+                apps_on,
+                !has_apps,
+            ),
+            ("\u{E77B}", "Contacts", NOT_YET, false, true),
+            ("\u{E8BD}", "Messages", NOT_YET, false, true),
+        ];
+        let (cols, each) = tile_grid(ui.available_width(), room, items.len());
+        for (row, chunk) in items.chunks(cols).enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = TILE_GAP;
+                for (k, (glyph, name, line, on, dim)) in chunk.iter().enumerate() {
+                    if tile(ui, t, (glyph, name, line), *on, locked, *dim, each) {
+                        match row * cols + k {
+                            0 => self.restore_files = !self.restore_files,
+                            _ => self.restore_apps = !self.restore_apps,
+                        }
+                    }
+                }
+            });
+            ui.add_space(TILE_GAP - ui.spacing().item_spacing.y);
+        }
     }
 
     /// The backups in the folder. Returns where the chosen one sits, so the cable can leave from it.

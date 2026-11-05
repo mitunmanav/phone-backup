@@ -160,6 +160,210 @@ pub(crate) fn own_scroll(
     });
 }
 
+/// Cuts the middle out of a long name, so both of its ends still show.
+pub(crate) fn cut_middle(ui: &egui::Ui, s: &str, size: f32, wght: f32, max_w: f32) -> String {
+    let width = |x: &str| {
+        let text = txt(x, size, wght, Color32::PLACEHOLDER);
+        galley(ui, text, egui::TextWrapMode::Extend, f32::INFINITY)
+            .size()
+            .x
+    };
+    if width(s) <= max_w {
+        return s.to_owned();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    for keep in (4..chars.len()).rev() {
+        let tail = keep * 2 / 5;
+        let short: String = chars[..keep - tail]
+            .iter()
+            .chain(['…'].iter())
+            .chain(chars[chars.len() - tail..].iter())
+            .collect();
+        if width(&short) <= max_w {
+            return short;
+        }
+    }
+    s.to_owned()
+}
+
+/// A list of choices under a control; returns the one picked.
+pub(crate) fn choices(
+    r: &egui::Response,
+    t: &Tokens,
+    width: f32,
+    options: &[String],
+) -> Option<usize> {
+    let frame = egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(8)
+        .inner_margin(4);
+    egui::Popup::menu(r)
+        .width(width)
+        .frame(frame)
+        .show(|ui| {
+            ui.set_min_width(width);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let mut hit = None;
+            for (i, o) in options.iter().enumerate() {
+                let (rect, r) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 36.0), egui::Sense::click());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, o));
+                if r.hovered() || r.has_focus() {
+                    ui.painter().rect_filled(rect, 4, t.hover);
+                }
+                let shown = cut_middle(ui, o, 13.0, 400.0, rect.width() - 20.0);
+                put(
+                    ui,
+                    pos2(rect.left() + 10.0, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    txt(&shown, 13.0, 400.0, t.ink),
+                    rect.width() - 20.0,
+                );
+                let r = if shown == *o { r } else { r.on_hover_text(o) };
+                if r.clicked() {
+                    hit = Some(i);
+                }
+            }
+            hit
+        })?
+        .inner
+}
+
+/// A name that opens a list of the others when pressed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chooser(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    at: Pos2,
+    label: &str,
+    (size, max_w): (f32, f32),
+    enabled: bool,
+    salt: &str,
+    options: &[String],
+) -> Option<usize> {
+    let chev = if enabled { 16.0 } else { 0.0 };
+    let shown = cut_middle(ui, label, size, 600.0, max_w - chev);
+    let rect = put(
+        ui,
+        at,
+        Align2::LEFT_TOP,
+        txt(&shown, size, 600.0, t.ink),
+        max_w - chev,
+    );
+    let hit = rect.expand2(vec2(if enabled { 18.0 } else { 0.0 }, 12.0));
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let r = ui.interact(hit, ui.scope_id().with(salt), sense);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, enabled, label));
+    let r = if shown == label {
+        r
+    } else {
+        r.on_hover_text(label)
+    };
+    ring(ui, &r, hit, 6, t);
+    if !enabled {
+        return None;
+    }
+    let ink = if r.hovered() { t.ink } else { t.muted };
+    icon(
+        ui,
+        pos2(rect.right() + 10.0, rect.center().y + 1.0),
+        "\u{E70D}",
+        10.0,
+        ink,
+    );
+    choices(
+        &r.on_hover_cursor(egui::CursorIcon::PointingHand),
+        t,
+        280.0,
+        options,
+    )
+}
+
+/// On or off. Paints 20 tall, answers across 44.
+pub(crate) fn switch(ui: &mut egui::Ui, t: &Tokens, on: bool, label: &str) -> bool {
+    let (track, _) = ui.allocate_exact_size(vec2(36.0, 20.0), egui::Sense::hover());
+    let r = ui.interact(
+        track.expand(12.0),
+        ui.scope_id().with(label),
+        egui::Sense::click(),
+    );
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, label));
+    let v = ui
+        .ctx()
+        .animate_bool_with_easing(r.id, on, egui::emath::easing::cubic_out);
+    let p = ui.painter();
+    p.rect(
+        track,
+        10,
+        mix(t.surface, t.accent, v),
+        Stroke::new(1.0, mix(t.border, t.accent, v)),
+        StrokeKind::Inside,
+    );
+    let x = track.left() + 10.0 + (track.width() - 20.0) * v;
+    p.circle_filled(pos2(x, track.center().y), 6.0, mix(t.muted, t.on_accent, v));
+    ring(ui, &r, track, 10, t);
+    let clicked = r.clicked();
+    r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    clicked
+}
+
+/// A plate's quiet frame.
+pub(crate) fn plate_frame(t: &Tokens) -> egui::Frame {
+    egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(RADIUS)
+        .inner_margin(egui::Margin::symmetric(14, 10))
+}
+
+/// A setting: a picture and its words, with the control beside them, or under them when narrow.
+pub(crate) fn plate(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    glyph: &str,
+    title: &str,
+    note: &str,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let words = |ui: &mut egui::Ui, wrap: bool| {
+        let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(32.0), egui::Sense::hover());
+        icon(ui, pos2(r.left() + 10.0, r.center().y), glyph, 20.0, t.ink);
+        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            let line = |text: RichText| {
+                let label = egui::Label::new(text).selectable(false);
+                if wrap { label.wrap() } else { label.truncate() }
+            };
+            ui.add(line(txt(title, 13.0, 400.0, t.ink)));
+            if !note.is_empty() {
+                ui.add(line(txt(note, 12.0, 400.0, t.muted)));
+            }
+        });
+    };
+    plate_frame(t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if ui.available_width() < 400.0 {
+            ui.horizontal_top(|ui| words(ui, true));
+            ui.add_space(6.0);
+            add(ui);
+        } else {
+            ui.horizontal(|ui| {
+                ui.set_min_height(44.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    add(ui);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| words(ui, false));
+                });
+            });
+        }
+    });
+    ui.add_space(6.0);
+}
+
 /// Numbered steps, each wrapped line lined up under its first.
 pub(crate) fn steps(ui: &mut egui::Ui, t: &Tokens, list: &[&str]) {
     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 9.0);
@@ -183,7 +387,7 @@ pub(crate) fn steps(ui: &mut egui::Ui, t: &Tokens, list: &[&str]) {
 // Controls paint at BUTTON height but answer clicks across HIT, so rows stay light and targets large.
 pub(crate) const HIT: f32 = 44.0;
 const BUTTON: f32 = 38.0;
-const RADIUS: u8 = 6;
+pub(crate) const RADIUS: u8 = 6;
 pub(crate) const TILE_GAP: f32 = 10.0;
 
 pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -735,61 +939,6 @@ pub(crate) fn tile(
     if !locked {
         r.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
-    clicked
-}
-
-/// A checkbox with a one-line explanation under its label, and an optional link after the
-/// explanation. Returns true when the link is clicked.
-pub(crate) fn choice(
-    ui: &mut egui::Ui,
-    t: &Tokens,
-    enabled: bool,
-    value: &mut bool,
-    label: &str,
-    note: &str,
-    link: Option<&str>,
-) -> bool {
-    // A box that cannot be used shows empty, so a grey tick does not read as "will be included".
-    let mut off = false;
-    let value = if enabled { value } else { &mut off };
-    // No add_enabled_ui scope here: each scope adds its own gap, so rows would sit unevenly.
-    let above = ui.add_enabled(enabled, egui::Checkbox::new(value, label));
-    let indent = ui.spacing().icon_width + ui.spacing().icon_spacing;
-    // The control is at least 32 px tall for an easy click, with its label centred in it;
-    // pull the note up into the space under the label, so a label that wraps still clears it.
-    let label_h = ui
-        .painter()
-        .layout(
-            label.into(),
-            TextStyle::Body.resolve(ui.style()),
-            Color32::PLACEHOLDER,
-            ui.available_width() - indent,
-        )
-        .size()
-        .y;
-    ui.add_space(-((above.rect.height() - label_h) / 2.0 + 4.0).max(0.0));
-    // A text row, not a control: without this the row would be 32 px tall.
-    let control_h = std::mem::replace(&mut ui.spacing_mut().interact_size.y, 18.0);
-    let clicked = ui
-        .horizontal_top(|ui| {
-            ui.add_space(indent);
-            // Wrapped lines start under the label, not under the box.
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                if !enabled {
-                    ui.disable();
-                }
-                ui.label(RichText::new(note).color(t.muted).size(12.0));
-                link.is_some_and(|l| {
-                    ui.link(RichText::new(l).size(12.0).color(t.accent))
-                        .clicked()
-                })
-            })
-            .inner
-        })
-        .inner;
-    ui.spacing_mut().interact_size.y = control_h;
-    ui.add_space(8.0);
     clicked
 }
 

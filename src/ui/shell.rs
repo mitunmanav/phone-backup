@@ -1,8 +1,7 @@
 use crate::*;
 
 impl App {
-    /// The phone beside what to do with it (stacked when narrow), then progress and results.
-    /// Returns what the command bar offers; Settings has none.
+    /// The page's body. Returns what the command bar offers; Settings has none.
     pub(crate) fn content(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<Cmd> {
         if self.tab == Tab::Settings {
             self.settings_page(ui, t);
@@ -28,33 +27,7 @@ impl App {
         if self.tab == Tab::Restore {
             return Some(self.restore_tab(ui, t));
         }
-        let job = |app: &mut Self, ui: &mut egui::Ui| app.transfer_tab(ui, t);
-        let cmd = if ui.available_width() >= 640.0 {
-            ui.spacing_mut().item_spacing.x = 16.0;
-            let cmd = ui.columns_const(|[left, right]| {
-                // egui's columns are justified: wrapped text got stretched word gaps and buttons
-                // ran full width, unlike the narrow layout.
-                let plain = Layout::top_down(Align::Min);
-                left.spacing_mut().item_spacing.x = 8.0;
-                right.spacing_mut().item_spacing.x = 8.0;
-                left.with_layout(plain, |ui| {
-                    panel(ui, t, "Phone", "", |ui| self.device(ui, t))
-                });
-                right.with_layout(plain, |ui| job(self, ui)).inner
-            });
-            ui.spacing_mut().item_spacing.x = 8.0;
-            cmd
-        } else {
-            panel(ui, t, "Phone", "", |ui| self.device(ui, t));
-            ui.add_space(8.0);
-            job(self, ui)
-        };
-        if self.busy.load(Ordering::Relaxed) {
-            ui.add_space(8.0);
-            panel(ui, t, "Progress", "", |ui| self.progress(ui, t));
-        }
-        self.restore_result(ui, t, cmd.plan.as_ref().map(|p| &p.0));
-        Some(cmd)
+        Some(self.transfer_tab(ui, t))
     }
 
     /// 0 to 1 over `secs` since the page changed, eased out; 1 at once with animations off.
@@ -78,6 +51,10 @@ impl App {
         }
         if tab == Tab::Tools {
             self.scrcpy = tools::scrcpy_path();
+        }
+        // These two pages share one result: it must not show up as the other's.
+        if tab != self.tab && tab != Tab::Help && matches!(self.tab, Tab::Restore | Tab::Transfer) {
+            self.restore_msg = None;
         }
         self.tab = tab;
         self.tab_at = Instant::now();

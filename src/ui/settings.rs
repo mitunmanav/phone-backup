@@ -81,6 +81,10 @@ impl App {
         );
 
         section(ui, "Help");
+        self.phone_actions(ui, t, &|ui, label, enabled| {
+            // Without a model name, adb gives a long Wi-Fi address instead.
+            ui.add_enabled(enabled, egui::Button::new(label).truncate())
+        });
         row(
             ui,
             t,
