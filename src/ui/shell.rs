@@ -1,6 +1,19 @@
 use crate::*;
 
 impl App {
+    pub(crate) fn logo_id(&mut self, ctx: &egui::Context) -> egui::TextureId {
+        self.logo
+            .get_or_insert_with(|| {
+                let (rgba, n) = logo_pixels();
+                ctx.load_texture(
+                    "logo",
+                    egui::ColorImage::from_rgba_unmultiplied([n, n], &rgba),
+                    egui::TextureOptions::LINEAR,
+                )
+            })
+            .id()
+    }
+
     /// The page's body. Returns what the command bar offers; Settings has none.
     pub(crate) fn content(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<Cmd> {
         if self.tab == Tab::Settings {
@@ -143,17 +156,10 @@ impl App {
         if rail {
             ui.painter()
                 .vline(area.right(), area.y_range(), Stroke::new(1.0, t.line));
-            let logo = self.logo.get_or_insert_with(|| {
-                let (rgba, n) = logo_pixels();
-                ui.ctx().load_texture(
-                    "logo",
-                    egui::ColorImage::from_rgba_unmultiplied([n, n], &rgba),
-                    egui::TextureOptions::LINEAR,
-                )
-            });
+            let logo = self.logo_id(ui.ctx());
             let at = Rect::from_min_size(area.min + vec2(18.0, 16.0), egui::Vec2::splat(28.0));
             ui.painter().image(
-                logo.id(),
+                logo,
                 at,
                 Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 Color32::WHITE,

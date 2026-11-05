@@ -99,35 +99,43 @@ impl App {
         );
     }
 
-    /// Privacy or License, opened from Settings: a trail back, a heading, then short sections.
+    /// Privacy or License, opened from Settings: a trail back, a heading, then short cards.
     pub(crate) fn doc_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        ui.set_max_width(ui.available_width().min(600.0));
-        let (title, lede, parts): (&str, &str, &[(&str, &str)]) = if self.tab == Tab::Privacy {
+        let (glyph, title, lede, parts): (&str, &str, &str, &[(&str, &str, &str)]) = if self.tab
+            == Tab::Privacy
+        {
             (
+                "\u{EA18}",
                 "Privacy",
                 "Phone Backup keeps everything on your computer.",
                 &[
                     (
+                        "\u{E8EA}",
                         "What it reads",
                         "The phone you connect, to show what is on it. It copies only what you choose, and only when you start a backup, restore or tool.",
                     ),
                     (
+                        "\u{E88E}",
                         "The helper on your phone",
                         "When a backup includes contacts, call history, messages and the calendar, the app puts a small helper app on the phone to read them, and removes it when the backup ends. If the phone is unplugged first, the next backup removes it. It sends data only to your computer, over the USB debugging connection.",
                     ),
                     (
+                        "\u{E8B7}",
                         "Where your backups go",
                         "Into the backup folder you choose, as ordinary files. They are not encrypted, so anyone who can open that folder can read them. Keep it on a drive only you use.",
                     ),
                     (
+                        "\u{E774}",
                         "The internet",
                         "No account, ads or tracking. The app goes online only when you click Get adb, to download it from Google, or Check for updates, to ask GitHub for the newest version. It sends none of your data; those sites see your internet address, as any website does. Wi-Fi pairing talks only to your phone, on your own network. Links open in your browser, and only when you click them.",
                     ),
                     (
+                        "\u{E9D9}",
                         "Diagnostics",
                         "Save diagnostics writes a text file where you choose. Nothing is sent. Read it before you share it.",
                     ),
                     (
+                        "\u{E74D}",
                         "Removing your data",
                         "Deleting the app does not delete your backups: delete the backup folder to remove them. The app's settings are kept in your Windows user folder (AppData).",
                     ),
@@ -135,46 +143,37 @@ impl App {
             )
         } else {
             (
+                "\u{E8A5}",
                 "License",
                 "Phone Backup is free software under the GNU General Public License, version 3 or later. These are its only terms.",
                 &[
                     (
+                        "\u{E73E}",
                         "You may",
                         "Use it for anything, at home or at work. Read and change its source code. Share copies, changed or not.",
                     ),
                     (
+                        "\u{E72D}",
                         "If you share it",
                         "Include the source code or say where to get it, keep the same license, and mark what you changed.",
                     ),
                     (
+                        "\u{E7BA}",
                         "No warranty",
                         "It comes as is, without any warranty, and the authors are not liable for lost data or other damage. Keep a second copy of anything you cannot lose.",
                     ),
                     (
+                        "\u{E90F}",
                         "Other tools",
                         "adb comes from Google under its own terms, which you accept before it downloads. Screen mirroring uses scrcpy, under the Apache License 2.0.",
                     ),
                 ],
             )
         };
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if ui.link("Settings").clicked() {
-                self.go(Tab::Settings);
-            }
-            ui.label(RichText::new("›").color(t.muted));
-            ui.label(title);
-        });
-        ui.add_space(4.0);
-        ui.label(RichText::new(title).font(semibold(20.0)));
-        ui.add(egui::Label::new(RichText::new(lede).color(t.muted)).wrap());
-        for (head, body) in parts {
-            ui.add_space(12.0);
-            ui.label(RichText::new(*head).font(semibold(14.0)));
-            ui.add(egui::Label::new(*body).wrap());
-        }
+        self.trail(ui, t, "Settings", Tab::Settings);
+        self.doc_head(ui, t, glyph, title, lede);
+        info_cards(ui, t, parts);
         if self.tab == Tab::License {
-            ui.add_space(12.0);
             ui.hyperlink_to(
                 "Read the full license text",
                 "https://www.gnu.org/licenses/gpl-3.0.html",

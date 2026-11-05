@@ -112,18 +112,16 @@ impl App {
 
     /// Connect over Wi-Fi and a report button per phone, drawn by `button`, with how the report
     /// is going.
-    pub(crate) fn phone_actions(
-        &mut self,
-        ui: &mut egui::Ui,
-        t: &Tokens,
-        button: &dyn Fn(&mut egui::Ui, &str, bool) -> egui::Response,
-    ) {
+    pub(crate) fn phone_actions(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let busy = self.busy.load(Ordering::Relaxed);
         ui.horizontal_wrapped(|ui| {
-            if button(ui, "Connect over Wi-Fi…", !busy).clicked() {
+            if quiet(ui, t, "Check again", true).clicked() {
+                self.adb_ok = backup::adb_installed();
+            }
+            if quiet(ui, t, "Connect over Wi-Fi…", !busy).clicked() {
                 self.wifi_open = true;
             }
-            self.report_buttons(ui, busy, button);
+            self.report_buttons(ui, t, busy);
         });
         if self.report_working {
             ui.horizontal(|ui| {
@@ -137,12 +135,7 @@ impl App {
     }
 
     /// A button per ADB phone to save a page about it, for printing or showing a buyer.
-    fn report_buttons(
-        &mut self,
-        ui: &mut egui::Ui,
-        busy: bool,
-        button: &dyn Fn(&mut egui::Ui, &str, bool) -> egui::Response,
-    ) {
+    fn report_buttons(&mut self, ui: &mut egui::Ui, t: &Tokens, busy: bool) {
         let phones: Vec<(String, String)> = self
             .phones
             .iter()
@@ -158,7 +151,7 @@ impl App {
             } else {
                 "Save phone report…".into()
             };
-            if button(ui, &label, !busy && !self.report_working).clicked()
+            if quiet(ui, t, &label, !busy && !self.report_working).clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .set_directory(&self.dest)
                     .set_file_name("phone-report.txt")
