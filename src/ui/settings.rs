@@ -102,6 +102,23 @@ impl App {
                     }
                 }
             });
+            if ui.visuals().dark_mode {
+                ui.add_space(10.0);
+                let mut grey = GREY.load(Ordering::Relaxed);
+                ui.horizontal(|ui| {
+                    ui.label(txt("Darkness", 13.0, 400.0, t.muted));
+                    ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(80.0);
+                    let slider = egui::Slider::new(&mut grey, 0..=GREY_MAX)
+                        .show_value(false)
+                        .trailing_fill(true);
+                    if ui.add(slider).changed() {
+                        GREY.store(grey, Ordering::Relaxed);
+                        ui.ctx().set_visuals_of(egui::Theme::Dark, visuals(true));
+                    }
+                    let word = if grey == 0 { "Pure black" } else { "Dark grey" };
+                    ui.label(txt(word, 13.0, 400.0, t.ink));
+                });
+            }
         });
         ui.add_space(6.0);
 
