@@ -28,17 +28,25 @@ pub(crate) struct Tokens {
     pub(crate) error: Color32,
 }
 
+/// How far dark mode's greys sit above pure black, chosen in Settings.
+pub(crate) static GREY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Lighter than this and red error text on a hovered row drops below 4.5:1.
+pub(crate) const GREY_MAX: u8 = 28;
+
 pub(crate) fn tokens(dark: bool) -> Tokens {
     let hex = |h: u32| Color32::from_rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
     if dark {
+        // Red, green and blue stay equal, so a lighter dark mode never leans to a colour.
+        let g = GREY.load(Ordering::Relaxed).min(GREY_MAX);
+        let n = |v: u8| Color32::from_gray(v + g);
         Tokens {
-            bg: hex(0x000000),
-            layer: hex(0x000000),
-            surface: hex(0x101010),
-            field: hex(0x000000),
-            line: hex(0x2C2C2C),
+            bg: n(0x00),
+            layer: n(0x00),
+            surface: n(0x10),
+            field: n(0x00),
+            line: n(0x2C),
             border: hex(0x8C8C8C),
-            hover: hex(0x1E1E1E),
+            hover: n(0x1E),
             ink: hex(0xF4F4F4),
             muted: hex(0xB0B0B0),
             accent: hex(0xE39C66),
@@ -148,7 +156,8 @@ mod tests {
 
     #[test]
     fn text_and_edges_stay_readable_in_both_themes() {
-        for dark in [false, true] {
+        for (dark, grey) in [(false, 0), (true, 0), (true, GREY_MAX)] {
+            GREY.store(grey, Ordering::Relaxed);
             let t = tokens(dark);
             for back in [t.bg, t.surface, t.field, t.hover, t.info] {
                 for text in [t.ink, t.muted, t.accent, t.warning, t.error] {
@@ -160,5 +169,6 @@ mod tests {
                 assert!(contrast(t.border, back) >= 3.0, "edge on {back:?}");
             }
         }
+        GREY.store(0, Ordering::Relaxed);
     }
 }

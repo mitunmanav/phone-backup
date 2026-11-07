@@ -24,7 +24,7 @@ Website: <https://mitunmanav.github.io/phone-backup/>
 - Save a phone report from the phone card over USB debugging or Wi-Fi: model, Android version, security patch, storage and battery, as a text file to print or show a buyer. Values the phone does not give are left out, and it never includes the serial number or IMEI.
 - Save a diagnostics file under Settings to attach to a bug report after reading it.
 - Check for a newer version with a button under Settings. The app never checks by itself and does not update itself.
-- Choose the backup folder and a light or dark theme (or follow Windows) under Settings. Settings also opens the app's privacy notice and license, and shows the first-run steps again (what the app does, adb, USB debugging and the backup folder).
+- Choose the backup folder and a light or dark theme (or follow Windows), and how dark the dark theme is, under Settings. Settings also opens the app's privacy notice and license, and shows the first-run steps again (what the app does, adb, USB debugging and the backup folder).
 
 ## Download
 

@@ -226,6 +226,8 @@ struct App {
     tool_busy: Option<&'static str>,
     /// Stop was pressed on the running tool: ask first.
     stop_tool: bool,
+    /// The zoom this app last set for the window's size; None once the user zoomed by hand.
+    auto_zoom: Option<f32>,
     tool_status: String,
     /// What the last tool said, and in which panel.
     tool_msg: Option<(&'static str, Result<String, String>)>,
@@ -263,6 +265,28 @@ enum Confirm {
 }
 
 impl App {
+    /// Bigger windows get bigger everything, not just more empty space, up to 120%. Ctrl+plus
+    /// or minus turns this off for good: the user's own zoom always wins.
+    fn auto_zoom(&mut self, ctx: &egui::Context) {
+        let Some(set) = self.auto_zoom else { return };
+        let z = ctx.zoom_factor();
+        if (z - set).abs() > 0.001 {
+            self.auto_zoom = None;
+            return;
+        }
+        let r = ctx.content_rect();
+        let want = (r.width() * z / 1280.0)
+            .min(r.height() * z / 800.0)
+            .clamp(1.0, 1.2);
+        // Only a clear change counts, and in 5% steps: a slow drag must not redraw the fonts
+        // each frame, and a window on the line between two steps must not flip.
+        if (want - z).abs() > 0.06 || (want == 1.0 && z != 1.0) {
+            let want = (want * 20.0).round() / 20.0;
+            ctx.set_zoom_factor(want);
+            self.auto_zoom = Some(want);
+        }
+    }
+
     fn new(cc: &eframe::CreationContext) -> Self {
         let ctx = &cc.egui_ctx;
 
@@ -346,6 +370,9 @@ impl App {
                 ..egui::style::ScrollStyle::solid()
             };
         });
+        if let Some(g) = cc.storage.and_then(|s| s.get_string("grey")?.parse().ok()) {
+            GREY.store(g, Ordering::Relaxed);
+        }
         ctx.set_visuals_of(egui::Theme::Light, visuals(false));
         ctx.set_visuals_of(egui::Theme::Dark, visuals(true));
         let (tx, rx) = mpsc::channel();
@@ -486,6 +513,12 @@ impl App {
             tool: 0,
             tool_busy: None,
             stop_tool: false,
+            auto_zoom: (cc
+                .storage
+                .and_then(|s| s.get_string("auto_zoom"))
+                .as_deref()
+                != Some("off"))
+            .then(|| ctx.zoom_factor()),
             tool_status: String::new(),
             tool_msg: None,
             dupes: None,
@@ -644,6 +677,7 @@ impl App {
                         ));
                     }
                     _ if word.starts_with("zoom=") => {
+                        app.auto_zoom = None;
                         ctx.set_zoom_factor(word[5..].parse().unwrap_or(1.0))
                     }
                     _ if word.starts_with("pick=") => app.open_picker(ctx, word[5..].into(), false),
@@ -696,6 +730,7 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.auto_zoom(ui.ctx());
         // About a second first, so measured sizes and fading scroll bars have settled.
         if let Some(path) = &self.shot
             && ui.ctx().cumulative_frame_nr() == 60
@@ -977,6 +1012,16 @@ impl eframe::App for App {
         storage.set_string("connect_addr", self.connect_addr.clone());
         storage.set_string("sound", bit(self.sound).to_string());
         storage.set_string("sound_pick", self.sound_pick.to_string());
+        storage.set_string("grey", GREY.load(Ordering::Relaxed).to_string());
+        storage.set_string(
+            "auto_zoom",
+            if self.auto_zoom.is_some() {
+                "on"
+            } else {
+                "off"
+            }
+            .into(),
+        );
         storage.set_string(
             "pick",
             [self.pick.files, self.pick.apps, self.pick.data]
