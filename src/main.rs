@@ -144,10 +144,14 @@ struct App {
     fraction: Option<f32>,
     /// How far the last job had got when it ended.
     stopped_at: Option<f32>,
+    /// The running or last backup's bytes copied and to copy, per tile (`Msg::Tiles`).
+    tiles: Option<([u64; 6], [u64; 6])>,
     /// The folder last asked about and the room left for it; None after a backup changes that.
     free: Option<(PathBuf, Option<u64>)>,
     /// When the progress bar last appeared, for the time left.
     progress_from: Instant,
+    /// When Pause was pressed, while the job is paused.
+    paused_at: Option<Instant>,
     result: Option<Result<Vec<Summary>, String>>,
     pair_addr: String,
     pair_code: String,
@@ -413,8 +417,10 @@ impl App {
             now: String::new(),
             fraction: None,
             stopped_at: None,
+            tiles: None,
             free: None,
             progress_from: Instant::now(),
+            paused_at: None,
             result: None,
             pair_addr: cc
                 .storage
@@ -487,9 +493,9 @@ impl App {
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [settings] [sound] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy] [light|dark] [wifi] [busy] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // [delete|rename|copy] [light|dark] [wifi] [busy [paused]] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; paused shows it paused; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         // update=working|new|same|failed also shows that result of Check for updates.
         if cfg!(debug_assertions) && test_run() {
@@ -553,6 +559,10 @@ impl App {
                         .ok();
                     }
                     "choose" => app.choosing = true,
+                    "paused" => {
+                        backup::PAUSE.store(true, Ordering::Relaxed);
+                        app.paused_at = Some(Instant::now());
+                    }
                     "badusb" => app.phones = Some(vec![Phone::UsbFailed]),
                     _ if word.starts_with("noadb") => {
                         app.adb_ok = false;
@@ -574,6 +584,17 @@ impl App {
                         app.now = r"/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/VID-20240817-WA0007.mp4".into();
                         app.fraction = Some(0.375);
                         app.progress_from = Instant::now() - Duration::from_secs(431);
+                        app.tiles = Some((
+                            [19_200_000_000, 0, 0, 0, 0, 0],
+                            [
+                                31_400_000_000,
+                                9_800_000_000,
+                                0,
+                                1_200_000_000,
+                                2_600_000_000,
+                                3_100_000_000,
+                            ],
+                        ));
                     }
                     "done" if app.tab != Tab::Backup => {
                         app.restore_msg = Some(Ok("Copied 1,093 files back to the phone. 47,120 files were already there.".into()));
@@ -602,6 +623,17 @@ impl App {
                     "stopped" => {
                         app.result = Some(Err("You stopped the backup. Files copied so far are kept; press Try again to continue.".into()));
                         app.stopped_at = Some(0.62);
+                        app.tiles = Some((
+                            [31_400_000_000, 2_100_000_000, 0, 0, 0, 0],
+                            [
+                                31_400_000_000,
+                                9_800_000_000,
+                                0,
+                                1_200_000_000,
+                                2_600_000_000,
+                                3_100_000_000,
+                            ],
+                        ));
                     }
                     _ if word.starts_with("zoom=") => {
                         ctx.set_zoom_factor(word[5..].parse().unwrap_or(1.0))
@@ -688,6 +720,7 @@ impl eframe::App for App {
                     self.now.clear();
                     self.fraction = None;
                 }
+                Msg::Tiles(done, total) => self.tiles = Some((done, total)),
                 Msg::Progress { done, total, now } => {
                     self.now = now;
                     if total > 0 {

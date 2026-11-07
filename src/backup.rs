@@ -31,6 +31,17 @@ fn stopped() -> bool {
     STOP.load(Ordering::Relaxed)
 }
 
+/// Set by the Pause button: copying waits before its next batch until this is cleared.
+pub static PAUSE: AtomicBool = AtomicBool::new(false);
+
+/// Waits while paused; true when the job was stopped, before or during the wait.
+fn hold() -> bool {
+    while PAUSE.load(Ordering::Relaxed) && !stopped() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    stopped()
+}
+
 const STOPPED: &str =
     "You stopped the backup. Files copied so far are kept; press Try again to continue.";
 
@@ -42,6 +53,8 @@ pub enum Msg {
         total: usize,
         now: String,
     },
+    /// A backup's bytes copied and to copy, for each of `KINDS` and then apps.
+    Tiles([u64; 6], [u64; 6]),
     Phones(Vec<Phone>),
     Wifi(Result<String, String>),
     /// The download of adb ended.

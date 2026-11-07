@@ -723,7 +723,30 @@ pub(super) fn adb_backup_run(
     // Old sums of files about to be replaced go first, so a stopped backup leaves no wrong sum.
     let replaced: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
     update_sums(&root, &replaced, &[], report);
-    let errors = pull(serial, jobs, &root, report);
+    // Bytes to copy for each tile (KINDS, then apps), so each tile shows its own progress.
+    let apps_dir = root.join("apps");
+    let tile = |j: &Job| {
+        if j.local.starts_with(&apps_dir) {
+            5
+        } else {
+            kind(&j.remote)
+        }
+    };
+    let mut total = [0; 6];
+    for j in &jobs {
+        total[tile(j)] += j.size;
+    }
+    report(Msg::Tiles([0; 6], total));
+    let copied = std::cell::Cell::new([0; 6]);
+    let each = |batch: &[Job]| {
+        let mut done = copied.get();
+        for j in batch {
+            done[tile(j)] += j.size;
+        }
+        copied.set(done);
+        report(Msg::Tiles(done, total));
+    };
+    let errors = pull(serial, jobs, &root, report, &each);
     if stopped() {
         return Err(STOPPED.into());
     }
@@ -947,8 +970,14 @@ pub(super) fn needs_copy(job: &Job) -> bool {
 }
 
 /// Copies jobs with one `adb pull` per folder (one per file is far slower), then checks each
-/// file. Returns the files that did not arrive.
-pub(super) fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Msg)) -> Vec<String> {
+/// file. Returns the files that did not arrive. `each` hears of every batch once it is pulled.
+pub(super) fn pull(
+    serial: &str,
+    jobs: Vec<Job>,
+    root: &Path,
+    report: &dyn Fn(Msg),
+    each: &dyn Fn(&[Job]),
+) -> Vec<String> {
     let total = jobs.len();
     let mut done = 0;
     let mut errors = Vec::new();
@@ -993,7 +1022,7 @@ pub(super) fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Ms
                 len += jobs[end].remote.len() + 3;
                 end += 1;
             }
-            if stopped() {
+            if hold() {
                 return errors;
             }
             let mut c = adb();
@@ -1001,6 +1030,7 @@ pub(super) fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Ms
                 .args(jobs[start..end].iter().map(|j| &j.remote))
                 .arg(&dir);
             run(c);
+            each(&jobs[start..end]);
             start = end;
         }
         record_failures(&jobs, &mut errors);
@@ -1009,7 +1039,7 @@ pub(super) fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Ms
 
     let tmp = root.join(".pulling");
     for job in &single {
-        if stopped() {
+        if hold() {
             break;
         }
         report(Msg::Progress {
@@ -1039,6 +1069,7 @@ pub(super) fn pull(serial: &str, jobs: Vec<Job>, root: &Path, report: &dyn Fn(Ms
                 .arg(&job.local);
             run(c);
         }
+        each(std::slice::from_ref(job));
         done += 1;
     }
     let _ = fs::remove_dir_all(&tmp);
