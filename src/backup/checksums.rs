@@ -40,10 +40,23 @@ pub(super) fn rel(root: &Path, path: &Path) -> String {
 }
 
 pub(super) fn sha256(path: &Path) -> std::io::Result<String> {
+    Ok(sha256_bytes(path)?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// SHA-256 of a file, read in chunks so large videos never sit in memory.
+pub fn sha256_bytes(path: &Path) -> std::io::Result<[u8; 32]> {
     use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    std::io::copy(&mut fs::File::open(path)?, &mut hasher)?;
-    Ok(format!("{:x}", hasher.finalize()))
+    let (mut file, mut hasher) = (fs::File::open(path)?, sha2::Sha256::new());
+    let mut buf = vec![0; 1 << 16];
+    loop {
+        match file.read(&mut buf)? {
+            0 => return Ok(hasher.finalize().into()),
+            n => hasher.update(&buf[..n]),
+        }
+    }
 }
 
 /// Drops the sums of `fresh` files (just rewritten) and of files gone from the folder, then
