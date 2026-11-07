@@ -422,8 +422,9 @@ impl App {
             if self.tool_busy == Some(k.id) {
                 let stopping = tools::STOP.load(Ordering::Relaxed);
                 let label = if stopping { "Stopping…" } else { "Stop" };
-                if quiet(ui, t, label, !stopping && !matches!(k.id, "phone" | "read")).clicked() {
-                    tools::STOP.store(true, Ordering::Relaxed);
+                // Only these two look at tools::STOP; the others end on their own.
+                if quiet(ui, t, label, !stopping && matches!(k.id, "dupes" | "heic")).clicked() {
+                    self.stop_tool = true;
                 }
                 return;
             }
@@ -678,6 +679,34 @@ impl App {
     }
 
     /// Asks before a tool deletes anything; Esc or a click outside keeps the files.
+    /// Asks before a stray click on Stop ends a running tool.
+    pub(crate) fn stop_tool_dialog(&mut self, ctx: &egui::Context) {
+        let (title, body) = match self.tool_busy {
+            _ if !self.stop_tool => return,
+            Some("dupes") => (
+                "Stop looking for copies?",
+                "Nothing in the backup has changed.",
+            ),
+            Some("heic") => (
+                "Stop making JPG copies?",
+                "Copies made so far are kept. The HEIC photos are not changed.",
+            ),
+            // The tool ended while this was being asked: nothing is left to stop.
+            _ => {
+                self.stop_tool = false;
+                return;
+            }
+        };
+        if let Some(yes) = confirm(ctx, title, "Stop", true, |ui| {
+            ui.add(egui::Label::new(body).wrap());
+        }) {
+            if yes {
+                tools::STOP.store(true, Ordering::Relaxed);
+            }
+            self.stop_tool = false;
+        }
+    }
+
     pub(crate) fn confirm_dialog(&mut self, ctx: &egui::Context) {
         let Some(c) = &self.confirm else { return };
         let (title, body, yes) = match c {

@@ -169,6 +169,8 @@ struct App {
     bar_h: f32,
     /// Asking whether to stop a running backup before closing.
     confirm_close: bool,
+    /// The question came from the Stop button: stopping leaves the window open.
+    stop_only: bool,
     /// Close as soon as the stopped backup has finished cleaning up.
     closing: bool,
     tab: Tab,
@@ -222,6 +224,8 @@ struct App {
     /// Which tool the Tools page shows.
     tool: usize,
     tool_busy: Option<&'static str>,
+    /// Stop was pressed on the running tool: ask first.
+    stop_tool: bool,
     tool_status: String,
     /// What the last tool said, and in which panel.
     tool_msg: Option<(&'static str, Result<String, String>)>,
@@ -439,6 +443,7 @@ impl App {
             help_from: Tab::Backup,
             bar_h: 64.0,
             confirm_close: false,
+            stop_only: false,
             closing: false,
             tab: Tab::Backup,
             tab_at: Instant::now(),
@@ -480,6 +485,7 @@ impl App {
             tool_rx,
             tool: 0,
             tool_busy: None,
+            stop_tool: false,
             tool_status: String::new(),
             tool_msg: None,
             dupes: None,
@@ -493,9 +499,9 @@ impl App {
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [settings] [sound] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy] [light|dark] [wifi] [busy [paused]] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // [delete|rename|copy] [light|dark] [wifi] [busy [paused]] [stopask] [stoptool] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
-        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; paused shows it paused; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
+        // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; paused shows it paused; stopask asks whether to stop it; stoptool asks whether to stop a running duplicate search; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
         // update=working|new|same|failed also shows that result of Check for updates.
         if cfg!(debug_assertions) && test_run() {
@@ -559,10 +565,12 @@ impl App {
                         .ok();
                     }
                     "choose" => app.choosing = true,
+                    "stopask" => (app.confirm_close, app.stop_only) = (true, true),
                     "paused" => {
                         backup::PAUSE.store(true, Ordering::Relaxed);
                         app.paused_at = Some(Instant::now());
                     }
+                    "stoptool" => (app.tool_busy, app.stop_tool) = (Some("dupes"), true),
                     "badusb" => app.phones = Some(vec![Phone::UsbFailed]),
                     _ if word.starts_with("noadb") => {
                         app.adb_ok = false;
@@ -857,14 +865,21 @@ impl eframe::App for App {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_close = true;
+            self.stop_only = false;
         }
         if self.closing && !busy {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        // The job ended while Stop was being asked about: nothing is left to stop.
+        if self.stop_only && !busy {
+            self.confirm_close = false;
+        }
         if self.confirm_close {
-            let modal = egui::Modal::new(egui::Id::unique("confirm_close")).show(ui.ctx(), |ui| {
+            let transfer = self.tab == Tab::Transfer && self.job == Job::Restore;
+            let modal = egui::Modal::new(egui::Id::unique("confirm_close")).frame(dialog_frame(ui.ctx())).show(ui.ctx(), |ui| {
                 ui.set_max_width(ui.available_width().min(320.0));
                 let (title, body) = match self.job {
+                    _ if transfer => ("Stop the transfer?", "Files copied so far are kept."),
                     Job::Restore => ("Stop restoring?", "Everything restored so far stays on the phone."),
                     Job::Backup => ("Stop the backup?", "Files copied so far are kept. The next backup continues where this one stopped."),
                     Job::Copy => ("Stop copying?", "Files copied so far stay in the backup."),
@@ -876,6 +891,7 @@ impl eframe::App for App {
                 ui.label(body);
                 ui.horizontal(|ui| {
                     let (go, stay) = match self.job {
+                        _ if transfer => ("Stop and close", "Keep transferring"),
                         Job::Restore => ("Stop and close", "Keep restoring"),
                         Job::Backup => ("Stop and close", "Keep backing up"),
                         Job::Copy => ("Stop and close", "Keep copying"),
@@ -883,9 +899,10 @@ impl eframe::App for App {
                         Job::Verify => ("Stop and close", "Keep checking"),
                         Job::Export => ("Stop and close", "Keep exporting"),
                     };
+                    let go = if self.stop_only { "Stop" } else { go };
                     if ui.button(go).clicked() {
                         backup::STOP.store(true, Ordering::Relaxed);
-                        self.closing = true;
+                        self.closing = !self.stop_only;
                         self.confirm_close = false;
                     }
                     if ui.button(stay).clicked() {
@@ -908,6 +925,7 @@ impl eframe::App for App {
         }
         self.ask_dialog(ui.ctx(), &t);
         self.confirm_dialog(ui.ctx());
+        self.stop_tool_dialog(ui.ctx());
 
         // Esc leaves Privacy and License for Settings, where they open from.
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {

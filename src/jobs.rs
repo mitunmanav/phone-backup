@@ -174,6 +174,20 @@ impl App {
         let (dest, safety) = (self.dest.clone(), self.safety);
         match plan {
             Some(((_, folder, _, _, Some(ran)), false)) => {
+                // Files chosen in the picker narrow what the check backed up. Apps are not in
+                // the picker, so they stay.
+                let ran = match self.only.as_ref().filter(|(f, ..)| *f == folder) {
+                    Some((_, picked, _)) => {
+                        let apps = folder.join("apps");
+                        Arc::new(
+                            ran.iter()
+                                .filter(|f| picked.contains(*f) || f.starts_with(&apps))
+                                .cloned()
+                                .collect(),
+                        )
+                    }
+                    None => ran,
+                };
                 self.checking = None;
                 self.restore_report = Some(folder.join(backup::RESTORE_REPORT));
                 self.spawn_job(ctx, false, move |report| {
