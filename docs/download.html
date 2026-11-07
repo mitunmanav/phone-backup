@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download Phone Backup for Windows</title>
+<meta name="description" content="Download the newest Phone Backup for 64-bit Windows, check its checksum, or build it from source.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F5F5F5">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="./">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M12 7v7m-3-3 3 3 3-3"/></svg>
+      Phone Backup
+    </a>
+    <nav aria-label="Pages">
+      <a class="nav-link" href="guide">Guide</a>
+      <a class="nav-link" href="faq">FAQ</a>
+      <a class="nav-link" href="download" aria-current="page">Download</a>
+      <a class="nav-link" href="https://github.com/mitunmanav/phone-backup">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.1 0 4.7-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
+      GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap page-head">
+    <h1>Download</h1>
+    <p class="lead">One file for 64-bit Windows. Nothing to install: download it and double-click.</p>
+  </div>
+
+  <div class="wrap">
+    <div class="release" id="release" aria-busy="true">
+      <div class="actions">
+        <a class="btn primary" id="get" href="https://github.com/mitunmanav/phone-backup/releases/latest">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 20h16"/></svg>
+          Download for Windows
+        </a>
+        <a class="btn" id="notes" href="https://github.com/mitunmanav/phone-backup/releases/latest">What's new</a>
+      </div>
+      <dl>
+        <dt>Version</dt><dd id="version">Newest on GitHub</dd>
+        <dt>Released</dt><dd id="date">See GitHub</dd>
+        <dt>Size</dt><dd id="size">About 20&nbsp;MB</dd>
+        <dt>File</dt><dd id="file" class="mono">PhoneBackup-&lt;version&gt;-windows-x64.exe</dd>
+      </dl>
+      <p class="note" id="status" role="status"></p>
+    </div>
+    <p class="note">Free and open source under the GPL-3.0 license. Older versions are on <a href="https://github.com/mitunmanav/phone-backup/releases">GitHub Releases</a>.</p>
+  </div>
+
+  <section class="after">
+    <div class="wrap">
+      <h2>After you download</h2>
+      <p class="section-lead">If Windows says it protected your PC, choose More info, then Run anyway. The app is not code-signed yet. Then follow the <a href="guide">guide</a> to connect your phone.</p>
+    </div>
+  </section>
+
+  <section id="verify">
+    <div class="wrap split">
+      <div>
+        <h2>Check your copy</h2>
+        <p>Each release lists a SHA-256 checksum in <a id="sums" href="https://github.com/mitunmanav/phone-backup/releases/latest">SHA256SUMS.txt</a>. In PowerShell, run this in the folder you downloaded to; the long number it prints should match.</p>
+        <pre><code>Get-FileHash PhoneBackup-*.exe</code></pre>
+      </div>
+      <div>
+        <h2>Build it yourself</h2>
+        <p>Install <a href="https://rustup.rs/">Rust</a>, download the <a href="https://github.com/mitunmanav/phone-backup">source code</a>, then run this in its folder.</p>
+        <pre><code>cargo build --release</code></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+// Read the newest release from GitHub so the button always fetches the current file.
+// Without it the button still works: it opens the releases page.
+(async () => {
+  const $ = id => document.getElementById(id);
+  try {
+    const r = await fetch("https://api.github.com/repos/mitunmanav/phone-backup/releases/latest");
+    if (!r.ok) throw new Error("GitHub answered " + r.status);
+    const rel = await r.json();
+    const exe = rel.assets.find(a => a.name.endsWith(".exe"));
+    const sums = rel.assets.find(a => a.name === "SHA256SUMS.txt");
+    $("version").textContent = rel.tag_name.replace(/^v/, "");
+    $("date").textContent = new Date(rel.published_at).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+    $("notes").href = rel.html_url;
+    if (sums) $("sums").href = sums.browser_download_url;
+    if (exe) {
+      $("get").href = exe.browser_download_url;
+      $("size").textContent = (exe.size / 1048576).toFixed(1) + " MB";
+      $("file").textContent = exe.name;
+    }
+  } catch (e) {
+    $("status").textContent = "Could not read the newest version from GitHub. The button opens the releases page instead; reload to try again.";
+  }
+  $("release").removeAttribute("aria-busy");
+})();
+</script>
+
+
+<footer>
+  <div class="wrap">
+    <span>Phone Backup is free software under the GPL-3.0 license.</span>
+    <span>Android is a trademark of Google LLC. Not affiliated with Google.</span>
+  </div>
+</footer>
+
+</body>
+</html>
