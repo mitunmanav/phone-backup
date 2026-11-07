@@ -6,21 +6,21 @@
 <title>Phone Backup: free Android backup for Windows</title>
 <meta name="description" content="A free, open-source Windows app that backs up an Android phone over USB or Wi-Fi. No account, no cloud.">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#E9EDF1">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10161C">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F5F5F5">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
 <style>
-  /* Same colors as the app (src/main.rs, fn tokens). */
+  /* Same colors as the app (src/ui/theme.rs, fn tokens). */
   :root {
-    --bg: #E9EDF1; --surface: #FFFFFF; --line: #C5CDD5;
-    --ink: #16202B; --muted: #56616D;
-    --accent: #7A2E6E; --on-accent: #FFFFFF;
+    --bg: #F5F5F5; --surface: #FFFFFF; --line: #E2E2E2;
+    --ink: #141414; --muted: #5C5C5C;
+    --accent: #A5531E; --on-accent: #FFFFFF;
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #10161C; --surface: #18212A; --line: #2C3946;
-      --ink: #E6ECF1; --muted: #93A1AE;
-      --accent: #D08BC6; --on-accent: #10161C;
+      --bg: #000000; --surface: #101010; --line: #2C2C2C;
+      --ink: #F4F4F4; --muted: #B0B0B0;
+      --accent: #E39C66; --on-accent: #1A0E05;
     }
   }
   * { box-sizing: border-box; }
@@ -63,7 +63,7 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   @media (hover: hover) and (pointer: fine) {
     .btn:hover { background: var(--surface); }
-    /* Mixing toward ink darkens plum in light mode and lightens it in dark, so label contrast only improves. */
+    /* Mixing toward ink darkens copper in light mode and lightens it in dark, so label contrast only improves. */
     .btn.primary:hover { background: color-mix(in srgb, var(--accent) 85%, var(--ink)); }
   }
   .note { margin: 16px 0 0; font-size: .9rem; color: var(--muted); }
@@ -84,6 +84,10 @@
   .tree .root { color: var(--accent); }
   .tree .hint { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: .85rem; }
   @media (max-width: 420px) { .tree { padding: 20px 14px; font-size: .85rem; } .tree ul ul { padding-left: 14px; margin-left: 4px; } }
+
+  /* The real app mid-backup; the picture follows the visitor's light or dark setting. */
+  .shot { margin: 0 auto; padding-bottom: 72px; }
+  .shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; }
 
   section { padding: 72px 0; border-top: 1px solid var(--line); }
   h2 { font-size: clamp(1.6rem, 3.5vw, 2.1rem); line-height: 1.2; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 12px; }
@@ -169,6 +173,13 @@
       </ul>
     </div>
   </div>
+
+  <figure class="wrap shot">
+    <picture>
+      <source srcset="app-dark.png" media="(prefers-color-scheme: dark)">
+      <img src="app-light.png" width="2200" height="1440" alt="Phone Backup copying a Pixel 8 Pro to the PC: a cable runs from the phone to the backup folder, lit 37% of the way, above tiles for photos, videos, music, documents, other files, apps and contacts.">
+    </picture>
+  </figure>
 
   <section>
     <div class="wrap">

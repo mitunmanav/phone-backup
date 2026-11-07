@@ -6,6 +6,11 @@ Phone Backup is a free Windows app for backing up an Android phone over USB, Wi-
 
 Website: <https://mitunmanav.github.io/phone-backup/>
 
+<picture>
+  <source srcset="docs/app-dark.png" media="(prefers-color-scheme: dark)">
+  <img src="docs/app-light.png" width="1100" alt="Phone Backup copying a phone to the PC: a cable from the phone to the backup folder, lit as far as the copy has got, above tiles for each kind of file.">
+</picture>
+
 ## Features
 
 - Back up photos, videos, and files from phone storage and SD cards. Choose single folders (for example only DCIM), types (photos, videos, music, documents), and skip files over a size, with the size of each choice shown first. Caches, picture previews, WhatsApp stickers, and WhatsApp's copies of sent media are skipped.
