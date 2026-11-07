@@ -1013,13 +1013,8 @@ impl App {
                             .font(semibold(16.0))
                             .color(t.error),
                     );
+                    // Each error says what to do; not every one is the phone's fault.
                     ui.label(e);
-                    ui.label(
-                        RichText::new(
-                            "Check the cable and that the phone is unlocked, then press Try again.",
-                        )
-                        .color(t.muted),
-                    );
                 });
             }
             Some(Ok(summaries)) => {

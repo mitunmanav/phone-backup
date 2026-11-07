@@ -5,20 +5,18 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     use mtp_rs::mtp::{ByteRange, MtpDevice};
     use std::io::Write;
 
-    let device = MtpDevice::open_first().await.map_err(|e| e.to_string())?;
+    // The phone side failed, so the advice is about the phone.
+    let phone = |e: mtp_rs::Error| {
+        format!("{e}. Check the cable and that the phone is unlocked, then press Try again.")
+    };
+    let device = MtpDevice::open_first().await.map_err(phone)?;
     let info = device.device_info();
     let name = info.model.clone();
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
     let (mut files, mut copied, mut errors) = (0, Vec::new(), Vec::new());
     let mut kept = Vec::new();
 
-    for (n, storage) in device
-        .storages()
-        .await
-        .map_err(|e| e.to_string())?
-        .iter()
-        .enumerate()
-    {
+    for (n, storage) in device.storages().await.map_err(phone)?.iter().enumerate() {
         let desc = &storage.info().description;
         // First storage is the phone's internal storage: same folder an ADB backup uses.
         let base = if n == 0 {
