@@ -2,7 +2,6 @@
 //! contacts, and deleting files from the phone that are safely in the backup.
 
 use crate::backup::{self, files, size};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,7 +48,7 @@ pub fn duplicates(folder: &Path, say: &dyn Fn(String)) -> Result<Vec<Vec<(PathBu
                 files(total)
             ));
             done += 1;
-            if let Some(h) = hash(&path) {
+            if let Ok(h) = backup::sha256_bytes(&path) {
                 by_hash.entry(h).or_default().push(path);
             }
         }
@@ -61,12 +60,6 @@ pub fn duplicates(folder: &Path, say: &dyn Fn(String)) -> Result<Vec<Vec<(PathBu
     let waste = |g: &Vec<(PathBuf, u64)>| g[0].1 * (g.len() as u64 - 1);
     groups.sort_by(|a, b| waste(b).cmp(&waste(a)).then_with(|| a[0].0.cmp(&b[0].0)));
     Ok(groups)
-}
-
-fn hash(path: &Path) -> Option<[u8; 32]> {
-    let mut h = Sha256::new();
-    std::io::copy(&mut fs::File::open(path).ok()?, &mut h).ok()?;
-    Some(h.finalize().into())
 }
 
 /// Deletes the ticked copies from the backup on this computer.
