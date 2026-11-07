@@ -1,0 +1,155 @@
+/* Same colors as the app (src/ui/theme.rs, fn tokens). */
+:root {
+  --bg: #F5F5F5; --surface: #FFFFFF; --line: #E2E2E2;
+  --ink: #141414; --muted: #5C5C5C;
+  --accent: #A5531E; --on-accent: #FFFFFF;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000; --surface: #101010; --line: #2C2C2C;
+    --ink: #F4F4F4; --muted: #B0B0B0;
+    --accent: #E39C66; --on-accent: #1A0E05;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+a { touch-action: manipulation; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 17px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+/* Hidden until a keyboard user tabs to it. */
+.skip { position: absolute; left: 16px; top: -64px; z-index: 2; padding: 10px 16px; background: var(--accent); color: var(--on-accent); border-radius: 8px; font-weight: 600; }
+.skip:focus { top: 12px; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+@media (min-width: 640px) { .wrap { padding: 0 32px; } }
+.mono { font-family: "Cascadia Code", "Cascadia Mono", Consolas, monospace; }
+
+/* Header: the logo, then the pages. On phones the pages wrap onto their own row. */
+header .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 24px; min-height: 64px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--ink); text-decoration: none; min-height: 44px; }
+.brand svg { color: var(--accent); }
+nav { display: flex; flex-wrap: wrap; gap: 0 20px; }
+.nav-link { color: var(--ink); min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 4px; text-decoration: none; }
+.nav-link[aria-current="page"] { color: var(--accent); text-decoration: underline; text-decoration-thickness: 2px; }
+@media (hover: hover) and (pointer: fine) { .nav-link:hover { text-decoration: underline; } }
+.nav-link svg { flex-shrink: 0; }
+.brand, .nav-link { white-space: nowrap; }
+/* Keeps all four pages on one row at 320 px. */
+@media (max-width: 420px) { nav { gap: 0 12px; } .nav-link { padding: 0 2px; } .nav-link svg { display: none; } }
+
+h1 {
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  font-size: clamp(2.25rem, 6vw, 3.75rem); line-height: 1.05; font-weight: 600;
+  letter-spacing: -0.03em; margin: 0 0 20px; text-wrap: balance;
+}
+.lead { font-size: 1.2rem; color: var(--muted); margin: 0 0 32px; max-width: 30em; }
+.page-head { padding-block: 48px 40px; }
+@media (min-width: 900px) { .page-head { padding-block: 80px 56px; } }
+.page-head .lead { margin-bottom: 0; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 22px;
+  border-radius: 8px; font-weight: 600; text-decoration: none;
+  border: 1px solid var(--line); color: var(--ink); background: transparent;
+  transition: transform 160ms var(--ease-out), background-color 150ms ease;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.btn:active { transform: scale(.97); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover { background: var(--surface); }
+  /* Mixing toward ink darkens copper in light mode and lightens it in dark, so label contrast only improves. */
+  .btn.primary:hover { background: color-mix(in srgb, var(--accent) 85%, var(--ink)); }
+}
+.note { margin: 16px 0 0; font-size: .9rem; color: var(--muted); }
+
+/* Home hero: the folder the app really writes on the PC. */
+.hero { display: grid; gap: 40px; align-items: center; padding-block: 48px 80px; }
+@media (min-width: 900px) { .hero { grid-template-columns: 1fr 1fr; gap: 64px; padding-block: 96px 120px; } }
+.tree {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 24px 20px; font-size: .95rem; line-height: 2; overflow-x: auto;
+}
+.tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul ul { padding-left: 22px; border-left: 1px solid var(--line); margin-left: 8px; }
+/* Long phone names and paths wrap instead of being cut off at large text sizes. */
+.tree li { overflow-wrap: anywhere; }
+/* Rows arrive top to bottom once on load, like files landing in the backup. --i is the row number. */
+.tree li > span { display: inline-block; max-width: 100%; line-height: 1.5; animation: arrive 360ms var(--ease-out) both; animation-delay: calc(200ms + var(--i) * 50ms); }
+@keyframes arrive { from { opacity: 0; transform: translateX(-8px); } }
+.tree .dir { font-weight: 700; margin-right: 10px; }
+.tree .root { color: var(--accent); }
+.tree .hint { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: .85rem; }
+@media (max-width: 420px) { .tree { padding: 20px 14px; font-size: .85rem; } .tree ul ul { padding-left: 14px; margin-left: 4px; } }
+
+/* The real app mid-backup; the picture follows the visitor's light or dark setting. */
+.shot { margin: 0 auto; padding-bottom: 72px; }
+.shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; }
+
+section { padding: 72px 0; border-top: 1px solid var(--line); }
+h2 { font-size: clamp(1.6rem, 3.5vw, 2.1rem); line-height: 1.2; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 12px; }
+.section-lead { color: var(--muted); margin: 0 0 40px; max-width: 36em; }
+h3 { font-size: 1.1rem; margin: 0 0 6px; }
+.cols { display: grid; gap: 32px 40px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.cols p { margin: 0; color: var(--muted); max-width: 32em; }
+.cols .mono { color: var(--accent); font-size: .9rem; display: block; margin-bottom: 4px; }
+code { font-family: "Cascadia Code", Consolas, monospace; font-size: .9em; overflow-wrap: anywhere; }
+pre { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0 0; max-width: 32em; }
+.split { display: grid; gap: 40px; }
+@media (min-width: 900px) { .split { grid-template-columns: 1fr 1fr; gap: 64px; } }
+.split p { color: var(--muted); margin: 0; max-width: 32em; }
+
+/* Guide: a copper cable runs down the steps and plugs into each number, like the cable in the app. */
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; max-width: 40em; }
+.steps li { position: relative; counter-increment: step; padding: 0 0 36px 60px; }
+.steps li::before {
+  content: counter(step); position: absolute; left: 0; top: -2px; z-index: 1;
+  width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--bg); border: 2px solid var(--accent); color: var(--accent); font-weight: 700;
+}
+.steps li::after { content: ""; position: absolute; left: 17px; top: 34px; bottom: 0; width: 2px; background: var(--accent); }
+.steps li:last-child { padding-bottom: 0; }
+.steps li:last-child::after { display: none; }
+.steps p { margin: 0; color: var(--muted); }
+.steps h3 { padding-top: 4px; }
+
+/* Guide and FAQ on wide screens: the section title stays in view on the left while its steps or answers scroll on the right. */
+@media (min-width: 900px) {
+  .aside { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 64px; align-items: start; }
+  .aside .side { position: sticky; top: 32px; }
+  .aside .section-lead { margin-bottom: 0; }
+  .aside .cols { grid-template-columns: 1fr; }
+}
+
+/* FAQ: every answer shown, grouped by topic. */
+.qa { display: grid; gap: 32px; max-width: 40em; }
+.qa p { margin: 0; color: var(--muted); }
+
+/* Download: the newest release, read live from GitHub. */
+.release {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 28px 24px; max-width: 40em;
+}
+.release dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 24px; margin: 24px 0 0; }
+.release dt { color: var(--muted); }
+/* Placeholders stay faint until GitHub answers, then the real values fade in. */
+.release dd { transition: opacity 150ms var(--ease-out); }
+.release[aria-busy="true"] dd { opacity: .55; }
+.release dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+@media (max-width: 420px) { .release { padding: 20px 16px; } }
+.release .note[role="status"]:empty { display: none; }
+section.after { margin-top: 72px; }
+
+footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 32px; justify-content: space-between; }
+
+@media (prefers-reduced-motion: reduce) {
+  .btn { transition: background-color 150ms ease; } .btn:active { transform: none; }
+  .tree li > span { animation-name: fade; }
+}
+@keyframes fade { from { opacity: 0; } }
