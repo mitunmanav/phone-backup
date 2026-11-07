@@ -403,7 +403,9 @@ impl App {
                         let stopping = backup::STOP.load(Ordering::Relaxed);
                         let label = if stopping { "Stopping…" } else { "Stop" };
                         if quiet(ui, t, label, !stopping && self.job != Job::Delete).clicked() {
-                            backup::STOP.store(true, Ordering::Relaxed);
+                            // A stray click must not end a long job: ask first.
+                            self.confirm_close = true;
+                            self.stop_only = true;
                         }
                         // Only copying to or from a phone waits between batches.
                         if matches!(self.job, Job::Backup | Job::Restore) && !stopping {

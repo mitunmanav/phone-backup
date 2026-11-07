@@ -94,7 +94,8 @@ impl App {
         let room = list.height() - HIT - 130.0;
         ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
             own_scroll(ui, "transfer", list.height(), |ui| {
-                self.transfer_body(ui, t, room, phase, ready);
+                let folder = plan.as_ref().map(|p| p.1.clone());
+                self.transfer_body(ui, t, room, phase, ready, folder);
                 self.restore_result(ui, t, plan.as_ref());
             });
         });
@@ -310,6 +311,7 @@ impl App {
         room: f32,
         phase: Phase,
         ready: bool,
+        folder: Option<PathBuf>,
     ) {
         let locked = phase != Phase::Idle;
         self.battery_warnings(ui, t);
@@ -325,8 +327,18 @@ impl App {
             txt("What to copy", 13.0, 600.0, t.ink),
             w,
         );
-        self.onto_tiles(ui, t, room, "All files", (true, true), locked, phase);
+        let (files_line, label) = self.picked_words(folder.as_ref());
+        self.onto_tiles(ui, t, room, &files_line, (true, true), locked, phase);
         ui.add_space(6.0);
+        // The files to choose from exist once the check has backed up the first phone.
+        let can = !locked && self.restore_files;
+        if quiet(ui, t, &label, can && folder.is_some())
+            .on_disabled_hover_text("Check the transfer first. It backs up the first phone, then its files can be chosen.")
+            .clicked()
+            && let Some(folder) = folder
+        {
+            self.open_picker(ui.ctx(), folder, false);
+        }
         let label = "Back up the second phone first";
         plate(
             ui,

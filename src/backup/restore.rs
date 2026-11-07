@@ -597,11 +597,19 @@ pub fn transfer_check(
         );
     }
     let found = restore_in(to, &s.root, pick, Some(&ran), true, true, report);
-    let said = match found {
+    let said = match found.map(as_transfer).map_err(as_transfer) {
         Ok(m) => Ok(format!("{said}\n{m}")),
         Err(e) => Err(format!("{said}\n{e}")),
     };
     (Some((s.root, ran)), said)
+}
+
+/// The restore's words as the Transfer page says them: a transfer ends in a restore.
+fn as_transfer(said: String) -> String {
+    said.replace("stopped the restore", "stopped the transfer")
+        .replace("the restore needs", "the transfer needs")
+        .replace("restore again", "transfer again")
+        .replace("Restore again", "Transfer again")
 }
 
 /// Phone to phone, second step: with `safety`, first backs up all of `to` (serial, model) into
@@ -622,8 +630,25 @@ pub fn transfer_now(
             .map_err(|e| format!("Safety backup of {}: {e} Nothing was restored.", to.1))?;
         said = format!("Safety backup of {} saved in {}.\n", to.1, s.root.display());
     }
-    match restore_in(to, folder, pick, Some(ran), true, false, report) {
+    match restore_in(to, folder, pick, Some(ran), true, false, report)
+        .map(as_transfer)
+        .map_err(as_transfer)
+    {
         Ok(m) => Ok(said + &m),
         Err(e) => Err(said + &e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn transfer_words() {
+        let said = super::as_transfer(
+            "You stopped the restore. Restart the phone so the Gallery shows the restored photos. Restore again to retry.".into(),
+        );
+        assert_eq!(
+            said,
+            "You stopped the transfer. Restart the phone so the Gallery shows the restored photos. Transfer again to retry."
+        );
     }
 }

@@ -130,6 +130,8 @@ impl App {
             "picker",
             if p.delete {
                 "Choose files to delete from the phone"
+            } else if self.tab == Tab::Transfer {
+                "Choose files to copy"
             } else {
                 "Choose files to restore"
             },

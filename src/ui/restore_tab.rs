@@ -440,11 +440,7 @@ impl App {
             .find(|b| Some(&b.path) == self.chosen.as_ref());
         let (has_files, has_apps) = chosen.map_or((false, false), |b| (b.files, b.apps));
         let path = chosen.map(|b| b.path.clone());
-        let picked = self
-            .only
-            .as_ref()
-            .filter(|(folder, ..)| Some(folder) == path.as_ref())
-            .map(|(_, picked, total)| (picked.len(), *total));
+        let (files_line, label) = self.picked_words(path.as_ref());
 
         let w = ui.available_width();
         let (r, _) = ui.allocate_exact_size(vec2(w, HIT), egui::Sense::hover());
@@ -457,17 +453,9 @@ impl App {
             w,
         );
 
-        let files_line = match picked {
-            Some((n, total)) => format!("{} of {}", count(n), files(total)),
-            None => "All files".to_string(),
-        };
         let has = (has_files, has_apps);
         self.onto_tiles(ui, t, room, &files_line, has, locked, phase);
         ui.add_space(6.0);
-        let label = match picked {
-            Some((n, total)) => format!("Choose files ({} of {})…", count(n), count(total)),
-            None => "Choose files…".to_string(),
-        };
         let can = !locked && has_files && self.restore_files;
         if quiet(ui, t, &label, can).clicked()
             && let Some(path) = path
@@ -483,6 +471,21 @@ impl App {
             ))
             .wrap(),
         );
+    }
+
+    /// The files tile's line and the Choose button's words, with any files picked in `folder`.
+    pub(crate) fn picked_words(&self, folder: Option<&PathBuf>) -> (String, String) {
+        match self.only.as_ref().filter(|(f, ..)| Some(f) == folder) {
+            Some((_, picked, total)) => (
+                format!("{} of {}", count(picked.len()), files(*total)),
+                format!(
+                    "Choose files ({} of {})…",
+                    count(picked.len()),
+                    count(*total)
+                ),
+            ),
+            None => ("All files".into(), "Choose files…".into()),
+        }
     }
 
     /// What can go onto a phone, as tiles. `has` says if there are (files, apps) to copy at all.
