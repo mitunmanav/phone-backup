@@ -45,3 +45,11 @@ jobs:
 
       - name: Build release binary
         run: cargo build --locked --release
+
+      # Merging a bot's pull request lists the bot as a contributor. The checks
+      # above still show whether its update builds; copy it to your own branch.
+      - name: Block merging Dependabot pull requests
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        run: |
+          echo "::error::Do not merge this pull request. Make the same update on your own branch and close this one."
+          exit 1
