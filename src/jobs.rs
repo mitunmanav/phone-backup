@@ -51,10 +51,13 @@ impl App {
     pub(crate) fn begin(&mut self, job: Job) {
         self.busy.store(true, Ordering::Relaxed);
         backup::STOP.store(false, Ordering::Relaxed);
+        backup::PAUSE.store(false, Ordering::Relaxed);
+        self.paused_at = None;
         self.job = job;
         self.status = "Starting…".into();
         self.now.clear();
         self.fraction = None;
+        self.tiles = None;
     }
 
     /// Runs a job on a worker. Its result goes to the window last, after the job is marked

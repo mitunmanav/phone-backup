@@ -78,7 +78,7 @@ pub fn restore_apps(
     }
     let (mut done, mut failed) = (0, Vec::new());
     for (n, (pkg, apks)) in packages.iter().enumerate() {
-        if stopped() {
+        if hold() {
             return Err("You stopped the restore. Apps installed so far stay on the phone.".into());
         }
         report(Msg::Status(format!(
@@ -414,7 +414,7 @@ pub fn restore_files(
                 total: to_copy,
                 now: dir.to_string(),
             });
-            if stopped() {
+            if hold() {
                 break 'dirs;
             }
             let mut c = adb();

@@ -29,7 +29,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
         // The folder's path inside the storage goes along, for the folder and type choices.
         let mut stack = vec![(None, base, String::new())];
         while let Some((parent, dir, rel)) = stack.pop() {
-            if stopped() {
+            if hold() {
                 // Copied files may replace older ones whose sums no longer match.
                 update_sums(&root, &copied, &[], report);
                 return Err(STOPPED.into());
@@ -73,6 +73,11 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                 if fs::metadata(&local).is_ok_and(|m| m.len() == obj.size) {
                     kept.push(local);
                     continue;
+                }
+                // Pause waits between files, never inside a download.
+                if hold() {
+                    update_sums(&root, &copied, &[], report);
+                    return Err(STOPPED.into());
                 }
                 let part = local.with_extension("part-download");
                 let result: Result<(), String> = async {

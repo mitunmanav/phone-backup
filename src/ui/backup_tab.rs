@@ -55,6 +55,22 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
+/// A tile's word while its backup runs, or after it stopped: bytes copied of bytes to copy.
+fn tile_progress(done: u64, total: u64, stopped: bool) -> String {
+    // None on the phone, or all of it already in the backup.
+    if total == 0 {
+        "Nothing new".into()
+    } else if done >= total {
+        "Copied".into()
+    } else if done > 0 {
+        format!("{} of {}", size(done), size(total))
+    } else if stopped {
+        "Not copied".into()
+    } else {
+        "Waiting".into()
+    }
+}
+
 /// Switches one type of file. With files off altogether, turning one on means only that one.
 fn toggle_kind(pick: &mut Pick, k: usize) {
     if !pick.files {
@@ -67,6 +83,9 @@ fn toggle_kind(pick: &mut Pick, k: usize) {
 impl App {
     /// A few seconds in, so the first batch does not give a wild guess.
     pub(crate) fn time_left_now(&self) -> Option<String> {
+        if self.paused_at.is_some() {
+            return Some("Paused".into());
+        }
         let spent = self.progress_from.elapsed().as_secs_f32();
         // shortcut: estimate by file count, not bytes; switch to bytes if users see bad estimates
         self.fraction
@@ -760,6 +779,10 @@ impl App {
             0 => "None found".to_string(),
             n => size(n),
         };
+        let stopped = phase == Phase::Stopped;
+        let progress = self
+            .tiles
+            .filter(|_| self.job == Job::Backup && (phase == Phase::Running || stopped));
         for (row, chunk) in TILES.chunks(cols).enumerate() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = TILE_GAP;
@@ -771,11 +794,20 @@ impl App {
                         6 => !dim && self.pick.data,
                         k => self.pick.files && self.pick.kinds[k],
                     };
-                    let line = match (i, measured) {
+                    let line = match (i, measured, progress) {
                         _ if dim => "Not in this mode".to_string(),
                         _ if on && phase == Phase::Done(0) => "Copied".to_string(),
-                        (0..5, Some((_, kinds, _))) => sized(kinds[i]),
-                        (5, Some((apps, ..))) => sized(apps),
+                        (0..6, _, Some((done, total))) if on => {
+                            tile_progress(done[i], total[i], stopped)
+                        }
+                        // Contacts and messages are saved once the files are in.
+                        (6, _, Some((done, total))) if on => match stopped {
+                            true => "Not copied".to_string(),
+                            false if done == total => "Saving".to_string(),
+                            false => "Waiting".to_string(),
+                        },
+                        (0..5, Some((_, kinds, _)), _) => sized(kinds[i]),
+                        (5, Some((apps, ..)), _) => sized(apps),
                         _ => (*note).to_string(),
                     };
                     // A lone tile on the last row takes the whole row.
@@ -1092,6 +1124,15 @@ mod tests {
             ]),
             4
         );
+    }
+
+    #[test]
+    fn tile_progress_follows_the_backup() {
+        assert_eq!(tile_progress(0, 0, false), "Nothing new");
+        assert_eq!(tile_progress(0, 5, false), "Waiting");
+        assert_eq!(tile_progress(0, 5, true), "Not copied");
+        assert_eq!(tile_progress(5, 5, true), "Copied");
+        assert!(tile_progress(2_000_000_000, 5_000_000_000, false).contains(" of "));
     }
 
     #[test]

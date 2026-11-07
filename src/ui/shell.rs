@@ -405,6 +405,22 @@ impl App {
                         if quiet(ui, t, label, !stopping && self.job != Job::Delete).clicked() {
                             backup::STOP.store(true, Ordering::Relaxed);
                         }
+                        // Only copying to or from a phone waits between batches.
+                        if matches!(self.job, Job::Backup | Job::Restore) && !stopping {
+                            let label = if self.paused_at.is_some() {
+                                "Resume"
+                            } else {
+                                "Pause"
+                            };
+                            if quiet(ui, t, label, true).clicked() {
+                                match self.paused_at.take() {
+                                    // Time paused does not count towards the time left.
+                                    Some(at) => self.progress_from += at.elapsed(),
+                                    None => self.paused_at = Some(Instant::now()),
+                                }
+                                backup::PAUSE.store(self.paused_at.is_some(), Ordering::Relaxed);
+                            }
+                        }
                     } else if primary(ui, t, cmd.label, cmd.enabled) {
                         match (cmd.open, cmd.plan) {
                             (Some(path), _) => {
