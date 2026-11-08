@@ -5,12 +5,20 @@
   --accent: #A5531E; --on-accent: #FFFFFF;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
+/* Dark follows the device unless the header button (theme.js) picked a theme; the two dark blocks must match. */
+:root[data-theme="light"] { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #000000; --surface: #101010; --line: #2C2C2C;
     --ink: #F4F4F4; --muted: #B0B0B0;
     --accent: #E39C66; --on-accent: #1A0E05;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #000000; --surface: #101010; --line: #2C2C2C;
+  --ink: #F4F4F4; --muted: #B0B0B0;
+  --accent: #E39C66; --on-accent: #1A0E05;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
@@ -41,6 +49,18 @@ nav { display: flex; flex-wrap: wrap; gap: 0 20px; }
 .nav-link svg { flex-shrink: 0; }
 .brand, .nav-link { white-space: nowrap; }
 /* Keeps all four pages on one row at 320 px. */
+/* Theme button: shows the icon of the current choice. Beside the links on wide screens; beside the logo on phones, where the links wrap to their own row. */
+.brand { margin-right: auto; }
+@media (max-width: 639px) { .brand { order: -2; } .theme { order: -1; } }
+.theme {
+  display: inline-grid; place-items: center; width: 44px; height: 44px; padding: 0; margin-left: 4px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer;
+  transition: transform 160ms var(--ease-out), background-color 150ms ease;
+}
+.theme:active { transform: scale(.94); }
+@media (hover: hover) and (pointer: fine) { .theme:hover { background: var(--surface); } }
+.theme svg { display: none; }
+:root:not([data-theme]) .theme .auto, [data-theme="light"] .theme .sun, [data-theme="dark"] .theme .moon { display: block; }
 @media (max-width: 420px) { nav { gap: 0 12px; } .nav-link { padding: 0 2px; } .nav-link svg { display: none; } }
 
 h1 {
@@ -116,7 +136,7 @@ h1 {
 .rail { max-width: 44em; padding: 8px 0 96px 48px; }
 .plug { position: relative; padding-bottom: 64px; }
 .plug:last-child { padding-bottom: 0; }
-.plug h2 { position: relative; }
+/* h2 stays unpositioned so its socket and the wire's track (below) are placed against the whole .plug. */
 .plug h2::before {
   content: ""; position: absolute; left: -48px; top: calc(.6em - 10px); z-index: 1;
   width: 20px; height: 20px; border-radius: 50%; box-sizing: border-box;
@@ -185,7 +205,29 @@ section.after { margin-top: 72px; }
 footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 32px; justify-content: space-between; }
 
+/* Guide and home: the cable lights as you scroll. Each step's socket lights as it crosses three quarters of the way down
+   the screen and its wire fills on to the next one; the unlit wire shows in the line color. Browsers without
+   scroll-driven animations, and reduced motion, keep the cable fully lit. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .steps li, .plug { view-timeline: --cable block; view-timeline-inset: 0 25%; }
+    .steps h3::after, .plug h2::after { content: ""; position: absolute; width: 2px; background: var(--line); }
+    .steps h3::after { left: 17px; top: 34px; bottom: 0; }
+    .plug h2::after { left: -39px; top: 20px; bottom: -20px; }
+    .steps li:last-child h3::after, .plug:last-child h2::after { display: none; }
+    .steps li::after, .plug::after { transform-origin: top; animation: charge linear both; animation-timeline: --cable; animation-range: entry 0% entry 100%; }
+    .steps li::before, .plug h2::before { animation: socket linear both; animation-timeline: --cable; animation-range: entry 0% entry 24px; }
+    @keyframes charge { from { transform: scaleY(0); } }
+    @keyframes socket { to { background: var(--accent); color: var(--on-accent); } }
+    /* Text blocks rise in gently as they come into view. */
+    .steps p, .plug p, .cols > div, .qa > div { animation: rise linear both; animation-timeline: view(); animation-range: entry 0% entry 60%; }
+    @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+  }
+}
+@media (max-width: 420px) { .plug h2::after { left: -27px; } }
+
 @media (prefers-reduced-motion: reduce) {
+  .theme { transition: background-color 150ms ease; } .theme:active { transform: none; }
   .btn { transition: background-color 150ms ease; } .btn:active { transform: none; }
   .tree li > span { animation-name: fade; }
   .wire .lit, .cable .folder { animation: none; }
