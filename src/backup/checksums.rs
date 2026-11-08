@@ -20,7 +20,7 @@ pub(super) fn renamed(root: &Path) -> BTreeMap<String, String> {
 pub const CHECKSUMS: &str = "checksums.sha256";
 
 /// The sums of a backup folder: path inside it (with `/`) to the hex SHA-256.
-pub(super) fn read_sums(root: &Path) -> BTreeMap<String, String> {
+pub(crate) fn read_sums(root: &Path) -> BTreeMap<String, String> {
     fs::read_to_string(root.join(CHECKSUMS))
         .unwrap_or_default()
         .lines()
@@ -32,7 +32,7 @@ pub(super) fn read_sums(root: &Path) -> BTreeMap<String, String> {
 }
 
 /// `path` inside `root`, with `/` as `sha256sum` writes it.
-pub(super) fn rel(root: &Path, path: &Path) -> String {
+pub(crate) fn rel(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
@@ -62,7 +62,7 @@ pub fn sha256_bytes(path: &Path) -> std::io::Result<[u8; 32]> {
 /// Drops the sums of `fresh` files (just rewritten) and of files gone from the folder, then
 /// hashes each `known` file that has no sum. Old sums of untouched files are kept, so a later
 /// backup hashes only what it copied.
-pub(super) fn update_sums(root: &Path, fresh: &[PathBuf], known: &[PathBuf], report: &dyn Fn(Msg)) {
+pub(crate) fn update_sums(root: &Path, fresh: &[PathBuf], known: &[PathBuf], report: &dyn Fn(Msg)) {
     let old = read_sums(root);
     let mut sums = old.clone();
     sums.retain(|path, _| root.join(path).is_file());

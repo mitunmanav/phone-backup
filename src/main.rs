@@ -261,7 +261,7 @@ enum Confirm {
     /// Copies in the backup on this computer.
     Copies(Vec<(PathBuf, u64)>),
     /// Files on the phone (serial) whose backup copy matches, and how many chosen ones do not.
-    Phone(String, Vec<(String, u64)>, usize),
+    Phone(String, Vec<tools::OnPhone>, usize),
 }
 
 impl App {
