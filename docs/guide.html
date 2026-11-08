@@ -38,6 +38,8 @@
 </header>
 
 <main id="main">
+  <div class="page-world">
+  <span class="cloud" data-px="cloud" style="left: 8%; top: 12px"></span><span class="cloud" data-px="cloud" style="left: 58%; top: 20px"></span>
   <div class="wrap page-head">
     <div>
       <h1>Guide</h1>
@@ -45,8 +47,17 @@
     </div>
     <div class="scene" aria-hidden="true"><span class="courier front wave" data-px="courier"></span><span class="flag" data-px="flag"></span></div>
   </div>
+  </div>
 
-  <section>
+  <nav class="wrap map" aria-label="On this page">
+    <a href="#backup"><span data-px="flag"></span>First backup</a>
+    <a href="#connect"><span data-px="plug"></span>Connect</a>
+    <a href="#restore"><span data-px="back"></span>Restore</a>
+    <a href="#move"><span data-px="swap"></span>New phone</a>
+    <a href="#offline"><span data-px="book"></span>Without a phone</a>
+  </nav>
+
+  <section id="backup">
     <div class="wrap aside">
       <div class="side">
         <h2><span data-px="flag"></span>Your first backup</h2>
@@ -85,22 +96,22 @@
       </div>
       <div class="cols">
         <div>
-          <h3>File transfer</h3>
+          <h3><span data-px="box"></span>File transfer</h3>
           <p>Plug in, unlock, tap the USB notification and choose File transfer. Copies photos, videos and files. No setup.</p>
         </div>
         <div>
-          <h3>USB debugging</h3>
+          <h3><span data-px="plug"></span>USB debugging</h3>
           <p>Adds apps, contacts, calls, messages and the calendar. In Settings, open About phone and tap Build number 7 times, then turn on USB debugging in Developer options. In the app, click Get adb to fetch Google's free tool, and tap Allow on the phone.</p>
         </div>
         <div>
-          <h3>Wi-Fi</h3>
+          <h3><span data-px="wifi"></span>Wi-Fi</h3>
           <p>No cable after setup. On the phone, open Developer options, then Wireless debugging, tap Pair device with QR code and scan the code the app shows.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <section>
+  <section id="restore">
     <div class="wrap aside">
       <div class="side">
         <h2><span data-px="back"></span>Put a backup back on a phone</h2>
@@ -123,7 +134,7 @@
     </div>
   </section>
 
-  <section>
+  <section id="move">
     <div class="wrap aside">
       <div class="side">
         <h2><span data-px="swap"></span>Move to a new phone</h2>
@@ -146,7 +157,7 @@
     </div>
   </section>
 
-  <section>
+  <section id="offline">
     <div class="wrap aside">
       <div class="side">
         <h2><span data-px="book"></span>Use a backup without a phone</h2>
@@ -154,15 +165,15 @@
       </div>
       <div class="cols">
         <div>
-          <h3>Read it</h3>
+          <h3><span data-px="book"></span>Read it</h3>
           <p>On Tools, read messages, contacts, calls and the calendar, with search.</p>
         </div>
         <div>
-          <h3>Export it</h3>
+          <h3><span data-px="down"></span>Export it</h3>
           <p>On Restore, Export saves contacts, calls and messages as spreadsheets and pages you can print, the calendar for Google Calendar or Outlook, and photos sorted by year and month.</p>
         </div>
         <div>
-          <h3>Check it</h3>
+          <h3><span data-px="check"></span>Check it</h3>
           <p><strong>Verify</strong> on Restore checks that no file has changed since it was saved.</p>
         </div>
       </div>

@@ -27,6 +27,7 @@
     auto: ["............", "....IIII....", "..II..IIII..", ".I....IIIII.", ".I....IIIII.", "I.....IIIIII", "I.....IIIIII", ".I....IIIII.", ".I....IIIII.", "..II..IIII..", "....IIII....", "............"],
     sun: [".....II.....", ".I........I.", "....IIII....", "...IIIIII...", "...IIIIII...", "II.IIIIII.II", "II.IIIIII.II", "...IIIIII...", "...IIIIII...", "....IIII....", ".I........I.", ".....II....."],
     moon: ["............", "....IIII....", "...III......", "..III.......", "..II........", "..II........", "..III.....I.", "...IIII.III.", "....IIIIII..", "............", "............", "............"],
+    wifi: ["............", "...IIIIII...", ".II......II.", "I..IIIIII..I", "..I......I..", "....IIII....", "...I....I...", "............", ".....AA.....", ".....AA.....", "............", "............"],
     pause: ["............", "............", "...II..II...", "...II..II...", "...II..II...", "...II..II...", "...II..II...", "...II..II...", "...II..II...", "...II..II...", "............", "............"],
     cloud: ["................", "......WWWW......", "....WWWWWWWW....", "..WWWWWWWWWWWWW.", ".WWWWWWWWWWWWWWW", "..WWWWWWWWWWWW.."],
     phone: ["IIIIIIIIIIII", "IBBBBBBBBBBI", "IBAAAAAABBBI", "IBBBBBBBBBBI", "IBAAAABBBBBI", "IBBBBBBBBBBI", "IBAAAAAAABBI", "IBBBBBBBBBBI", "IBAAABBBBBBI", "IBBBBBBBBBBI", "IBBBBBBBBBBI", "IBBBBBBBBBBI", "IBBBBBBBBBBI", "IIIIIIIIIIII", "IIIIIBBIIIII", "IIIIIIIIIIII"],
@@ -77,6 +78,8 @@
       n = n >= slots.length ? 3 : n + 1;
       show();
     });
+    // Off screen the scene stops, so it costs nothing while you read further down.
+    new IntersectionObserver(([e]) => walker.parentElement.classList.toggle("away", !e.isIntersecting)).observe(walker.parentElement);
     // Moving for more than five seconds, so it gets a pause button.
     const pause = document.querySelector(".world .pause");
     pause.addEventListener("click", () => {

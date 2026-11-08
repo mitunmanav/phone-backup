@@ -139,6 +139,9 @@ h3 { font-size: 1.1rem; margin: 0 0 6px; }
   border-bottom: 20px solid var(--ground); box-shadow: inset 0 -4px 0 var(--outline);
 }
 .world .cloud { position: absolute; width: 64px; height: 24px; }
+/* Clouds sway a few pixels at a time, one pixel step every half second. */
+@media (prefers-reduced-motion: no-preference) { .world .cloud, .page-world .cloud { animation: drift 24s steps(48) infinite; } .world .cloud + .cloud, .page-world .cloud + .cloud { animation-delay: -12s; } }
+@keyframes drift { 50% { transform: translateX(48px); } }
 .world .phone { position: absolute; left: 16px; bottom: 4px; width: 48px; height: 64px; }
 .world .cable { position: absolute; left: 64px; right: 136px; bottom: 4px; height: 4px; background: var(--accent); }
 .world .pc { position: absolute; right: 16px; bottom: 4px; width: 120px; height: 110px; }
@@ -163,7 +166,7 @@ h3 { font-size: 1.1rem; margin: 0 0 6px; }
 .world .pause { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; padding: 10px; border: 0; background: var(--surface); color: var(--ink); cursor: pointer; box-shadow: var(--frame); }
 .world .pause[aria-pressed="true"] { color: var(--accent); box-shadow: 0 -4px 0 0 var(--accent), 0 4px 0 0 var(--accent), -4px 0 0 0 var(--accent), 4px 0 0 0 var(--accent); }
 .world .pause [data-px] { width: 24px; height: 24px; color: inherit; }
-.world.paused .walker, .world.paused .walker * { animation-play-state: paused; }
+.world.paused .walker, .world.paused .walker *, .world.paused .cloud, .world.away .walker, .world.away .walker *, .world.away .cloud { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) { .world .pause { display: none; } }
 @keyframes route { 0%, 100% { transform: translateX(var(--run)); } 50% { transform: translateX(0); } }
 @keyframes turn { 0% { transform: scaleX(-1); } 50% { transform: none; } }
@@ -228,6 +231,8 @@ h3 { font-size: 1.1rem; margin: 0 0 6px; }
 .tree li > span { display: inline-block; max-width: 100%; line-height: 1.5; animation: arrive 360ms var(--ease-out) both; animation-delay: calc(1.2s + var(--i) * 50ms); }
 @keyframes arrive { from { opacity: 0; transform: translateX(-8px); } }
 .tree .dir { font-weight: 700; }
+/* A pixel folder before each folder name. */
+.tree .dir::before { content: ""; display: inline-block; width: 16px; height: 12px; margin-right: 8px; vertical-align: -1px; background: var(--accent); clip-path: polygon(0 0, 8px 0, 8px 2px, 16px 2px, 16px 12px, 0 12px); }
 .tree .root { color: var(--accent); }
 .tree .hint { margin-left: 10px; color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: .85rem; }
 @media (max-width: 420px) { .tree { padding: 20px 14px; font-size: .85rem; } .tree ul ul { padding-left: 14px; margin-left: 4px; } }
@@ -236,26 +241,65 @@ h3 { font-size: 1.1rem; margin: 0 0 6px; }
 .shot { margin: 24px 4px 0; }
 .shot img { display: block; width: 100%; height: auto; box-shadow: var(--frame); }
 
-/* Guide, FAQ and download: the page name, then a small scene of the courier for that page. */
-.page-head { display: grid; gap: 24px; align-items: end; padding-block: 48px 40px; }
-@media (min-width: 900px) { .page-head { grid-template-columns: 1fr auto; gap: 48px; padding-block: 80px 56px; } }
+/* Guide, FAQ and download: the page opens in the courier's world, the name in the sky and his scene for that page on the ground. */
+.page-world { position: relative; overflow: hidden; background: var(--sky); border-bottom: 20px solid var(--ground); box-shadow: inset 0 -4px 0 var(--outline); }
+.page-world .cloud { position: absolute; width: 64px; height: 24px; }
+.page-head { position: relative; display: grid; gap: 8px; align-items: end; padding-top: 48px; }
+@media (min-width: 900px) { .page-head { grid-template-columns: 1fr auto; gap: 48px; padding-top: 80px; } .page-head > div:first-child { padding-bottom: 48px; } }
 .page-head .lead { margin-bottom: 0; }
-.scene {
-  display: flex; align-items: flex-end; justify-content: center; gap: 20px; min-width: 240px; height: 136px; padding: 0 24px;
-  background: var(--sky); border-bottom: 16px solid var(--ground); box-shadow: inset 0 -4px 0 var(--outline);
-}
-.scene .courier { width: 40px; height: 80px; margin-bottom: 4px; }
-.scene .flag { width: 48px; height: 48px; margin-bottom: 4px; }
+.scene { display: flex; align-items: flex-end; justify-content: center; gap: 20px; min-width: 240px; height: 112px; padding-bottom: 4px; }
+.scene .courier { width: 40px; height: 80px; }
+.scene .flag { width: 48px; height: 48px; }
 .scene .ask { width: 40px; height: 40px; align-self: flex-start; margin: 12px 0 0 -16px; }
-.scene .pc { width: 72px; height: 66px; margin-bottom: 4px; }
+.scene .pc { width: 72px; height: 66px; }
+/* Once on load the courier walks in side on, then turns to face you: on the guide he waves, on the FAQ a question pops up. */
+@media (prefers-reduced-motion: no-preference) {
+  .scene { overflow: hidden; }
+  .scene .courier { animation: enter 1.2s steps(12) both; }
+  .scene .courier .c-side, .scene .courier .c-front { display: inline; }
+  .scene .courier .c-side { animation: shown 1.2s steps(1, end) forwards; }
+  .scene .courier .c-front { animation: shown 1.2s steps(1, end) reverse backwards; }
+  .scene .courier .c-legs > g { animation: step .4s steps(1) 3; }
+  .scene .courier .c-legs > g:nth-child(2) { animation-delay: -.3s; }
+  .scene .courier .c-legs > g:nth-child(3) { animation-delay: -.2s; }
+  .scene .courier .c-legs > g:nth-child(4) { animation-delay: -.1s; }
+  .scene .wave .c-wave { animation-delay: 1.2s; }
+  .scene .ask { animation: pop 160ms steps(2) 1.3s both; }
+}
+@keyframes enter { from { transform: translateX(-120px); } }
+@keyframes shown { from { visibility: visible; } to { visibility: hidden; } }
+@keyframes pop { from { opacity: 0; transform: translateY(4px); } }
 
 section { padding: 72px 0; border-top: 4px solid var(--line); }
+/* Guide and FAQ: a row of signs on a short cable, one per part of the page. */
+.map { position: relative; display: flex; flex-wrap: wrap; gap: 16px 24px; padding-block: 40px; }
+.map::before { content: ""; position: absolute; left: 24px; right: 24px; top: 50%; height: 4px; margin-top: -2px; background: var(--accent); }
+.map a {
+  position: relative; display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 16px; margin: 4px;
+  background: var(--surface); box-shadow: var(--frame); color: var(--ink); text-decoration: none; font: 500 1rem var(--pixel);
+}
+.map [data-px] { width: 24px; height: 24px; }
+.map a:active { transform: translateY(4px); }
+@media (hover: hover) and (pointer: fine) { .map a:hover { color: var(--accent); } }
+/* On a phone the signs stack in two columns; a cable through wrapped rows would read as a strike-through. */
+@media (max-width: 600px) { .map { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .map::before { display: none; } .map a { font-size: .9rem; padding: 8px 10px; } }
+.map + section { border-top: 0; padding-top: 32px; }
 .section-lead { color: var(--muted); margin: 0 0 40px; max-width: 36em; }
 .cols { display: grid; gap: 32px 40px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
 .cols p { margin: 0; color: var(--muted); max-width: 32em; }
+/* Guide: each way to connect, and each use of a backup, is a small framed card with its icon. */
+.cols > div { background: var(--surface); box-shadow: var(--frame); margin: 4px; padding: 20px; }
+.cols h3 > [data-px] { width: 24px; height: 24px; vertical-align: -5px; margin-right: 10px; }
 code { font-family: "Cascadia Code", Consolas, monospace; font-size: .9em; overflow-wrap: anywhere; }
 pre { background: var(--surface); box-shadow: var(--frame); padding: 16px; overflow-x: auto; margin: 20px 4px 0; max-width: 32em; }
+/* Download: each command sits in a small window named after where you type it. */
+pre[data-title] { padding-top: 52px; position: relative; }
+pre[data-title]::before {
+  content: attr(data-title); position: absolute; inset: 0 0 auto; padding: 6px 16px; background: var(--outline); color: var(--surface); font: 500 .85rem var(--pixel);
+}
 .split { display: grid; gap: 40px; }
+/* Columns may shrink below a code line's width; the code box scrolls instead of the page. */
+.split > * { min-width: 0; }
 @media (min-width: 900px) { .split { grid-template-columns: 1fr 1fr; gap: 64px; } }
 .split p { color: var(--muted); margin: 0; max-width: 32em; }
 
@@ -277,8 +321,11 @@ pre { background: var(--surface); box-shadow: var(--frame); padding: 16px; overf
 /* FAQ: every answer shown, grouped by topic. */
 /* On phones a topic title with no lead line needs room before its first question. */
 .side h2:last-child { margin-bottom: 28px; }
-.qa { display: grid; gap: 32px; max-width: 40em; }
+.qa { display: grid; gap: 24px; max-width: 40em; }
 .qa p { margin: 0; color: var(--muted); }
+/* Each question is a framed card with a copper bar down its left edge. */
+.qa > div { background: var(--surface); box-shadow: var(--frame); margin: 4px; padding: 20px 20px 20px 32px; position: relative; }
+.qa > div::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 8px; background: var(--accent); }
 
 /* Download: the newest release, read live from GitHub, on a shipping label with copper tape across the top. */
 .release { background: var(--surface); box-shadow: var(--frame); margin: 4px; padding: 36px 24px 28px; max-width: 40em; position: relative; }
@@ -291,8 +338,11 @@ pre { background: var(--surface); box-shadow: var(--frame); padding: 16px; overf
 @media (max-width: 420px) { .release { padding: 32px 16px 20px; } }
 .release .note[role="status"]:empty { display: none; }
 section.after { margin-top: 72px; }
+.after .steps li { padding-bottom: 48px; }
+.after .steps li:last-child { padding-bottom: 0; }
 
-footer { border-top: 4px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
+/* The footer is the ground the whole page stands on. */
+footer { border-top: 4px solid var(--outline); box-shadow: inset 0 12px 0 var(--ground); padding: 40px 0 40px; color: var(--muted); font-size: .9rem; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 32px; justify-content: space-between; }
 
 /* The cable lights as you scroll: each sign's frame turns copper as it crosses three quarters of the way down the screen,

@@ -38,12 +38,15 @@
 </header>
 
 <main id="main">
+  <div class="page-world">
+  <span class="cloud" data-px="cloud" style="left: 8%; top: 12px"></span><span class="cloud" data-px="cloud" style="left: 58%; top: 20px"></span>
   <div class="wrap page-head">
     <div>
       <h1>Download</h1>
       <p class="lead">One file for 64-bit Windows. Nothing to install: download it and double-click.</p>
     </div>
     <div class="scene" aria-hidden="true"><span class="courier front carry" data-px="courier"></span><span class="pc" data-px="pc"></span></div>
+  </div>
   </div>
 
   <div class="wrap">
@@ -67,9 +70,25 @@
   </div>
 
   <section class="after">
-    <div class="wrap">
-      <h2><span data-px="plug"></span>After you download</h2>
-      <p class="section-lead">If Windows says it protected your PC, choose More info, then Run anyway. The app is not code-signed yet. Then follow the <a href="guide">guide</a> to connect your phone.</p>
+    <div class="wrap aside">
+      <div class="side">
+        <h2><span data-px="plug"></span>After you download</h2>
+        <p class="section-lead">Three stops to your first backup.</p>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Open the file</h3>
+          <p>Double-click it. If Windows says it protected your PC, choose More info, then Run anyway. The app is not code-signed yet.</p>
+        </li>
+        <li>
+          <h3>Connect your phone</h3>
+          <p>Plug it in and unlock it. The <a href="guide#connect">guide</a> shows the three ways to connect.</p>
+        </li>
+        <li>
+          <h3>Press Back up now</h3>
+          <p>Your backup lands in a normal folder named after your phone.</p>
+        </li>
+      </ol>
     </div>
   </section>
 
@@ -78,12 +97,12 @@
       <div>
         <h2><span data-px="check"></span>Check your copy</h2>
         <p>Each release lists a SHA-256 checksum in <a id="sums" href="https://github.com/mitunmanav/phone-backup/releases/latest">SHA256SUMS.txt</a>. In PowerShell, run this in the folder you downloaded to; the long number it prints should match.</p>
-        <pre><code>Get-FileHash PhoneBackup-*.exe</code></pre>
+        <pre data-title="PowerShell"><code>Get-FileHash PhoneBackup-*.exe</code></pre>
       </div>
       <div>
         <h2><span data-px="wrench"></span>Build it yourself</h2>
         <p>Install <a href="https://rustup.rs/">Rust</a>, download the <a href="https://github.com/mitunmanav/phone-backup">source code</a>, then run this in its folder.</p>
-        <pre><code>cargo build --release</code></pre>
+        <pre data-title="Terminal"><code>cargo build --release</code></pre>
       </div>
     </div>
   </section>

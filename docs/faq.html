@@ -38,6 +38,8 @@
 </header>
 
 <main id="main">
+  <div class="page-world">
+  <span class="cloud" data-px="cloud" style="left: 8%; top: 12px"></span><span class="cloud" data-px="cloud" style="left: 58%; top: 20px"></span>
   <div class="wrap page-head">
     <div>
       <h1>Questions</h1>
@@ -45,8 +47,15 @@
     </div>
     <div class="scene" aria-hidden="true"><span class="courier front" data-px="courier"></span><span class="ask" data-px="ask"></span></div>
   </div>
+  </div>
 
-  <section>
+  <nav class="wrap map" aria-label="On this page">
+    <a href="#start"><span data-px="flag"></span>Getting started</a>
+    <a href="#backups"><span data-px="box"></span>Your backups</a>
+    <a href="#privacy"><span data-px="lock"></span>Privacy</a>
+  </nav>
+
+  <section id="start">
     <div class="wrap aside">
       <div class="side">
         <h2><span data-px="flag"></span>Getting started</h2>
@@ -80,7 +89,7 @@
     </div>
   </section>
 
-  <section>
+  <section id="backups">
     <div class="wrap aside">
       <div class="side">
         <h2><span data-px="box"></span>Your backups</h2>
