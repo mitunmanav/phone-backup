@@ -42,14 +42,14 @@ pub(super) fn only_in(
 /// Reinstalls the apps saved in a backup's `apps` folder (one folder of APKs per app) that are
 /// not on the phone yet. Only the apps come back, not their data or logins.
 /// With `check`, installs nothing and says what a restore would do. `only` limits it to those
-/// APK files of the backup.
+/// APK files of the backup. Also returns how many apps failed to install.
 pub fn restore_apps(
     serial: &str,
     folder: &Path,
     only: Option<&HashSet<PathBuf>>,
     check: bool,
     report: &dyn Fn(Msg),
-) -> Result<String, String> {
+) -> Result<(String, usize), String> {
     let mut packages = saved_apps(folder)?;
     if let Some(o) = only {
         packages = only_in(packages, o);
@@ -66,7 +66,7 @@ pub fn restore_apps(
     });
     if check {
         let names: Vec<&str> = packages.iter().take(3).map(|(p, _)| p.as_str()).collect();
-        return Ok(match packages.len() {
+        let said = match packages.len() {
             0 => "Apps: every saved app is already on the phone.".into(),
             n => format!(
                 "Apps: will install {} of {}, for example {}. The rest are already on the phone.",
@@ -74,7 +74,8 @@ pub fn restore_apps(
                 count(total),
                 names.join(", ")
             ),
-        });
+        };
+        return Ok((said, 0));
     }
     let (mut done, mut failed) = (0, Vec::new());
     for (n, (pkg, apks)) in packages.iter().enumerate() {
@@ -108,7 +109,7 @@ pub fn restore_apps(
             failed.join(", ")
         );
     }
-    Ok(msg)
+    Ok((msg, failed.len()))
 }
 
 /// A phone's backup folder, as the Restore tab lists it.
@@ -302,14 +303,14 @@ pub fn flags(list: &[(PathBuf, u64, i64)], now: i64) -> Vec<u8> {
 /// Copies the photos and files of a backup back to the phone, skipping any file the phone
 /// already has, so restoring twice copies nothing twice and nothing on the phone is replaced.
 /// With `check`, copies nothing and says what a restore would do. `only` limits it to those
-/// files of the backup.
+/// files of the backup. Also returns how many files could not be copied.
 pub fn restore_files(
     serial: &str,
     folder: &Path,
     only: Option<&HashSet<PathBuf>>,
     check: bool,
     report: &dyn Fn(Msg),
-) -> Result<String, String> {
+) -> Result<(String, usize), String> {
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
@@ -381,7 +382,7 @@ pub fn restore_files(
         if !missing.is_empty() {
             msg += &no_card;
         }
-        return Ok(msg);
+        return Ok((msg, 0));
     }
 
     // One `adb push` per folder, like the backup. With several files adb needs the folder to exist.
@@ -514,14 +515,15 @@ pub fn restore_files(
     if !missing.is_empty() {
         msg += &no_card;
     }
-    Ok(msg)
+    Ok((msg, broken.len()))
 }
 
 pub(super) const DISCONNECTED_RESTORE: &str = "The phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.";
 
 /// Restores photos and files first, then apps, from one backup folder. With `check`, changes
 /// nothing on the phone and says what a restore would do; otherwise saves the restore report
-/// in the backup folder. `phone` names the phone in that report.
+/// in the backup folder. `phone` names the phone in that report. Also returns how many files
+/// and apps failed.
 pub fn restore(
     serial: &str,
     phone: &str,
@@ -530,7 +532,7 @@ pub fn restore(
     only: Option<&HashSet<PathBuf>>,
     check: bool,
     report: &dyn Fn(Msg),
-) -> Result<String, String> {
+) -> Result<(String, usize), String> {
     restore_in((serial, phone), folder, pick, only, false, check, report)
 }
 
@@ -543,22 +545,26 @@ pub(super) fn restore_in(
     apps_too: bool,
     check: bool,
     report: &dyn Fn(Msg),
-) -> Result<String, String> {
-    let mut said = Vec::new();
+) -> Result<(String, usize), String> {
+    let (mut said, mut failed) = (Vec::new(), 0);
+    let mut keep = |(m, n)| {
+        said.push(m);
+        failed += n;
+    };
     let mut result = Ok(());
     if pick.files {
-        result = restore_files(serial, folder, only, check, report).map(|m| said.push(m));
+        result = restore_files(serial, folder, only, check, report).map(&mut keep);
     }
     if pick.apps && result.is_ok() {
         let apps_only = only.filter(|_| apps_too);
-        result = restore_apps(serial, folder, apps_only, check, report).map(|m| said.push(m));
+        result = restore_apps(serial, folder, apps_only, check, report).map(&mut keep);
     }
     let result = match result {
-        Ok(()) => Ok(said.join("\n")),
+        Ok(()) => Ok((said.join("\n"), failed)),
         Err(e) => Err(said.into_iter().chain([e]).collect::<Vec<_>>().join("\n")),
     };
     if !check {
-        let (Ok(text) | Err(text)) = &result;
+        let (Ok((text, _)) | Err(text)) = &result;
         let _ = save_report(
             &folder.join(RESTORE_REPORT),
             &format!("Restore to {phone}"),
@@ -597,7 +603,7 @@ pub fn transfer_check(
         );
     }
     let found = restore_in(to, &s.root, pick, Some(&ran), true, true, report);
-    let said = match found.map(as_transfer).map_err(as_transfer) {
+    let said = match found.map(|(m, _)| as_transfer(m)).map_err(as_transfer) {
         Ok(m) => Ok(format!("{said}\n{m}")),
         Err(e) => Err(format!("{said}\n{e}")),
     };
@@ -622,7 +628,7 @@ pub fn transfer_now(
     pick: Pick,
     safety: bool,
     report: &dyn Fn(Msg),
-) -> Result<String, String> {
+) -> Result<(String, usize), String> {
     let mut said = String::new();
     if safety {
         let all = Pick::default();
@@ -631,10 +637,10 @@ pub fn transfer_now(
         said = format!("Safety backup of {} saved in {}.\n", to.1, s.root.display());
     }
     match restore_in(to, folder, pick, Some(ran), true, false, report)
-        .map(as_transfer)
+        .map(|(m, n)| (as_transfer(m), n))
         .map_err(as_transfer)
     {
-        Ok(m) => Ok(said + &m),
+        Ok((m, n)) => Ok((said + &m, n)),
         Err(e) => Err(said + &e),
     }
 }

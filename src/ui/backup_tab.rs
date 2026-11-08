@@ -55,6 +55,11 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
+/// A finished job's title when `n` things went wrong.
+pub(crate) fn finished_with(n: usize) -> String {
+    format!("Finished with {n} {}", plural(n, "problem"))
+}
+
 /// A tile's word while its backup runs, or after it stopped: bytes copied of bytes to copy.
 fn tile_progress(done: u64, total: u64, stopped: bool) -> String {
     // None on the phone, or all of it already in the backup.
@@ -707,10 +712,7 @@ impl App {
                 },
             ),
             Phase::Done(0) => ("Backup finished".into(), "No errors. Report saved.".into()),
-            Phase::Done(n) => (
-                format!("Finished with {n} {}", plural(n, "problem")),
-                "The list is in the report.".into(),
-            ),
+            Phase::Done(n) => (finished_with(n), "The list is in the report.".into()),
             Phase::Stopped => (
                 self.stopped_at.map_or("Backup stopped".into(), |f| {
                     format!("Stopped at {:.0}%", (f * 100.0).floor())
@@ -1037,19 +1039,20 @@ impl App {
                     ui.add_space(16.0);
                     result_box(t).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        let title = match (s.errors.is_empty(), summaries.len() > 1) {
+                        let clean = problems(std::slice::from_ref(s)) == 0;
+                        let title = match (clean, summaries.len() > 1) {
                             (true, false) => "Backup finished".to_string(),
                             (false, false) => "Backup finished with problems".to_string(),
                             (true, true) => format!("{}: backup finished", s.name),
                             (false, true) => format!("{}: backup finished with problems", s.name),
                         };
-                        let ink = if s.errors.is_empty() { t.ink } else { t.warning };
+                        let ink = if clean { t.ink } else { t.warning };
                         ui.label(RichText::new(title).font(semibold(16.0)).color(ink));
                         let in_backup = files(s.files - s.errors.len().min(s.files));
                         if s.pick.files || s.pick.apps {
                             ui.label(if s.files == 0 {
                                 "No files were found on the phone.".to_string()
-                            } else if s.copied == 0 {
+                            } else if s.copied == 0 && s.errors.is_empty() {
                                 format!("Nothing new to copy. The backup already holds {in_backup}.")
                             } else {
                                 format!("Copied {} that {} new or changed. The backup now holds {in_backup}.", files(s.copied), backup::were(s.copied))

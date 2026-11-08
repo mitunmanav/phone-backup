@@ -66,7 +66,8 @@ pub enum Msg {
     Done(Result<Vec<Summary>, String>),
     /// What `measure` found on the phone with this serial.
     Sizes(String, Vec<(String, u64)>, u64),
-    Restored(Result<String, String>),
+    /// A restore or transfer ended: what it did and how many files and apps failed, or why it stopped.
+    Restored(Result<(String, usize), String>),
     /// The backup folder checked and what the check found.
     Verified(PathBuf, Result<String, String>),
     /// An export ended: its folder, and what it made or why it stopped.
@@ -1190,15 +1191,16 @@ mod tests {
         let sh = |cmd: &str| shell(&serial, cmd).replace("\r\n", "\n");
         // Choosing files restores only those.
         let one = HashSet::from([first.root.join("files/E2E/many/f7.txt")]);
-        let msg = restore_files(&serial, &first.root, Some(&one), true, &quiet).unwrap();
+        let (msg, _) = restore_files(&serial, &first.root, Some(&one), true, &quiet).unwrap();
         assert!(msg.starts_with("Files: will copy 1 file ("), "{msg}");
-        let msg = restore_files(&serial, &first.root, None, true, &quiet).unwrap();
+        let (msg, _) = restore_files(&serial, &first.root, None, true, &quiet).unwrap();
         assert!(
             msg.starts_with(&format!("Files: will copy {} (", files(gone.len()))),
             "{msg}"
         );
-        let msg = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
+        let (msg, failed) = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
         println!("restore: {msg}");
+        assert_eq!(failed, 0, "{msg}");
         assert!(
             msg.starts_with(&format!("Copied {} back", files(gone.len()))),
             "{msg}"
@@ -1211,12 +1213,12 @@ mod tests {
         assert_eq!(sh(&format!("cat {}", sh_quote(&deep_remote))), "deep\n");
         // Windows-safe names stay on the computer, never copied back as extra files.
         assert_eq!(sh("ls /sdcard/E2E/Docs | grep -c -e _CON -e 'dot_'"), "0\n");
-        let msg = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
+        let (msg, _) = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
         assert!(msg.starts_with("Copied 0 files back"), "{msg}");
         // Every saved app is still installed, so nothing is reinstalled.
-        let msg = restore_apps(&serial, &first.root, None, true, &quiet).unwrap();
+        let (msg, _) = restore_apps(&serial, &first.root, None, true, &quiet).unwrap();
         assert_eq!(msg, "Apps: every saved app is already on the phone.");
-        let msg = restore_apps(&serial, &first.root, None, false, &quiet).unwrap();
+        let (msg, _) = restore_apps(&serial, &first.root, None, false, &quiet).unwrap();
         assert!(msg.starts_with("Installed 0 of"), "{msg}");
         fs::remove_dir_all(&dest).unwrap();
     }
@@ -1253,7 +1255,8 @@ mod tests {
         // A file from an earlier backup of the first phone is in the folder but not in this run.
         let stale = folder.join("files/E2E/stale-from-earlier-run.txt");
         fs::write(&stale, "old").unwrap();
-        let done = transfer_now((tcp, "To"), &dest, &folder, &ran, pick, true, &quiet).unwrap();
+        let (done, _) =
+            transfer_now((tcp, "To"), &dest, &folder, &ran, pick, true, &quiet).unwrap();
         println!("{done}");
         assert!(done.starts_with("Safety backup of To saved in"), "{done}");
         // The safety backup has its own folder beside the source's.
