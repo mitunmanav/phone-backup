@@ -135,7 +135,7 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             if path.is_dir() {
                 stack.push(path);
             } else if !(dir == from
-                && [REPORT, RESTORE_REPORT, RENAMED]
+                && [REPORT, RESTORE_REPORT, RENAMED, CHECKSUMS]
                     .contains(&&*entry.file_name().to_string_lossy()))
             {
                 todo.push(path);
@@ -144,8 +144,12 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
     }
     let (mut copied, mut same, mut renamed_n) = (0, 0, 0);
     let mut kept_names = Vec::new();
+    let mut targets = Vec::new();
+    // Copied files get sums whichever way the merge ends.
+    let sums = |targets: &[PathBuf]| update_sums(into, &[], targets, report);
     for (n, src) in todo.iter().enumerate() {
         if stopped() {
+            sums(&targets);
             return Err(format!(
                 "You stopped copying. {} copied so far stay in the backup.",
                 files(copied + renamed_n)
@@ -182,7 +186,13 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             fs::create_dir_all(dir)
                 .map_err(|e| format!("Cannot write in {}: {e}", dir.display()))?;
         }
-        fs::copy(src, &target).map_err(|e| format!("Could not copy {}: {e}", src.display()))?;
+        if let Err(e) = fs::copy(src, &target) {
+            // A half-written copy would later read as "already there".
+            let _ = fs::remove_file(&target);
+            sums(&targets);
+            return Err(format!("Could not copy {}: {e}", src.display()));
+        }
+        targets.push(target);
         if k == 1 {
             copied += 1;
             kept_names.push(rel.to_string_lossy().replace('\\', "/"));
@@ -203,6 +213,7 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             .map(|(l, r)| format!("{l}\t{r}\n"))
             .collect::<String>(),
     );
+    sums(&targets);
     let mut msg = format!(
         "Copied {}. {} {} already there.",
         files(copied + renamed_n),

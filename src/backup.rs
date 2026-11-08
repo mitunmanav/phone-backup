@@ -873,6 +873,7 @@ mod tests {
         fs::write(a.join("files/DCIM/new.jpg"), "new").unwrap();
         fs::write(a.join(REPORT), "a's report").unwrap();
         fs::write(b.join(REPORT), "b's report").unwrap();
+        fs::write(a.join(CHECKSUMS), "a's sums").unwrap();
         let msg = merge_backups(&a, &b, &|_| {}).unwrap();
         // Running it again changes nothing: every file is now already there.
         let again = merge_backups(&a, &b, &|_| {}).unwrap();
@@ -884,6 +885,8 @@ mod tests {
             read(REPORT),
             fs::read_to_string(a.join("files/DCIM/clash.jpg")).unwrap(),
         );
+        // A's sums are not copied as a file; B's list gains the copied files.
+        let sums = (b.join("checksums (2).sha256").exists(), read(CHECKSUMS));
         let refused = merge_backups(&a, &root, &|_| {});
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(checks.0, "from b");
@@ -891,6 +894,12 @@ mod tests {
         assert_eq!(checks.2, "new");
         assert_eq!(checks.3, "b's report");
         assert_eq!(checks.4, "from a");
+        assert!(!sums.0);
+        assert!(
+            sums.1.contains("new.jpg") && sums.1.contains("clash (2).jpg"),
+            "{}",
+            sums.1
+        );
         assert!(
             msg.starts_with("Copied 2 files. 1 file was already there."),
             "{msg}"
