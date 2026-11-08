@@ -14,7 +14,7 @@ No account, no cloud. Your backup is an ordinary folder on your PC.
 
 <picture>
   <source srcset="docs/app-dark.png" media="(prefers-color-scheme: dark)">
-  <img src="docs/app-light.png" width="1100" alt="Phone Backup copying a phone to the PC: a cable from the phone to the backup folder, lit as far as the copy has got, above tiles for each kind of file.">
+  <img src="docs/app-light.png" width="1100" alt="Phone Backup copying a phone to the PC: a small pixel courier carries boxes along the cable from the phone to shelves in the PC, above tiles for each kind of file.">
 </picture>
 
 </div>
