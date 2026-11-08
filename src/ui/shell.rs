@@ -330,20 +330,8 @@ impl App {
             let gutter = area.right() - 7.0;
             let start = egui::pos2(gutter, area.top() + 44.0);
             let end = egui::pos2(gutter, y - 7.0);
-            let mut line = if still {
-                vec![start, end]
-            } else {
-                rope(
-                    &ctx,
-                    egui::Id::unique("nav-rope"),
-                    18,
-                    start,
-                    end,
-                    1.003,
-                    vec2(-0.012, 0.0),
-                    None,
-                )
-            };
+            // Straight: a loose rope here bowed over the sockets and never pulled tight again.
+            let mut line = vec![start, end];
             let head = egui::pos2(socket + 13.0 + pull, y);
             // A short rounded bend from the rail's edge into the plug.
             for k in 1..=6 {
@@ -368,21 +356,8 @@ impl App {
             let pull = ((x - target).abs() / 18.0).min(1.0) * 4.0;
             let base = area.bottom() - 1.5;
             let (start, end) = (egui::pos2(area.left(), base), egui::pos2(x, base));
-            let line = if still {
-                vec![start, end]
-            } else {
-                rope(
-                    &ctx,
-                    egui::Id::unique("nav-rope-top"),
-                    18,
-                    start,
-                    end,
-                    1.0005,
-                    vec2(0.0, -0.01),
-                    None,
-                )
-            };
-            p.add(egui::Shape::line(line, wire));
+            // Straight along the strip's foot: a loose rope here floated up over the page names.
+            p.line_segment([start, end], wire);
             let tip = egui::pos2(x, base - 7.0 + pull);
             p.line_segment([egui::pos2(x, base), tip], Stroke::new(6.0, t.accent));
             p.line_segment([tip, tip - vec2(0.0, 3.0)], Stroke::new(3.0, t.border));
