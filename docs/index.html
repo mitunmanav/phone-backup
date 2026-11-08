@@ -8,8 +8,10 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F5F5F5">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+<link rel="preload" href="fonts/pixelify-sans.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="site.css">
 <script src="theme.js"></script>
+<script src="pixel.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -30,9 +32,7 @@
       </a>
     </nav>
     <button class="theme" type="button" aria-label="Theme">
-      <svg class="auto" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>
-      <svg class="sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-      <svg class="moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/></svg>
+      <span class="auto" data-px="auto"></span><span class="sun" data-px="sun"></span><span class="moon" data-px="moon"></span>
     </button>
   </div>
 </header>
@@ -42,115 +42,130 @@
     <h1>Your Android phone, copied to your PC</h1>
     <p class="lead">A free Windows app. Plug in your phone, press Back up now, and everything lands in an ordinary folder you can open. No account, no cloud.</p>
     <div class="actions">
-      <a class="btn primary" href="download">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 20h16"/></svg>
-        Download for Windows
-      </a>
+      <a class="btn primary" href="download"><span data-px="down"></span>Download for Windows</a>
       <a class="btn" href="guide">How it works</a>
     </div>
   </div>
 
-  <!-- The app's cable: copper fills from the phone to the folder once, then the folder lights up. -->
-  <div class="wrap cable" aria-hidden="true">
-    <svg class="end phone" width="32" height="48" viewBox="0 0 32 48" fill="none" stroke="currentColor" stroke-width="3"><rect x="2.5" y="2.5" width="27" height="43" rx="5"/><path d="M12 38h8"/></svg>
-    <svg class="wire" viewBox="0 0 1000 60" preserveAspectRatio="none">
-      <path class="slack" d="M0 12C300 64 700 64 1000 12" pathLength="100"/>
-      <path class="lit" d="M0 12C300 64 700 64 1000 12" pathLength="100"/>
-    </svg>
-    <svg class="end folder" width="52" height="44" viewBox="0 0 52 44" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M2.5 8.5a4 4 0 0 1 4-4h12l5 6h21.5a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4h-38.5a4 4 0 0 1-4-4z"/></svg>
+  <!-- The courier from the app carries boxes from the phone along the cable to the shelves in the PC. -->
+  <div class="wrap">
+    <div class="world">
+      <span class="cloud" data-px="cloud" style="left: 24%; top: 28px"></span>
+      <span class="cloud" data-px="cloud" style="left: 60%; top: 64px"></span>
+      <span class="phone" data-px="phone"></span>
+      <span class="cable"></span>
+      <span class="pc" data-px="pc"></span>
+      <button class="pause" type="button" aria-label="Pause the courier" aria-pressed="false"><span data-px="pause"></span></button>
+      <button class="walker" type="button" aria-label="Wave to the courier"><span class="walk" data-px="courier"></span></button>
+    </div>
   </div>
 
-  <div class="wrap saves">
-    <div class="kinds">
-      <h2>What it saves</h2>
-      <div>
-        <h3>Photos, videos and files</h3>
-        <p>The phone's storage and SD card, in the same folders as on the phone. Or only the folders you pick.</p>
-      </div>
-      <div>
-        <h3>Apps</h3>
-        <p>The apps you installed, ready to put back. Their logins and data stay behind.</p>
-      </div>
-      <div>
-        <h3>Contacts, calls, messages and calendar</h3>
-        <p>Some phones do not allow reading these over USB; the app tells you when.</p>
-      </div>
-      <p class="note">Later backups copy only what is new or changed.</p>
-    </div>
+  <!-- The cable carries on down the page; each thing the app does is a stop on it. Not numbered: these are not steps. -->
+  <div class="wrap route">
+    <div class="rider" aria-hidden="true"><span class="front carry" data-px="courier"></span></div>
 
-    <div class="tree mono" role="img" aria-label="Example backup folder: files, apps and data folders inside a folder named after the phone.">
-      <ul>
-        <li style="--i:0"><span class="dir root">Phone backups</span>
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="box"></span></span>
+      <h2>What it saves</h2>
+      <p>Later backups copy only what is new or changed.</p>
+      <div class="saves">
+        <div class="kinds">
+          <div>
+            <h3>Photos, videos and files</h3>
+            <p>The phone's storage and SD card, in the same folders as on the phone. Or only the folders you pick.</p>
+          </div>
+          <div>
+            <h3>Apps</h3>
+            <p>The apps you installed, ready to put back. Their logins and data stay behind.</p>
+          </div>
+          <div>
+            <h3>Contacts, calls, messages and calendar</h3>
+            <p>Some phones do not allow reading these over USB; the app tells you when.</p>
+          </div>
+        </div>
+        <div class="tree mono" role="img" aria-label="Example backup folder: files, apps and data folders inside a folder named after the phone.">
           <ul>
-            <li style="--i:1"><span class="dir">Pixel 8_37F1</span><span class="hint">one folder per phone</span>
+            <li style="--i:0"><span class="dir root">Phone backups</span>
               <ul>
-                <li style="--i:2"><span class="dir">files</span>
+                <li style="--i:1"><span class="dir">Pixel 8_37F1</span><span class="hint">one folder per phone</span>
                   <ul>
-                    <li style="--i:3"><span>DCIM</span></li>
-                    <li style="--i:4"><span>Download</span></li>
-                    <li style="--i:5"><span>WhatsApp</span></li>
+                    <li style="--i:2"><span class="dir">files</span>
+                      <ul>
+                        <li style="--i:3"><span>DCIM</span></li>
+                        <li style="--i:4"><span>Download</span></li>
+                        <li style="--i:5"><span>WhatsApp</span></li>
+                      </ul>
+                    </li>
+                    <li style="--i:6"><span class="dir">apps</span><span class="hint">reinstall later</span></li>
+                    <li style="--i:7"><span class="dir">data</span>
+                      <ul>
+                        <li style="--i:8"><span>contacts.vcf</span></li>
+                        <li style="--i:9"><span>call_log.txt</span></li>
+                        <li style="--i:10"><span>sms.txt</span></li>
+                      </ul>
+                    </li>
+                    <li style="--i:11"><span>report.txt</span><span class="hint">what was copied</span></li>
+                    <li style="--i:12"><span>checksums.sha256</span><span class="hint">to verify it later</span></li>
                   </ul>
                 </li>
-                <li style="--i:6"><span class="dir">apps</span><span class="hint">reinstall later</span></li>
-                <li style="--i:7"><span class="dir">data</span>
-                  <ul>
-                    <li style="--i:8"><span>contacts.vcf</span></li>
-                    <li style="--i:9"><span>call_log.txt</span></li>
-                    <li style="--i:10"><span>sms.txt</span></li>
-                  </ul>
-                </li>
-                <li style="--i:11"><span>report.txt</span><span class="hint">what was copied</span></li>
-                <li style="--i:12"><span>checksums.sha256</span><span class="hint">to verify it later</span></li>
               </ul>
             </li>
           </ul>
-        </li>
-      </ul>
-    </div>
-  </div>
-
-  <figure class="wrap shot">
-    <picture>
-      <source srcset="app-dark.png" media="(prefers-color-scheme: dark)">
-      <img src="app-light.png" width="2200" height="1440" alt="Phone Backup copying a Pixel 8 Pro to the PC, 37% done: a small pixel courier carries boxes along the cable from the phone to shelves in the PC, above tiles for photos, videos, music, documents, other files, apps and contacts.">
-    </picture>
-  </figure>
-
-  <!-- The cable carries on down the page; each thing the app does plugs into it. -->
-  <div class="wrap">
-    <div class="rail">
-      <div class="plug">
-        <h2>Restore to any phone</h2>
-        <p>Put photos, files and apps back on any Android phone: all of them, or picked from a list with previews. Files the phone already has are never replaced. <strong>Verify</strong> checks that nothing has changed since it was saved.</p>
-      </div>
-      <div class="plug">
-        <h2>Phone to phone</h2>
-        <p>Copy one phone straight to another. You see what will change before anything does.</p>
-      </div>
-      <div class="plug">
-        <h2>Read and export</h2>
-        <p>Read a backup's messages, contacts, calls and calendar on your PC. Export them as spreadsheets, printable pages, <code>contacts.vcf</code> and <code>.ics</code>, and sort photos into month folders.</p>
-      </div>
-      <div class="plug">
-        <h2>Tools</h2>
-        <p>Find duplicates, turn HEIC photos into JPG, merge duplicate contacts, free up phone space once files are safely backed up, and show the phone's screen with <a href="https://github.com/Genymobile/scrcpy">scrcpy</a>.</p>
-      </div>
-      <div class="plug">
-        <h2>Nothing leaves your computer</h2>
-        <p>No account, no ads, no tracking. The app goes online only when you ask it to, and it never sends your data. <a href="faq#privacy">What the app reads and sends</a></p>
-      </div>
-      <div class="plug">
-        <h2>Ready in a few minutes</h2>
-        <p>One file, nothing to install. Free and open source under the GPL-3.0 license.</p>
-        <div class="actions">
-          <a class="btn primary" href="download">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 20h16"/></svg>
-            Download for Windows
-          </a>
-          <a class="btn" href="guide">Read the guide</a>
         </div>
       </div>
-    </div>
+    </section>
+
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="screen"></span></span>
+      <h2>Watch it copy</h2>
+      <p>While a backup runs, a courier carries each kind of file to its own shelf in your PC. Click him and he waves.</p>
+      <figure class="shot">
+        <picture>
+          <source srcset="app-dark.png" media="(prefers-color-scheme: dark)">
+          <img src="app-light.png" width="2200" height="1440" loading="lazy" alt="Phone Backup copying a Pixel 8 Pro to the PC, 37% done: a small pixel courier carries boxes along the cable from the phone to shelves in the PC, above tiles for photos, videos, music, documents, other files, apps and contacts.">
+        </picture>
+      </figure>
+    </section>
+
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="back"></span></span>
+      <h2>Restore to any phone</h2>
+      <p>Put photos, files and apps back on any Android phone: all of them, or picked from a list with previews. Files the phone already has are never replaced. <strong>Verify</strong> checks that nothing has changed since it was saved.</p>
+    </section>
+
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="swap"></span></span>
+      <h2>Phone to phone</h2>
+      <p>Copy one phone straight to another. You see what will change before anything does.</p>
+    </section>
+
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="book"></span></span>
+      <h2>Read and export</h2>
+      <p>Read a backup's messages, contacts, calls and calendar on your PC. Export them as spreadsheets, printable pages, <code>contacts.vcf</code> and <code>.ics</code>, and sort photos into month folders.</p>
+    </section>
+
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="wrench"></span></span>
+      <h2>Tools</h2>
+      <p>Find duplicates, turn HEIC photos into JPG, merge duplicate contacts, free up phone space once files are safely backed up, and show the phone's screen with <a href="https://github.com/Genymobile/scrcpy">scrcpy</a>.</p>
+    </section>
+
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="lock"></span></span>
+      <h2>Nothing leaves your computer</h2>
+      <p>No account, no ads, no tracking. The app goes online only when you ask it to, and it never sends your data. <a href="faq#privacy">What the app reads and sends</a></p>
+    </section>
+
+    <section class="stop">
+      <span class="sign" aria-hidden="true"><span data-px="down"></span></span>
+      <h2>Ready in a few minutes</h2>
+      <p>One file, nothing to install. Free and open source under the GPL-3.0 license.</p>
+      <div class="actions">
+        <a class="btn primary" href="download"><span data-px="down"></span>Download for Windows</a>
+        <a class="btn" href="guide">Read the guide</a>
+      </div>
+    </section>
   </div>
 </main>
 

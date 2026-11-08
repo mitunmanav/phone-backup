@@ -1,9 +1,19 @@
-/* Same colors as the app (src/ui/theme.rs, fn tokens). */
+/* The app's colors (src/ui/theme.rs, fn tokens), plus the courier scene's (src/ui/courier.rs). */
+@font-face {
+  /* Pixelify Sans, SIL Open Font License (fonts/OFL.txt). Headings, page names and buttons only. */
+  font-family: "Pixelify Sans"; src: url("fonts/pixelify-sans.woff2") format("woff2");
+  font-weight: 500 700; font-display: swap;
+}
 :root {
   --bg: #F5F5F5; --surface: #FFFFFF; --line: #E2E2E2;
   --ink: #141414; --muted: #5C5C5C;
-  --accent: #A5531E; --on-accent: #FFFFFF;
+  --accent: #A5531E; --on-accent: #FFFFFF; --deep: #6E3412;
+  --outline: #141414; --sky: #DFE8EF; --ground: #CFC6B8; --cloud: #FFFFFF;
+  --jacket: #2F3440; --pants: #4A4D55; --skin: #E8B996;
+  --pixel: "Pixelify Sans", "Segoe UI", system-ui, sans-serif;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  /* A 4 px pixel frame with stepped corners. */
+  --frame: 0 -4px 0 0 var(--outline), 0 4px 0 0 var(--outline), -4px 0 0 0 var(--outline), 4px 0 0 0 var(--outline);
 }
 /* Dark follows the device unless the header button (theme.js) picked a theme; the two dark blocks must match. */
 :root[data-theme="light"] { color-scheme: light; }
@@ -11,113 +21,207 @@
   :root:not([data-theme="light"]) {
     --bg: #000000; --surface: #101010; --line: #2C2C2C;
     --ink: #F4F4F4; --muted: #B0B0B0;
-    --accent: #E39C66; --on-accent: #1A0E05;
+    --accent: #E39C66; --on-accent: #1A0E05; --deep: #8A4A20;
+    --outline: #9A9A9A; --sky: #0C0D14; --ground: #1E1E25; --cloud: #1E2030;
+    --jacket: #5B6272; --pants: #3E424C;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #000000; --surface: #101010; --line: #2C2C2C;
   --ink: #F4F4F4; --muted: #B0B0B0;
-  --accent: #E39C66; --on-accent: #1A0E05;
+  --accent: #E39C66; --on-accent: #1A0E05; --deep: #8A4A20;
+  --outline: #9A9A9A; --sky: #0C0D14; --ground: #1E1E25; --cloud: #1E2030;
+  --jacket: #5B6272; --pants: #3E424C;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
-a { touch-action: manipulation; }
+a, button { touch-action: manipulation; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
   font: 17px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 a { color: var(--accent); text-underline-offset: 3px; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+:focus-visible { outline: 4px solid var(--accent); outline-offset: 4px; }
 /* Hidden until a keyboard user tabs to it. */
-.skip { position: absolute; left: 16px; top: -64px; z-index: 2; padding: 10px 16px; background: var(--accent); color: var(--on-accent); border-radius: 8px; font-weight: 600; }
+.skip { position: absolute; left: 16px; top: -64px; z-index: 3; min-height: 44px; display: inline-flex; align-items: center; padding: 0 16px; background: var(--accent); color: var(--on-accent); font: 700 1rem var(--pixel); }
 .skip:focus { top: 12px; }
 .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
 @media (min-width: 640px) { .wrap { padding: 0 32px; } }
 .mono { font-family: "Cascadia Code", "Cascadia Mono", Consolas, monospace; }
+/* Pixel art: CSS gives each picture its size; pixel.js draws it. */
+[data-px] { display: inline-block; flex-shrink: 0; line-height: 0; color: var(--outline); }
+.btn [data-px], .theme [data-px] { color: inherit; }
+[data-px] svg { display: block; width: 100%; height: 100%; }
 
 /* Header: the logo, then the pages. On phones the pages wrap onto their own row. */
 header .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 24px; min-height: 64px; }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--ink); text-decoration: none; min-height: 44px; }
+.brand { display: flex; align-items: center; gap: 10px; font: 700 1.2rem var(--pixel); color: var(--ink); text-decoration: none; min-height: 44px; }
 /* Logo spot: a fixed square so the logo can be swapped in without moving the header. */
 .logo { display: inline-grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0; color: var(--accent); }
 .logo > * { max-width: 100%; max-height: 100%; }
 nav { display: flex; flex-wrap: wrap; gap: 0 20px; }
-.nav-link { color: var(--ink); min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 4px; text-decoration: none; }
-.nav-link[aria-current="page"] { color: var(--accent); text-decoration: underline; text-decoration-thickness: 2px; }
-@media (hover: hover) and (pointer: fine) { .nav-link:hover { text-decoration: underline; } }
+.nav-link { color: var(--ink); min-height: 44px; min-width: 44px; justify-content: center; display: inline-flex; align-items: center; gap: 8px; padding: 0 4px; text-decoration: none; font: 500 1.05rem var(--pixel); }
+.nav-link[aria-current="page"] { color: var(--accent); text-decoration: underline; text-decoration-thickness: 4px; text-underline-offset: 6px; }
+@media (hover: hover) and (pointer: fine) { .nav-link:hover { color: var(--accent); } }
 .nav-link svg { flex-shrink: 0; }
 .brand, .nav-link { white-space: nowrap; }
-/* Keeps all four pages on one row at 320 px. */
 /* Theme button: shows the icon of the current choice. Beside the links on wide screens; beside the logo on phones, where the links wrap to their own row. */
 .brand { margin-right: auto; }
 @media (max-width: 639px) { .brand { order: -2; } .theme { order: -1; } }
 .theme {
   display: inline-grid; place-items: center; width: 44px; height: 44px; padding: 0; margin-left: 4px;
-  border: 0; border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer;
-  transition: transform 160ms var(--ease-out), background-color 150ms ease;
+  border: 0; background: transparent; color: var(--ink); cursor: pointer;
 }
-.theme:active { transform: scale(.94); }
+.theme:active { transform: translateY(2px); }
 @media (hover: hover) and (pointer: fine) { .theme:hover { background: var(--surface); } }
-.theme svg { display: none; }
+.theme [data-px] { display: none; width: 24px; height: 24px; }
 :root:not([data-theme]) .theme .auto, [data-theme="light"] .theme .sun, [data-theme="dark"] .theme .moon { display: block; }
+/* Keeps all four pages on one row at 320 px. */
 @media (max-width: 420px) { nav { gap: 0 12px; } .nav-link { padding: 0 2px; } .nav-link svg { display: none; } }
 
 h1 {
-  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
-  font-size: clamp(2.4rem, 7vw, 4.5rem); line-height: 1.02; font-weight: 600;
-  letter-spacing: -0.03em; margin: 0 0 20px; text-wrap: balance;
+  /* At 500 the pixel C keeps a clear gap; bolder, it reads as O. */
+  font: 500 clamp(2.3rem, 6.5vw, 4.2rem)/1.05 var(--pixel);
+  margin: 0 0 20px; text-wrap: balance;
 }
+h2 { font: 500 clamp(1.6rem, 3.5vw, 2.1rem)/1.2 var(--pixel); margin: 0 0 12px; }
+/* A section title's icon sits on the title's first line. */
+h2 > [data-px] { width: 32px; height: 32px; vertical-align: -4px; margin-right: 12px; }
+h3 { font-size: 1.1rem; margin: 0 0 6px; }
 .lead { font-size: 1.2rem; color: var(--muted); margin: 0 0 32px; max-width: 30em; }
-.page-head { padding-block: 48px 40px; }
-@media (min-width: 900px) { .page-head { padding-block: 80px 56px; } }
-.page-head .lead { margin-bottom: 0; }
-
-.actions { display: flex; flex-wrap: wrap; gap: 12px; }
-.btn {
-  display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 22px;
-  border-radius: 8px; font-weight: 600; text-decoration: none;
-  border: 1px solid var(--line); color: var(--ink); background: transparent;
-  transition: transform 160ms var(--ease-out), background-color 150ms ease;
-  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
-}
-.btn:active { transform: scale(.97); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-@media (hover: hover) and (pointer: fine) {
-  .btn:hover { background: var(--surface); }
-  /* Mixing toward ink darkens copper in light mode and lightens it in dark, so label contrast only improves. */
-  .btn.primary:hover { background: color-mix(in srgb, var(--accent) 85%, var(--ink)); }
-}
 .note { margin: 16px 0 0; font-size: .9rem; color: var(--muted); }
 
-/* Home: the headline, then the app's cable from the phone to the folder on the PC. */
-.intro { padding-block: 56px 48px; }
-@media (min-width: 900px) { .intro { padding-block: 96px 64px; } }
-.intro h1 { max-width: 12em; }
-.cable { display: flex; align-items: flex-start; gap: 6px; }
-.cable .end { flex-shrink: 0; color: var(--ink); }
-/* The wire's path starts 12 px down, so 12 px more meets the middle of the 48 px phone; the folder's middle is at 24 px too. */
-.cable .wire { flex: 1; min-width: 0; height: 60px; margin-top: 12px; overflow: visible; }
-.cable .folder { margin-top: 2px; color: var(--accent); animation: lightup 300ms ease 2.5s backwards; }
-.wire path { fill: none; stroke-width: 3; stroke-linecap: round; }
-.wire .slack { stroke: var(--muted); opacity: .45; }
-.wire .lit { stroke: var(--accent); stroke-dasharray: 100; animation: fill 2s cubic-bezier(0.65, 0, 0.35, 1) .5s backwards; }
-@keyframes fill { from { stroke-dashoffset: 100; } }
-@keyframes lightup { from { color: var(--ink); } }
-@media (max-width: 420px) { .cable svg.end { transform: scale(.8); } }
+/* Buttons: square with stepped corners and a 4 px ledge underneath; pressing pushes the button down onto it. */
+.actions { display: flex; flex-wrap: wrap; gap: 16px 20px; padding: 4px; }
+.btn {
+  --edge: var(--outline); --face: var(--bg);
+  display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 22px; margin-bottom: 4px;
+  font: 700 1.1rem var(--pixel); text-decoration: none; color: var(--ink); background: var(--face);
+  box-shadow: 0 -4px 0 0 var(--edge), 0 4px 0 0 var(--edge), -4px 0 0 0 var(--edge), 4px 0 0 0 var(--edge), 0 8px 0 0 var(--edge);
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.btn.primary { --edge: var(--deep); --face: var(--accent); color: var(--on-accent); }
+.btn [data-px] { width: 20px; height: 20px; }
+.btn:active { transform: translateY(4px); box-shadow: 0 -4px 0 0 var(--edge), 0 4px 0 0 var(--edge), -4px 0 0 0 var(--edge), 4px 0 0 0 var(--edge); }
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover { --face: var(--surface); }
+  /* Mixing toward ink darkens copper in light mode and lightens it in dark, so label contrast only improves. */
+  .btn.primary:hover { --face: color-mix(in srgb, var(--accent) 85%, var(--ink)); }
+}
 
-/* What it saves beside the real folder the app writes. */
-.saves { display: grid; gap: 40px; padding-block: 40px 72px; }
-@media (min-width: 900px) { .saves { grid-template-columns: 1fr 1fr; gap: 64px; padding-block: 56px 96px; } }
-.kinds { display: grid; gap: 24px; align-content: start; }
-.kinds h2, .kinds .note { margin: 0; }
+/* Courier: pixel.js draws every pose; these rules pick one. Standing, empty-handed, side on, by default. */
+.c-load, .c-up, .c-out, .c-wave, .c-front, .front .c-side { display: none; }
+.front .c-front { display: inline; }
+.c-legs > g { visibility: hidden; }
+.c-legs > g:first-child { visibility: visible; }
+.carry .c-load, .carry .c-up { display: inline; }
+.carry .c-body { display: none; }
+.wave .c-body { display: none; }
+.wave .c-out, .wave .c-wave { display: inline; }
+/* Walking: the four leg frames take turns, a tenth of a second each. */
+@media (prefers-reduced-motion: no-preference) {
+  .walk .c-legs > g { animation: step .4s steps(1) infinite; }
+  .walk .c-legs > g:nth-child(2) { animation-delay: -.3s; }
+  .walk .c-legs > g:nth-child(3) { animation-delay: -.2s; }
+  .walk .c-legs > g:nth-child(4) { animation-delay: -.1s; }
+  .wave .c-wave { animation: blink .4s steps(1) 4 both; }
+}
+@keyframes step { 0% { visibility: visible; } 25%, 100% { visibility: hidden; } }
+@keyframes blink { 50% { visibility: hidden; } }
+
+/* Home: the headline, then the courier's world: the phone, the cable on the ground and the PC with a shelf per kind of file. */
+.intro { padding-block: 56px 40px; }
+@media (min-width: 900px) { .intro { padding-block: 88px 56px; } }
+.intro h1 { max-width: 12em; }
+.world {
+  position: relative; height: 200px; background: var(--sky); overflow: hidden; container-type: inline-size;
+  border-bottom: 20px solid var(--ground); box-shadow: inset 0 -4px 0 var(--outline);
+}
+.world .cloud { position: absolute; width: 64px; height: 24px; }
+.world .phone { position: absolute; left: 16px; bottom: 4px; width: 48px; height: 64px; }
+.world .cable { position: absolute; left: 64px; right: 136px; bottom: 4px; height: 4px; background: var(--accent); }
+.world .pc { position: absolute; right: 16px; bottom: 4px; width: 120px; height: 110px; }
+/* The courier is a button (click him and he waves), padded out to a 48 px target. */
+.walker {
+  position: absolute; left: 64px; bottom: 4px; width: 48px; height: 72px; padding: 0 4px 4px; border: 0; background: none; cursor: pointer;
+  /* He starts at the PC, walks back for a box, and carries it over; pixel.js fills a shelf slot each time he arrives. */
+  --run: calc(100cqw - 64px - 136px - 48px);
+  transform: translateX(calc(var(--run) / 2));
+}
+.walker > span { display: block; width: 40px; height: 64px; }
+.walker .c-load, .walker .c-up { display: inline; }
+.walker .c-body { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .walker { animation: route 6s linear infinite; }
+  .walker > span { animation: turn 6s steps(1) infinite; }
+  .walker .c-load, .walker .c-up { animation: carry 6s steps(1) infinite; }
+  .walker .c-body { display: inline; animation: empty 6s steps(1) infinite; }
+  .walker.waving, .walker.waving * { animation-play-state: paused; }
+}
+/* Pause: top right of the scene; pressed, it shows the copper frame and the courier stops where he is. */
+.world .pause { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; padding: 10px; border: 0; background: var(--surface); color: var(--ink); cursor: pointer; box-shadow: var(--frame); }
+.world .pause[aria-pressed="true"] { color: var(--accent); box-shadow: 0 -4px 0 0 var(--accent), 0 4px 0 0 var(--accent), -4px 0 0 0 var(--accent), 4px 0 0 0 var(--accent); }
+.world .pause [data-px] { width: 24px; height: 24px; color: inherit; }
+.world.paused .walker, .world.paused .walker * { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .world .pause { display: none; } }
+@keyframes route { 0%, 100% { transform: translateX(var(--run)); } 50% { transform: translateX(0); } }
+@keyframes turn { 0% { transform: scaleX(-1); } 50% { transform: none; } }
+@keyframes carry { 0% { opacity: 0; } 50%, 100% { opacity: 1; } }
+@keyframes empty { 0% { opacity: 1; } 50%, 100% { opacity: 0; } }
+/* Waving: he faces you, puts the box down and waves. */
+.walker.waving .c-load, .walker.waving .c-up, .walker.waving .c-body { display: none; }
+.walker.waving .c-out, .walker.waving .c-wave { display: inline; }
+.walker.waving .c-side { display: none; }
+.walker.waving .c-front { display: inline; }
+.walker.waving > span { transform: none; }
+@media (max-width: 420px) {
+  .world { height: 168px; }
+  .world .pc { width: 96px; height: 88px; }
+  .world .cable { right: 112px; }
+  .walker { --run: calc(100cqw - 64px - 112px - 48px); }
+}
+
+/* Home and guide: the cable runs down the page and every section or step is a stop on it, with a sign.
+   The sign's frame turns copper and the wire fills to the next stop as you scroll (below). */
+.route { position: relative; padding-block: 64px 24px; }
+.stop, .steps li { --sign: 48px; --rail: 80px; position: relative; padding: 0 0 72px var(--rail); border: 0; }
+.steps li:last-child { padding-bottom: 0; }
+.sign, .steps li::before {
+  position: absolute; left: 4px; top: 0; width: var(--sign); height: var(--sign); z-index: 1;
+  display: grid; place-items: center; background: var(--surface); box-shadow: var(--frame);
+}
+.sign [data-px] { width: 32px; height: 32px; }
+/* The wire: a copper cable in whole pixels, with a darker band every 16 px. */
+.stop::after, .steps li::after {
+  content: ""; position: absolute; left: calc(4px + var(--sign) / 2 - 4px); top: calc(var(--sign) + 4px); bottom: -4px; width: 8px;
+  background: repeating-linear-gradient(var(--accent) 0 12px, var(--deep) 12px 16px);
+}
+/* On home the last stop's wire runs on to the end of the page's route, where the rider stops. */
+.steps li:last-child::after { display: none; }
+.stop > h2 { padding-top: 4px; }
+.stop > p { margin: 0; color: var(--muted); max-width: 36em; }
+.stop .actions { margin-top: 24px; }
+/* The courier rides the cable down the page, facing you with a box, and stays in view while you read. */
+.rider { position: sticky; top: 50vh; height: 0; z-index: 2; pointer-events: none; }
+.rider > span { display: block; width: 40px; height: 80px; margin-left: calc(4px + 24px - 20px); transform: translateY(-80px); }
+@media (max-width: 420px) {
+  .stop, .steps li { --sign: 40px; --rail: 60px; }
+  .sign [data-px] { width: 24px; height: 24px; }
+  .rider > span { margin-left: calc(4px + 20px - 20px); }
+}
+
+/* What it saves, beside the real folder the app writes. */
+.saves { display: grid; gap: 40px; margin-top: 24px; }
+@media (min-width: 1000px) { .saves { grid-template-columns: 1fr 1fr; gap: 56px; } }
+.kinds { display: grid; gap: 20px; align-content: start; }
 .kinds p { margin: 0; color: var(--muted); max-width: 32em; }
 .tree {
-  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface); box-shadow: var(--frame); margin: 4px;
   padding: 24px 20px; font-size: .95rem; line-height: 2; overflow-x: auto;
 }
 .tree ul { list-style: none; margin: 0; padding: 0; }
-.tree ul ul { padding-left: 22px; border-left: 1px solid var(--line); margin-left: 8px; }
+.tree ul ul { padding-left: 22px; border-left: 4px solid var(--line); margin-left: 8px; }
 /* Long phone names and paths wrap instead of being cut off at large text sizes. */
 .tree li { overflow-wrap: anywhere; }
 /* Rows arrive top to bottom once on load, like files landing in the backup. --i is the row number. */
@@ -129,51 +233,38 @@ h1 {
 @media (max-width: 420px) { .tree { padding: 20px 14px; font-size: .85rem; } .tree ul ul { padding-left: 14px; margin-left: 4px; } }
 
 /* The real app mid-backup; the picture follows the visitor's light or dark setting. */
-.shot { margin: 0 auto; padding-bottom: 72px; }
-.shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; }
+.shot { margin: 24px 4px 0; }
+.shot img { display: block; width: 100%; height: auto; box-shadow: var(--frame); }
 
-/* Home: the cable runs on down the page and each thing the app does plugs into a socket on it. Not numbered: these are not steps. */
-.rail { max-width: 44em; padding: 8px 0 96px 48px; }
-.plug { position: relative; padding-bottom: 64px; }
-.plug:last-child { padding-bottom: 0; }
-/* h2 stays unpositioned so its socket and the wire's track (below) are placed against the whole .plug. */
-.plug h2::before {
-  content: ""; position: absolute; left: -48px; top: calc(.6em - 10px); z-index: 1;
-  width: 20px; height: 20px; border-radius: 50%; box-sizing: border-box;
-  background: var(--bg); border: 2px solid var(--accent);
+/* Guide, FAQ and download: the page name, then a small scene of the courier for that page. */
+.page-head { display: grid; gap: 24px; align-items: end; padding-block: 48px 40px; }
+@media (min-width: 900px) { .page-head { grid-template-columns: 1fr auto; gap: 48px; padding-block: 80px 56px; } }
+.page-head .lead { margin-bottom: 0; }
+.scene {
+  display: flex; align-items: flex-end; justify-content: center; gap: 20px; min-width: 240px; height: 136px; padding: 0 24px;
+  background: var(--sky); border-bottom: 16px solid var(--ground); box-shadow: inset 0 -4px 0 var(--outline);
 }
-.plug:last-child h2::before { background: var(--accent); }
-.plug::after { content: ""; position: absolute; left: -39px; top: 20px; bottom: -20px; width: 2px; background: var(--accent); }
-.plug:last-child::after { display: none; }
-.plug p { margin: 0; color: var(--muted); max-width: 36em; }
-.plug .actions { margin-top: 24px; }
-@media (max-width: 420px) { .rail { padding-left: 36px; } .plug h2::before { left: -36px; } .plug::after { left: -27px; } }
+.scene .courier { width: 40px; height: 80px; margin-bottom: 4px; }
+.scene .flag { width: 48px; height: 48px; margin-bottom: 4px; }
+.scene .ask { width: 40px; height: 40px; align-self: flex-start; margin: 12px 0 0 -16px; }
+.scene .pc { width: 72px; height: 66px; margin-bottom: 4px; }
 
-section { padding: 72px 0; border-top: 1px solid var(--line); }
-h2 { font-size: clamp(1.6rem, 3.5vw, 2.1rem); line-height: 1.2; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 12px; }
+section { padding: 72px 0; border-top: 4px solid var(--line); }
 .section-lead { color: var(--muted); margin: 0 0 40px; max-width: 36em; }
-h3 { font-size: 1.1rem; margin: 0 0 6px; }
 .cols { display: grid; gap: 32px 40px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
 .cols p { margin: 0; color: var(--muted); max-width: 32em; }
 code { font-family: "Cascadia Code", Consolas, monospace; font-size: .9em; overflow-wrap: anywhere; }
-pre { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0 0; max-width: 32em; }
+pre { background: var(--surface); box-shadow: var(--frame); padding: 16px; overflow-x: auto; margin: 20px 4px 0; max-width: 32em; }
 .split { display: grid; gap: 40px; }
 @media (min-width: 900px) { .split { grid-template-columns: 1fr 1fr; gap: 64px; } }
 .split p { color: var(--muted); margin: 0; max-width: 32em; }
 
-/* Guide: a copper cable runs down the steps and plugs into each number, like the cable in the app. */
+/* Guide: the steps are numbered stops on the cable. */
 .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; max-width: 40em; }
-.steps li { position: relative; counter-increment: step; padding: 0 0 36px 60px; }
-.steps li::before {
-  content: counter(step); position: absolute; left: 0; top: -2px; z-index: 1;
-  width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
-  background: var(--bg); border: 2px solid var(--accent); color: var(--accent); font-weight: 700;
-}
-.steps li::after { content: ""; position: absolute; left: 17px; top: 34px; bottom: 0; width: 2px; background: var(--accent); }
-.steps li:last-child { padding-bottom: 0; }
-.steps li:last-child::after { display: none; }
+.steps li { counter-increment: step; }
+.steps li::before { content: counter(step); color: var(--accent); font: 700 1.3rem var(--pixel); }
 .steps p { margin: 0; color: var(--muted); }
-.steps h3 { padding-top: 4px; }
+.steps h3 { padding-top: 10px; }
 
 /* Guide and FAQ on wide screens: the section title stays in view on the left while its steps or answers scroll on the right. */
 @media (min-width: 900px) {
@@ -184,52 +275,48 @@ pre { background: var(--surface); border: 1px solid var(--line); border-radius: 
 }
 
 /* FAQ: every answer shown, grouped by topic. */
+/* On phones a topic title with no lead line needs room before its first question. */
+.side h2:last-child { margin-bottom: 28px; }
 .qa { display: grid; gap: 32px; max-width: 40em; }
 .qa p { margin: 0; color: var(--muted); }
 
-/* Download: the newest release, read live from GitHub. */
-.release {
-  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
-  padding: 28px 24px; max-width: 40em;
-}
+/* Download: the newest release, read live from GitHub, on a shipping label with copper tape across the top. */
+.release { background: var(--surface); box-shadow: var(--frame); margin: 4px; padding: 36px 24px 28px; max-width: 40em; position: relative; }
+.release::before { content: ""; position: absolute; inset: 0 0 auto; height: 12px; background: repeating-linear-gradient(90deg, var(--accent) 0 16px, var(--deep) 16px 20px); }
 .release dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 24px; margin: 24px 0 0; }
 .release dt { color: var(--muted); }
 /* Placeholders stay faint until GitHub answers, then the real values fade in. */
-.release dd { transition: opacity 150ms var(--ease-out); }
+.release dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; transition: opacity 150ms var(--ease-out); }
 .release[aria-busy="true"] dd { opacity: .55; }
-.release dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-@media (max-width: 420px) { .release { padding: 20px 16px; } }
+@media (max-width: 420px) { .release { padding: 32px 16px 20px; } }
 .release .note[role="status"]:empty { display: none; }
 section.after { margin-top: 72px; }
 
-footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
+footer { border-top: 4px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 32px; justify-content: space-between; }
 
-/* Guide and home: the cable lights as you scroll. Each step's socket lights as it crosses three quarters of the way down
-   the screen and its wire fills on to the next one; the unlit wire shows in the line color. Browsers without
-   scroll-driven animations, and reduced motion, keep the cable fully lit. */
+/* The cable lights as you scroll: each sign's frame turns copper as it crosses three quarters of the way down the screen,
+   and its wire fills on to the next one; the unlit wire shows in the line color. Browsers without scroll-driven
+   animations, and reduced motion, keep the cable fully lit. */
 @media (prefers-reduced-motion: no-preference) {
   @supports (animation-timeline: view()) {
-    .steps li, .plug { view-timeline: --cable block; view-timeline-inset: 0 25%; }
-    .steps h3::after, .plug h2::after { content: ""; position: absolute; width: 2px; background: var(--line); }
-    .steps h3::after { left: 17px; top: 34px; bottom: 0; }
-    .plug h2::after { left: -39px; top: 20px; bottom: -20px; }
-    .steps li:last-child h3::after, .plug:last-child h2::after { display: none; }
-    .steps li::after, .plug::after { transform-origin: top; animation: charge linear both; animation-timeline: --cable; animation-range: entry 0% entry 100%; }
-    .steps li::before, .plug h2::before { animation: socket linear both; animation-timeline: --cable; animation-range: entry 0% entry 24px; }
+    .stop, .steps li { view-timeline: --cable block; view-timeline-inset: 0 25%; }
+    .stop > h2::after, .steps h3::after {
+      content: ""; position: absolute; left: calc(4px + var(--sign) / 2 - 4px); top: calc(var(--sign) + 4px); bottom: -4px; width: 8px; background: var(--line);
+    }
+    .steps li:last-child h3::after { display: none; }
+    .stop::after, .steps li::after { z-index: 1; transform-origin: top; animation: charge linear both; animation-timeline: --cable; animation-range: entry 0% entry 100%; }
+    .sign, .steps li::before { animation: socket linear both; animation-timeline: --cable; animation-range: entry 0% entry 24px; }
     @keyframes charge { from { transform: scaleY(0); } }
-    @keyframes socket { to { background: var(--accent); color: var(--on-accent); } }
-    /* Text blocks rise in gently as they come into view. */
-    .steps p, .plug p, .cols > div, .qa > div { animation: rise linear both; animation-timeline: view(); animation-range: entry 0% entry 60%; }
-    @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+    @keyframes socket { from { box-shadow: var(--frame); } to { box-shadow: 0 -4px 0 0 var(--accent), 0 4px 0 0 var(--accent), -4px 0 0 0 var(--accent), 4px 0 0 0 var(--accent); } }
   }
 }
-@media (max-width: 420px) { .plug h2::after { left: -27px; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .theme { transition: background-color 150ms ease; } .theme:active { transform: none; }
-  .btn { transition: background-color 150ms ease; } .btn:active { transform: none; }
+  .theme:active, .btn:active { transform: none; }
   .tree li > span { animation-name: fade; }
-  .wire .lit, .cable .folder { animation: none; }
 }
 @keyframes fade { from { opacity: 0; } }
+
+/* The pixel font's web copy has no "fi" ligature glyph. Last, because each font shorthand above resets this. */
+h1, h2, .brand, .nav-link, .btn, .skip, .steps li::before { font-feature-settings: "liga" 0, "clig" 0; }
