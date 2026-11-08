@@ -558,7 +558,10 @@ pub(super) fn storages(serial: &str) -> Vec<(String, String)> {
 pub(super) fn listing(serial: &str, remote_root: &str) -> Vec<(u64, i64, String)> {
     let out = shell(
         serial,
-        &format!("find {remote_root}/ -type f -exec stat -c '%s %Y %n' {{}} +"),
+        &format!(
+            "find {}/ -type f -exec stat -c '%s %Y %n' {{}} +",
+            sh_quote(remote_root)
+        ),
     );
     // shortcut: file names containing a newline are skipped; rare, would need find -print0.
     out.lines()
@@ -897,20 +900,26 @@ pub(super) fn mms_part(row: &str) -> Option<(u64, &str)> {
 /// img.jpg would overwrite each other on every run. Later ones get " (2)", " (3)"...
 pub(super) fn unclash(jobs: &mut [Job]) {
     jobs.sort_by(|a, b| a.remote.cmp(&b.remote));
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     for job in jobs {
-        let original = job.local.clone();
-        let mut n = 1;
-        while !seen.insert(job.local.to_string_lossy().to_lowercase()) {
-            n += 1;
-            let stem = original.file_stem().unwrap_or_default().to_string_lossy();
-            let name = match original.extension() {
-                Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
-                None => format!("{stem} ({n})"),
-            };
-            job.local = original.with_file_name(name);
-        }
+        job.local = unclashed(&mut seen, &job.local);
     }
+}
+
+/// `path`, or `path` with " (2)", " (3)"... when `seen` already holds it in any letter case.
+pub(super) fn unclashed(seen: &mut HashSet<String>, path: &Path) -> PathBuf {
+    let mut local = path.to_path_buf();
+    let mut n = 1;
+    while !seen.insert(local.to_string_lossy().to_lowercase()) {
+        n += 1;
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let name = match path.extension() {
+            Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
+            None => format!("{stem} ({n})"),
+        };
+        local = path.with_file_name(name);
+    }
+    local
 }
 
 /// Turns `content query` rows of contact_id, mimetype, display_name, data1 into a vCard 3.0

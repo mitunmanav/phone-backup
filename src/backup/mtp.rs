@@ -15,6 +15,8 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
     let (mut files, mut copied, mut errors) = (0, Vec::new(), Vec::new());
     let mut kept = Vec::new();
+    // Windows ignores letter case, so IMG.jpg and img.jpg would overwrite each other.
+    let mut seen = HashSet::new();
 
     for (n, storage) in device.storages().await.map_err(phone)?.iter().enumerate() {
         let desc = &storage.info().description;
@@ -44,7 +46,11 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                 now,
             });
             let objects = match storage.list_objects(parent).await {
-                Ok(o) => o,
+                // Sorted, so the same file gets the same " (2)" name on every run.
+                Ok(mut o) => {
+                    o.sort_by(|a, b| a.filename.cmp(&b.filename));
+                    o
+                }
                 Err(e) => {
                     errors.push(format!("{}: {e}", dir.display()));
                     continue;
@@ -63,6 +69,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                     }
                     continue;
                 }
+                let local = unclashed(&mut seen, &local);
                 if is_junk(&format!("/sdcard/{path}")) || !pick.wants(&path, obj.size) {
                     continue;
                 }

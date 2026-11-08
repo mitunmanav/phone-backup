@@ -319,25 +319,20 @@ pub fn restore_files(
 
     report(Msg::Status("Checking what is already on the phone…".into()));
     // "/sdcard" or "/storage/<card>": the storage each file goes to.
-    let roots: std::collections::BTreeSet<String> = jobs
-        .iter()
-        .map(|j| {
-            if j.remote.starts_with("/sdcard/") {
-                "/sdcard".into()
-            } else {
-                j.remote
-                    .splitn(4, '/')
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .join("/")
-            }
-        })
-        .collect();
+    let root_of = |remote: &str| -> String {
+        if remote.starts_with("/sdcard/") {
+            "/sdcard".into()
+        } else {
+            remote.splitn(4, '/').take(3).collect::<Vec<_>>().join("/")
+        }
+    };
+    let roots: std::collections::BTreeSet<String> =
+        jobs.iter().map(|j| root_of(&j.remote)).collect();
     let mut on_phone = HashSet::new();
     for root in &roots {
         // Android's shared storage ignores letter case, so compare names in lower case.
         on_phone.extend(
-            shell(serial, &format!("find {root}/ -type f"))
+            shell(serial, &format!("find {}/ -type f", sh_quote(root)))
                 .lines()
                 .map(str::to_lowercase),
         );
@@ -353,18 +348,34 @@ pub fn restore_files(
 
     let to_copy = jobs.len();
     let needed: u64 = jobs.iter().map(|j| j.size).sum();
-    let free = shell(serial, "stat -f -c '%a %S' /sdcard");
-    if let Some(free) = free
-        .split_once(' ')
-        .and_then(|(a, b)| Some(a.parse::<u64>().ok()? * b.trim().parse::<u64>().ok()?))
-    {
-        // 200 MB spare so the phone itself is not left with full storage.
-        if needed + 200_000_000 > free {
-            return Err(format!(
-                "Not enough space on the phone: the restore needs {}, but only {} is free. Free up space on the phone first.",
-                size(needed),
-                size(free)
-            ));
+    // Each storage (the phone, an SD card) has its own free space.
+    for root in &roots {
+        let here: u64 = jobs
+            .iter()
+            .filter(|j| root_of(&j.remote) == *root)
+            .map(|j| j.size)
+            .sum();
+        if here == 0 {
+            continue;
+        }
+        let free = shell(serial, &format!("stat -f -c '%a %S' {}", sh_quote(root)));
+        if let Some(free) = free
+            .split_once(' ')
+            .and_then(|(a, b)| Some(a.parse::<u64>().ok()? * b.trim().parse::<u64>().ok()?))
+        {
+            let place = if root == "/sdcard" {
+                "the phone"
+            } else {
+                "the SD card"
+            };
+            // 200 MB spare so the phone itself is not left with full storage.
+            if here + 200_000_000 > free {
+                return Err(format!(
+                    "Not enough space on {place}: the restore needs {}, but only {} is free. Free up space on {place} first.",
+                    size(here),
+                    size(free)
+                ));
+            }
         }
     }
     let no_card = format!(
