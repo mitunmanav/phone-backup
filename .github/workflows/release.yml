@@ -44,6 +44,8 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+          # Keeps Gradle and its downloads between runs, so later runs do not depend on the download servers.
+          cache: gradle
 
       # Before cargo: build.rs embeds the APK in the app.
       - name: Build signed companion app
