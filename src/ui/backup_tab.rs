@@ -379,24 +379,31 @@ impl App {
         let loose = pos2(b.x - (b.x - a.x) * 0.42, y + (by - y - 22.0).max(16.0));
         let sag = if narrow { 16.0 } else { 30.0 };
         let (adb, mtp) = self.connected();
-        let (plug, seal) = self.cable(
-            ui,
-            t,
-            Cord {
-                id: "backup",
-                a,
-                b,
-                loose,
-                sag,
-                phase: self.phase(),
-                connected: !adb.is_empty() || mtp.is_some(),
-                phone_at_b: false,
-                coil: None,
-            },
-        );
-        icon(ui, phone, ICON_PHONE, 36.0, mix(t.muted, t.ink, plug));
-        icon(ui, folder, ICON_FOLDER, 36.0, mix(t.ink, t.accent, seal));
-        badge(ui, t, folder + vec2(FOLDER - 3.0, 17.0), seal);
+        let phase = self.phase();
+        // Once a backup starts, the courier carries it; the cable waits for the next one.
+        if self.job == Job::Backup && phase != Phase::Idle {
+            let area = Rect::from_min_max(rect.min, pos2(rx, by - 8.0));
+            self.courier(ui, t, area, phase);
+        } else {
+            let (plug, seal) = self.cable(
+                ui,
+                t,
+                Cord {
+                    id: "backup",
+                    a,
+                    b,
+                    loose,
+                    sag,
+                    phase,
+                    connected: !adb.is_empty() || mtp.is_some(),
+                    phone_at_b: false,
+                    coil: None,
+                },
+            );
+            icon(ui, phone, ICON_PHONE, 36.0, mix(t.muted, t.ink, plug));
+            icon(ui, folder, ICON_FOLDER, 36.0, mix(t.ink, t.accent, seal));
+            badge(ui, t, folder + vec2(FOLDER - 3.0, 17.0), seal);
+        }
 
         // What each end says.
         if self.free.as_ref().is_none_or(|(d, _)| *d != self.dest) {
@@ -412,7 +419,6 @@ impl App {
             .phones
             .as_ref()
             .is_some_and(|p| p.contains(&Phone::Unauthorized));
-        let phase = self.phase();
         let (name, how) = match (adb.as_slice(), mtp) {
             ([(model, _)], _) => (
                 model.clone(),
