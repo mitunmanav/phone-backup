@@ -88,7 +88,8 @@ impl Reading {
                 .map(|(i, _)| i)
                 .collect()
         };
-        if self.open.is_some_and(|i| !self.shown.contains(&i)) {
+        // On the other parts `shown` holds rows, not conversations.
+        if self.part == Part::Messages && self.open.is_some_and(|i| !self.shown.contains(&i)) {
             self.open = None;
         }
         self.open_shown = self.open.map_or(Vec::new(), |i| {
@@ -468,9 +469,14 @@ mod tests {
         assert_eq!(r.open, None);
         assert!(r.open_shown.is_empty());
 
+        // Searching another part leaves the open conversation alone.
+        r.query.clear();
+        r.refilter();
+        r.open(0);
         r.part = Part::Contacts;
         r.query = "777".into();
         r.refilter();
         assert_eq!(r.shown, [1]);
+        assert_eq!(r.open, Some(0));
     }
 }

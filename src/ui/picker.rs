@@ -329,6 +329,16 @@ impl App {
         }
     }
 
+    /// Chooses a backup. Results about the one chosen before must not show for, or act on, this one.
+    pub(crate) fn choose(&mut self, path: Option<std::path::PathBuf>) {
+        if self.chosen != path {
+            self.chosen = path;
+            self.dupes = None;
+            self.tool_msg = None;
+            self.export_msg = None;
+        }
+    }
+
     /// Re-reads the backups in `folder` and keeps the choice when it is still there.
     pub(crate) fn scan(&mut self, folder: &std::path::Path) {
         if self.fixture != Fixture::Real {
@@ -357,7 +367,7 @@ impl App {
             .iter()
             .any(|b| Some(&b.path) == self.chosen.as_ref())
         {
-            self.chosen = self.backups.first().map(|b| b.path.clone());
+            self.choose(self.backups.first().map(|b| b.path.clone()));
         }
     }
 }

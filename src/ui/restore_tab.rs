@@ -567,7 +567,7 @@ impl App {
                 .set_directory(&self.dest)
                 .pick_folder()
         {
-            self.chosen = Some(dir.clone());
+            self.choose(Some(dir.clone()));
             self.scan(&dir);
         }
         let (line, _) = ui.allocate_exact_size(vec2(w, 22.0), egui::Sense::hover());
@@ -622,7 +622,7 @@ impl App {
         }
         ui.spacing_mut().item_spacing.y = gap;
         if pressed.is_some() {
-            self.chosen = pressed;
+            self.choose(pressed);
         }
         match action {
             Some((0, path)) => {
@@ -935,7 +935,7 @@ impl App {
                 Some(Ask::Copy(from, into)) => self.tidy(ctx, Job::Copy, from, into),
                 Some(Ask::Rename(path, name, _)) => match backup::rename_backup(&path, &name) {
                     Ok(new) => {
-                        self.chosen = Some(new.clone());
+                        self.choose(Some(new.clone()));
                         // A backup folder chosen on its own is listed under its new name.
                         let dir = if self.scanned == path {
                             new
