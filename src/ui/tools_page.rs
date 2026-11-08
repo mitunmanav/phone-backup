@@ -115,7 +115,8 @@ impl App {
                 let _ = tx.send(tools::Done::Status(s));
                 ctx.request_repaint();
             };
-            let done = job(&say);
+            let done =
+                crate::jobs::caught(|| job(&say)).unwrap_or_else(|e| tools::Done::Text(Err(e)));
             let _ = tx.send(done);
             ctx.request_repaint();
         });
