@@ -327,9 +327,7 @@ impl App {
                 "tool-backup",
                 &options,
             ) {
-                self.chosen = Some(self.backups[n].path.clone());
-                self.dupes = None;
-                self.tool_msg = None;
+                self.choose(Some(self.backups[n].path.clone()));
             }
             let end = Rect::from_min_max(pos2(row.right() - 124.0, row.top()), row.max);
             let find = if beside {
@@ -348,10 +346,8 @@ impl App {
                     .set_directory(&self.dest)
                     .pick_folder()
             {
-                self.chosen = Some(dir.clone());
+                self.choose(Some(dir.clone()));
                 self.scan(&dir);
-                self.dupes = None;
-                self.tool_msg = None;
             }
             if self.backups.is_empty() {
                 wrapped(

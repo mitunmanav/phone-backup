@@ -68,7 +68,13 @@ impl App {
             self.scrcpy = tools::scrcpy_path();
         }
         // These two pages share one result: it must not show up as the other's.
-        if tab != self.tab && tab != Tab::Help && matches!(self.tab, Tab::Restore | Tab::Transfer) {
+        // Help in between counts as the page it was opened from.
+        let from = if self.tab == Tab::Help {
+            self.help_from
+        } else {
+            self.tab
+        };
+        if tab != from && tab != Tab::Help && matches!(from, Tab::Restore | Tab::Transfer) {
             self.restore_msg = None;
         }
         self.tab = tab;

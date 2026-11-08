@@ -59,6 +59,8 @@ impl App {
         self.now.clear();
         self.fraction = None;
         self.tiles = None;
+        // An old copy or delete result would otherwise read as this job's.
+        self.tidy_msg = None;
     }
 
     /// Runs a job on a worker and keeps the computer awake until it ends. Its result goes to the
@@ -238,7 +240,6 @@ impl App {
         into: Option<PathBuf>,
     ) {
         self.begin(job);
-        self.tidy_msg = None;
         if job == Job::Delete {
             self.status = "Moving the backup to the Recycle Bin…".into();
         }
