@@ -88,6 +88,16 @@ impl App {
         })
     }
 
+    /// Deleting must never pick one of several phones by guesswork.
+    fn many_phones(&self) -> bool {
+        self.phones
+            .iter()
+            .flatten()
+            .filter(|p| matches!(p, Phone::Adb { .. }))
+            .count()
+            > 1
+    }
+
     /// Runs a tool on a worker thread; `which` is the panel that shows its progress and result.
     pub(crate) fn run_tool(
         &mut self,
@@ -358,6 +368,7 @@ impl App {
 
         let folder = self.chosen.clone().filter(|_| !self.backups.is_empty());
         let can = folder.is_some() && !running;
+        let many = self.many_phones();
         let hint = |ui: &mut egui::Ui, title: &str, note: &str| {
             if !title.is_empty() {
                 wrapped(ui, txt(title, 13.0, 600.0, t.ink));
@@ -404,6 +415,11 @@ impl App {
                     ui,
                     &format!("{} chosen", files(chosen.len())),
                     "Connect the phone with USB debugging on.",
+                ),
+                "phone" if many => hint(
+                    ui,
+                    &format!("{} chosen", files(chosen.len())),
+                    "Unplug the other phones first, so only the phone to free is connected.",
                 ),
                 "phone" => hint(
                     ui,
@@ -491,13 +507,14 @@ impl App {
                     }
                 }
                 "phone" => {
-                    let ready = can && serial.is_some() && !chosen.is_empty();
+                    let ready = can && serial.is_some() && !many && !chosen.is_empty();
                     if primary(ui, t, "Delete from phone…", ready)
                         && let (Some(f), Some(serial)) = (folder.clone(), serial.clone())
                     {
                         self.run_tool(ui.ctx(), "phone", move |say| {
                             say("Checking the files on the phone…".into());
                             tools::Done::Matched(
+                                serial.clone(),
                                 tools::chosen_on_phone(&f, &chosen)
                                     .and_then(|wanted| tools::match_on_phone(&serial, &wanted)),
                             )
@@ -720,8 +737,8 @@ impl App {
             ),
             Confirm::Phone(_, list, left) => {
                 let mut body = format!(
-                    "This frees {} on the phone. Their copies in the backup have the same size and stay on this computer. Deleted files cannot be brought back on the phone except by restoring them.",
-                    size(list.iter().map(|(_, n)| n).sum())
+                    "This frees {} on the phone. Their copies in the backup are exactly the same and stay on this computer. Deleted files cannot be brought back on the phone except by restoring them.",
+                    size(list.iter().map(|(_, n, _)| n).sum())
                 );
                 if *left > 0 {
                     body += &format!(
@@ -760,9 +777,17 @@ impl App {
         match self.confirm.take() {
             Some(Confirm::Copies(list)) if yes => {
                 self.dupes = None;
+                // Copies are only listed for the chosen backup.
+                let folder = self.chosen.clone().unwrap_or_default();
                 self.run_tool(ctx, "dupes", move |_| {
-                    tools::Done::Text(tools::delete_copies(&list))
+                    tools::Done::Text(tools::delete_copies(&folder, &list))
                 });
+            }
+            Some(Confirm::Phone(..)) if yes && self.many_phones() => {
+                self.tool_msg = Some((
+                    "phone",
+                    Err("Another phone was connected, so nothing was deleted. Unplug the other phones and try again.".into()),
+                ));
             }
             Some(Confirm::Phone(serial, list, _)) if yes => {
                 self.free_pick = None;

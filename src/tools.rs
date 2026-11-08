@@ -13,13 +13,17 @@ pub static STOP: AtomicBool = AtomicBool::new(false);
 /// Groups of identical files, each sorted by path, biggest waste first.
 pub type Groups = Vec<Vec<(PathBuf, u64)>>;
 
+/// A file to free on the phone: its phone path, size, and SHA-256 in the backup ("" when the
+/// backup has none, which never matches).
+pub type OnPhone = (String, u64, String);
+
 /// What a tool sends back to the window.
 pub enum Done {
     /// A line saying how far it is.
     Status(String),
     Dupes(Result<Groups, String>),
-    /// Phone files whose backup copy matches, and how many chosen files did not.
-    Matched(Result<(Vec<(String, u64)>, usize), String>),
+    /// The phone checked, its files whose backup copy matches, and how many chosen files did not.
+    Matched(String, Result<(Vec<OnPhone>, usize), String>),
     Text(Result<String, String>),
     /// A backup read for the Read page.
     Book(Result<crate::export::Book, String>),
@@ -62,8 +66,9 @@ pub fn duplicates(folder: &Path, say: &dyn Fn(String)) -> Result<Vec<Vec<(PathBu
     Ok(groups)
 }
 
-/// Deletes the ticked copies from the backup on this computer.
-pub fn delete_copies(paths: &[(PathBuf, u64)]) -> Result<String, String> {
+/// Deletes the ticked copies from the backup on this computer, and their checksums, so
+/// Verify does not call them missing.
+pub fn delete_copies(folder: &Path, paths: &[(PathBuf, u64)]) -> Result<String, String> {
     let (mut gone, mut bytes, mut failed) = (0, 0, 0);
     for (path, n) in paths {
         match fs::remove_file(path) {
@@ -74,6 +79,8 @@ pub fn delete_copies(paths: &[(PathBuf, u64)]) -> Result<String, String> {
             Err(_) => failed += 1,
         }
     }
+    // Drops the sums of files no longer in the folder; hashes nothing.
+    backup::update_sums(folder, &[], &[], &|_| {});
     let mut msg = format!(
         "Deleted {} from the backup, freeing {}.",
         copies(gone),
@@ -347,22 +354,29 @@ fn merge_vcards(text: &str) -> (String, usize, usize) {
     (out, cards.len(), groups.len())
 }
 
-/// Phone paths and backup sizes of the chosen files of a backup.
+/// Phone paths, backup sizes and backup checksums of the chosen files of a backup.
 pub fn chosen_on_phone(
     folder: &Path,
     chosen: &std::collections::HashSet<PathBuf>,
-) -> Result<Vec<(String, u64)>, String> {
+) -> Result<Vec<OnPhone>, String> {
+    let sums = backup::read_sums(folder);
     Ok(backup::saved_files(folder, None)?
         .0
         .into_iter()
         .filter(|j| chosen.contains(&j.local))
-        .map(|j| (j.remote, j.size))
+        .map(|j| {
+            let sum = sums
+                .get(&backup::rel(folder, &j.local))
+                .cloned()
+                .unwrap_or_default();
+            (j.remote, j.size, sum)
+        })
         .collect())
 }
 
 /// The wanted phone files that the phone has at exactly the backup's size, from
 /// `stat -c '%s %n'` output. Paths outside shared storage are never matched.
-fn same_size(wanted: &[(String, u64)], stat: &str) -> Vec<(String, u64)> {
+fn same_size(wanted: &[OnPhone], stat: &str) -> Vec<OnPhone> {
     let on_phone: HashMap<&str, u64> = stat
         .lines()
         .filter_map(|l| {
@@ -372,7 +386,22 @@ fn same_size(wanted: &[(String, u64)], stat: &str) -> Vec<(String, u64)> {
         .collect();
     wanted
         .iter()
-        .filter(|(p, n)| safe_to_delete(p) && on_phone.get(p.as_str()) == Some(n))
+        .filter(|(p, n, _)| safe_to_delete(p) && on_phone.get(p.as_str()) == Some(n))
+        .cloned()
+        .collect()
+}
+
+/// The wanted files whose SHA-256 on the phone, from `sha256sum` output, equals the backup's.
+/// A file with no sum in the backup never matches, nor does a name `sha256sum` escapes.
+fn same_sum(wanted: &[OnPhone], out: &str) -> Vec<OnPhone> {
+    let on_phone: HashMap<&str, &str> = out
+        .lines()
+        .filter_map(|l| l.split_once("  "))
+        .map(|(sum, p)| (p, sum))
+        .collect();
+    wanted
+        .iter()
+        .filter(|(p, _, sum)| !sum.is_empty() && on_phone.get(p.as_str()) == Some(&sum.as_str()))
         .cloned()
         .collect()
 }
@@ -385,39 +414,46 @@ fn safe_to_delete(path: &str) -> bool {
         && !path.contains('\n')
 }
 
-/// Of the wanted files, those the phone has at the backup's size, and how many it does not.
-pub fn match_on_phone(
-    serial: &str,
-    wanted: &[(String, u64)],
-) -> Result<(Vec<(String, u64)>, usize), String> {
+/// Of the wanted files, those the phone has with exactly the backup's contents (same size,
+/// then same SHA-256), and how many it does not.
+pub fn match_on_phone(serial: &str, wanted: &[OnPhone]) -> Result<(Vec<OnPhone>, usize), String> {
     if !backup::connected(serial) {
         return Err("The phone was disconnected. Plug it back in and try again.".into());
     }
     let paths: Vec<&str> = wanted
         .iter()
-        .map(|(p, _)| p.as_str())
+        .map(|(p, ..)| p.as_str())
         .filter(|p| safe_to_delete(p))
         .collect();
-    let found = same_size(
+    let sized = same_size(
         wanted,
         &backup::shell_each(serial, "stat -c '%s %n'", &paths),
     );
+    let paths: Vec<&str> = sized.iter().map(|(p, ..)| p.as_str()).collect();
+    let found = same_sum(&sized, &backup::shell_each(serial, "sha256sum", &paths));
     let left = wanted.len() - found.len();
     Ok((found, left))
 }
 
-/// Deletes the confirmed files from the phone, checking each size again right before, then
-/// checks that they are gone and asks the phone to refresh its Gallery.
-pub fn delete_from_phone(serial: &str, confirmed: &[(String, u64)]) -> Result<String, String> {
+/// Deletes the confirmed files from the phone, checking each one's contents again right
+/// before, then checks that they are gone and asks the phone to refresh its Gallery.
+pub fn delete_from_phone(serial: &str, confirmed: &[OnPhone]) -> Result<String, String> {
     let (matched, _) = match_on_phone(serial, confirmed)?;
-    let paths: Vec<&str> = matched.iter().map(|(p, _)| p.as_str()).collect();
+    let paths: Vec<&str> = matched.iter().map(|(p, ..)| p.as_str()).collect();
     backup::shell_each(serial, "rm -f", &paths);
     let still: std::collections::HashSet<String> =
         backup::shell_each(serial, "stat -c '%n'", &paths)
             .lines()
             .map(String::from)
             .collect();
-    let gone: Vec<&(String, u64)> = matched.iter().filter(|(p, _)| !still.contains(p)).collect();
+    // A gone phone answers `stat` with nothing, which would look like every file was deleted.
+    if !backup::connected(serial) {
+        return Err("The phone was disconnected while deleting. Plug it back in and choose the files again to see which are left.".into());
+    }
+    let gone: Vec<&OnPhone> = matched
+        .iter()
+        .filter(|(p, ..)| !still.contains(p))
+        .collect();
     if !gone.is_empty() {
         backup::shell_each(
             serial,
@@ -425,7 +461,7 @@ pub fn delete_from_phone(serial: &str, confirmed: &[(String, u64)]) -> Result<St
             &["external_primary"],
         );
     }
-    let bytes: u64 = gone.iter().map(|(_, n)| n).sum();
+    let bytes: u64 = gone.iter().map(|(_, n, _)| n).sum();
     let mut msg = format!(
         "Deleted {} from the phone, freeing {}.",
         files(gone.len()),
@@ -469,14 +505,16 @@ mod tests {
 
     #[test]
     fn deletes_only_same_size_files_in_shared_storage() {
-        let wanted = vec![
-            ("/sdcard/DCIM/a b.jpg".to_string(), 10),
-            ("/sdcard/DCIM/changed.jpg".to_string(), 10),
-            ("/sdcard/DCIM/gone.jpg".to_string(), 10),
-            ("/sdcard/../data/x".to_string(), 5),
-            ("/data/local/tmp/x".to_string(), 5),
-            ("/sdcard/it's $x.txt".to_string(), 0),
-        ];
+        let wanted: Vec<OnPhone> = [
+            ("/sdcard/DCIM/a b.jpg", 10),
+            ("/sdcard/DCIM/changed.jpg", 10),
+            ("/sdcard/DCIM/gone.jpg", 10),
+            ("/sdcard/../data/x", 5),
+            ("/data/local/tmp/x", 5),
+            ("/sdcard/it's $x.txt", 0),
+        ]
+        .map(|(p, n)| (p.to_string(), n, "ab".to_string()))
+        .into();
         let stat = "10 /sdcard/DCIM/a b.jpg\n11 /sdcard/DCIM/changed.jpg\n5 /sdcard/../data/x\n5 /data/local/tmp/x\n0 /sdcard/it's $x.txt\n";
         let found: Vec<String> = same_size(&wanted, stat)
             .into_iter()
@@ -485,6 +523,26 @@ mod tests {
         assert_eq!(found, ["/sdcard/DCIM/a b.jpg", "/sdcard/it's $x.txt"]);
         assert!(!safe_to_delete("/sdcard/a\nb"));
         assert!(safe_to_delete("/storage/3A1F-0C2B/DCIM/x..y.jpg"));
+    }
+
+    #[test]
+    fn deletes_only_files_with_the_backups_checksum() {
+        let wanted: Vec<OnPhone> = [
+            ("/sdcard/same.jpg", "aa"),
+            ("/sdcard/edited.jpg", "bb"),
+            ("/sdcard/no sum.jpg", ""),
+            ("/sdcard/back\\slash.jpg", "cc"),
+            ("/sdcard/not listed.jpg", "dd"),
+        ]
+        .map(|(p, s)| (p.to_string(), 1, s.to_string()))
+        .into();
+        // sha256sum escapes a name with a backslash and starts its line with one.
+        let out = "aa  /sdcard/same.jpg\nff  /sdcard/edited.jpg\n  /sdcard/no sum.jpg\n\\cc  /sdcard/back\\\\slash.jpg\n";
+        let found: Vec<String> = same_sum(&wanted, out)
+            .into_iter()
+            .map(|(p, ..)| p)
+            .collect();
+        assert_eq!(found, ["/sdcard/same.jpg"]);
     }
 
     #[test]
@@ -554,13 +612,15 @@ BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Bob\r\nTEL:911\r\nEND:VCARD\r\n";
             .output()
             .unwrap();
         assert!(pushed.status.success(), "{pushed:?}");
-        // A backup copy of another size: that phone file must stay.
-        fs::write(free.join("-dash.txt"), "changed").unwrap();
-        let chosen = backup::backup_files(&dir)
+        // A backup copy of the same size but other contents: that phone file must stay.
+        fs::write(free.join("-dash.txt"), "SAME\n").unwrap();
+        let chosen: std::collections::HashSet<PathBuf> = backup::backup_files(&dir)
             .unwrap()
             .into_iter()
             .map(|(p, ..)| p)
             .collect();
+        let all: Vec<PathBuf> = chosen.iter().cloned().collect();
+        backup::update_sums(&dir, &[], &all, &|_| {});
         let wanted = chosen_on_phone(&dir, &chosen).unwrap();
         let (matched, left) = match_on_phone(&serial, &wanted).unwrap();
         assert_eq!((matched.len(), left), (4, 1), "{matched:?}");
