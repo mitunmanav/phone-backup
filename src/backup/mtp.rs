@@ -77,7 +77,10 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                     update_sums(&root, &copied, &[], report);
                     return Err(STOPPED.into());
                 }
-                let part = local.with_extension("part-download");
+                // The whole name plus a suffix, so it never matches another file's name.
+                let mut part = local.clone().into_os_string();
+                part.push(".part-download");
+                let part = PathBuf::from(part);
                 let result: Result<(), String> = async {
                     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                     let mut out = fs::File::create(&part).map_err(|e| e.to_string())?;

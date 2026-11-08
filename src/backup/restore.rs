@@ -425,7 +425,11 @@ pub fn restore_files(
                     // adb.exe cannot read past 260 characters; Rust's fs can, so copy short and push.
                     let short = tmp.join("file");
                     let _ = fs::create_dir_all(&tmp);
-                    let _ = fs::copy(&src, &short);
+                    // A failed copy would push the previous file's copy; not sent, it counts as failed below.
+                    if fs::copy(&src, &short).is_err() {
+                        tried.extend(batch);
+                        continue;
+                    }
                     src = short;
                 }
                 c.arg(src).arg(&batch[0].remote);

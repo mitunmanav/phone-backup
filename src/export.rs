@@ -791,8 +791,12 @@ fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, St
         }
         fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
         // Drives without hard links (FAT, exFAT, network shares) get a copy instead.
-        if fs::hard_link(path, &target).is_err() {
-            fs::copy(path, &target).map_err(|e| format!("Cannot copy {}: {e}", path.display()))?;
+        if fs::hard_link(path, &target).is_err()
+            && let Err(e) = fs::copy(path, &target)
+        {
+            // A half copy would be skipped as done by the next export.
+            let _ = fs::remove_file(&target);
+            return Err(format!("Cannot copy {}: {e}", path.display()));
         }
     }
     Ok(media.len())
