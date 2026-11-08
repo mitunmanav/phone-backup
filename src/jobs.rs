@@ -6,7 +6,8 @@ impl App {
         let (dest, pick) = (self.dest.clone(), self.pick.clone());
         self.begin(Job::Backup);
         self.result = None;
-        self.spawn_job(ctx, true, move |report| {
+        let fail = |e| Msg::Done(Err(e));
+        self.spawn_job(ctx, fail, move |report| {
             let adb: Vec<_> = phones
                 .iter()
                 .filter_map(|p| match p {
@@ -60,27 +61,27 @@ impl App {
         self.tiles = None;
     }
 
-    /// Runs a job on a worker. Its result goes to the window last, after the job is marked
-    /// finished. With `awake`, the computer stays awake until then.
+    /// Runs a job on a worker and keeps the computer awake until it ends. Its result goes to the
+    /// window last, after the job is marked finished. If the job panics, `fail` turns the panic
+    /// into that job's error result, so the window never stays stuck on "busy".
     fn spawn_job(
         &self,
         ctx: &egui::Context,
-        awake: bool,
+        fail: impl FnOnce(String) -> Msg + Send + 'static,
         work: impl FnOnce(&dyn Fn(Msg)) -> Msg + Send + 'static,
     ) {
         let (tx, ctx, busy) = (self.tx.clone(), ctx.clone(), self.busy.clone());
         thread::spawn(move || {
-            if awake {
-                backup::keep_awake(true);
-            }
+            backup::keep_awake(true);
             let report = |m: Msg| {
                 let _ = tx.send(m);
                 ctx.request_repaint();
             };
-            let done = work(&report);
-            if awake {
-                backup::keep_awake(false);
-            }
+            let done = caught(|| work(&report)).unwrap_or_else(fail);
+            backup::keep_awake(false);
+            // A stop or pause left on would cut short the size checks that run between jobs.
+            backup::STOP.store(false, Ordering::Relaxed);
+            backup::PAUSE.store(false, Ordering::Relaxed);
             busy.store(false, Ordering::Relaxed);
             report(done);
         });
@@ -110,7 +111,8 @@ impl App {
         let (serial, folder, files, apps, only) = plan;
         let phone = self.model_of(&serial);
         self.restore_report = (!check).then(|| folder.join(backup::RESTORE_REPORT));
-        self.spawn_job(ctx, true, move |report| {
+        let fail = |e| Msg::Restored(Err(e));
+        self.spawn_job(ctx, fail, move |report| {
             let pick = Pick {
                 files,
                 apps,
@@ -134,7 +136,9 @@ impl App {
     pub(crate) fn verify(&mut self, ctx: &egui::Context, folder: PathBuf) {
         self.begin(Job::Verify);
         self.verified = None;
-        self.spawn_job(ctx, true, move |report| {
+        let failed = folder.clone();
+        let fail = |e| Msg::Verified(failed, Err(e));
+        self.spawn_job(ctx, fail, move |report| {
             let result = backup::verify(&folder, report);
             Msg::Verified(folder, result)
         });
@@ -145,9 +149,11 @@ impl App {
     pub(crate) fn export(&mut self, ctx: &egui::Context, folder: PathBuf) {
         self.begin(Job::Export);
         self.export_msg = None;
-        self.spawn_job(ctx, false, move |report| {
+        let out = folder.join(export::EXPORTS);
+        let failed = out.clone();
+        let fail = |e| Msg::Exported(failed, Err(e));
+        self.spawn_job(ctx, fail, move |report| {
             let result = export::export(&folder, report);
-            let out = folder.join(export::EXPORTS);
             if result.is_ok() {
                 let _ = Command::new("explorer").arg(&out).spawn();
             }
@@ -190,7 +196,8 @@ impl App {
                 };
                 self.checking = None;
                 self.restore_report = Some(folder.join(backup::RESTORE_REPORT));
-                self.spawn_job(ctx, false, move |report| {
+                let fail = |e| Msg::Restored(Err(e));
+                self.spawn_job(ctx, fail, move |report| {
                     let r = backup::transfer_now(
                         (&to, &to_model),
                         &dest,
@@ -207,7 +214,8 @@ impl App {
                 // The folder is filled in when the backup of the first phone has made it.
                 self.checking = Some((to.clone(), PathBuf::new(), pick.files, pick.apps, None));
                 self.restore_report = None;
-                self.spawn_job(ctx, false, move |report| {
+                let fail = |e| Msg::Transferred(None, Err(e));
+                self.spawn_job(ctx, fail, move |report| {
                     let (folder, r) = backup::transfer_check(
                         (&from, &from_model),
                         (&to, &to_model),
@@ -234,12 +242,37 @@ impl App {
         if job == Job::Delete {
             self.status = "Moving the backup to the Recycle Bin…".into();
         }
-        self.spawn_job(ctx, false, move |report| {
+        let fail = |e| Msg::Tidied(Err(e));
+        self.spawn_job(ctx, fail, move |report| {
             let r = match into {
                 Some(into) => backup::merge_backups(&from, &into, report),
                 None => backup::delete_backup(&from),
             };
             Msg::Tidied(r)
         });
+    }
+}
+
+/// Runs `f`, turning a panic into a plain error line for the window.
+pub(crate) fn caught<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        let why = e
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        format!("Stopped because of an internal error ({why}). Please report it.")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caught;
+
+    #[test]
+    fn caught_turns_a_panic_into_an_error() {
+        assert_eq!(caught(|| 1), Ok(1));
+        let e = caught(|| -> u8 { panic!("boom") }).unwrap_err();
+        assert!(e.contains("boom") && e.contains("Please report it"), "{e}");
     }
 }
