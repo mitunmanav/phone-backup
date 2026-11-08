@@ -22,8 +22,8 @@ pub enum Done {
     /// A line saying how far it is.
     Status(String),
     Dupes(Result<Groups, String>),
-    /// Phone files whose backup copy matches, and how many chosen files did not.
-    Matched(Result<(Vec<OnPhone>, usize), String>),
+    /// The phone checked, its files whose backup copy matches, and how many chosen files did not.
+    Matched(String, Result<(Vec<OnPhone>, usize), String>),
     Text(Result<String, String>),
     /// A backup read for the Read page.
     Book(Result<crate::export::Book, String>),
@@ -446,6 +446,10 @@ pub fn delete_from_phone(serial: &str, confirmed: &[OnPhone]) -> Result<String, 
             .lines()
             .map(String::from)
             .collect();
+    // A gone phone answers `stat` with nothing, which would look like every file was deleted.
+    if !backup::connected(serial) {
+        return Err("The phone was disconnected while deleting. Plug it back in and choose the files again to see which are left.".into());
+    }
     let gone: Vec<&OnPhone> = matched
         .iter()
         .filter(|(p, ..)| !still.contains(p))

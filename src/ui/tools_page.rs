@@ -88,6 +88,16 @@ impl App {
         })
     }
 
+    /// Deleting must never pick one of several phones by guesswork.
+    fn many_phones(&self) -> bool {
+        self.phones
+            .iter()
+            .flatten()
+            .filter(|p| matches!(p, Phone::Adb { .. }))
+            .count()
+            > 1
+    }
+
     /// Runs a tool on a worker thread; `which` is the panel that shows its progress and result.
     pub(crate) fn run_tool(
         &mut self,
@@ -358,14 +368,7 @@ impl App {
 
         let folder = self.chosen.clone().filter(|_| !self.backups.is_empty());
         let can = folder.is_some() && !running;
-        // Deleting must never pick one of several phones by guesswork.
-        let many = self
-            .phones
-            .iter()
-            .flatten()
-            .filter(|p| matches!(p, Phone::Adb { .. }))
-            .count()
-            > 1;
+        let many = self.many_phones();
         let hint = |ui: &mut egui::Ui, title: &str, note: &str| {
             if !title.is_empty() {
                 wrapped(ui, txt(title, 13.0, 600.0, t.ink));
@@ -511,6 +514,7 @@ impl App {
                         self.run_tool(ui.ctx(), "phone", move |say| {
                             say("Checking the files on the phone…".into());
                             tools::Done::Matched(
+                                serial.clone(),
                                 tools::chosen_on_phone(&f, &chosen)
                                     .and_then(|wanted| tools::match_on_phone(&serial, &wanted)),
                             )
@@ -778,6 +782,12 @@ impl App {
                 self.run_tool(ctx, "dupes", move |_| {
                     tools::Done::Text(tools::delete_copies(&folder, &list))
                 });
+            }
+            Some(Confirm::Phone(..)) if yes && self.many_phones() => {
+                self.tool_msg = Some((
+                    "phone",
+                    Err("Another phone was connected, so nothing was deleted. Unplug the other phones and try again.".into()),
+                ));
             }
             Some(Confirm::Phone(serial, list, _)) if yes => {
                 self.free_pick = None;

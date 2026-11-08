@@ -866,7 +866,7 @@ impl eframe::App for App {
                 tools::Done::Status(s) => self.tool_status = s,
                 tools::Done::Dupes(Ok(groups)) => self.show_dupes(groups),
                 tools::Done::Dupes(Err(e))
-                | tools::Done::Matched(Err(e))
+                | tools::Done::Matched(_, Err(e))
                 | tools::Done::Book(Err(e)) => self.tool_msg = Some((which, Err(e))),
                 tools::Done::Book(Ok(book)) => {
                     let name = self
@@ -877,7 +877,7 @@ impl eframe::App for App {
                     self.go(Tab::Read);
                     self.reading = Some(Reading::new(name, book));
                 }
-                tools::Done::Matched(Ok((list, left))) if list.is_empty() => {
+                tools::Done::Matched(_, Ok((list, left))) if list.is_empty() => {
                     self.tool_msg = Some((
                         which,
                         Err(format!(
@@ -886,8 +886,7 @@ impl eframe::App for App {
                         )),
                     ))
                 }
-                tools::Done::Matched(Ok((list, left))) => {
-                    let serial = self.adb_serial().unwrap_or_default();
+                tools::Done::Matched(serial, Ok((list, left))) => {
                     self.confirm = Some(Confirm::Phone(serial, list, left));
                 }
                 tools::Done::Text(r) => self.tool_msg = Some((which, r)),
