@@ -16,7 +16,7 @@
 <header>
   <div class="wrap">
     <a class="brand" href="./">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M12 7v7m-3-3 3 3 3-3"/></svg>
+      <span class="logo" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M12 7v7m-3-3 3 3 3-3"/></svg></span>
       Phone Backup
     </a>
     <nav aria-label="Pages">
@@ -32,18 +32,44 @@
 </header>
 
 <main id="main">
-  <div class="wrap hero">
-    <div>
-      <h1>Your Android phone, copied to your PC</h1>
-      <p class="lead">A free Windows app that backs up photos, files, apps, contacts and messages over a USB cable or Wi-Fi. No account, no cloud. The backup is an ordinary folder you can open.</p>
-      <div class="actions">
-        <a class="btn primary" href="download">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 20h16"/></svg>
-          Download for Windows
-        </a>
-        <a class="btn" href="guide">How it works</a>
+  <div class="wrap intro">
+    <h1>Your Android phone, copied to your PC</h1>
+    <p class="lead">A free Windows app. Plug in your phone, press Back up now, and everything lands in an ordinary folder you can open. No account, no cloud.</p>
+    <div class="actions">
+      <a class="btn primary" href="download">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 20h16"/></svg>
+        Download for Windows
+      </a>
+      <a class="btn" href="guide">How it works</a>
+    </div>
+  </div>
+
+  <!-- The app's cable: copper fills from the phone to the folder once, then the folder lights up. -->
+  <div class="wrap cable" aria-hidden="true">
+    <svg class="end phone" width="32" height="48" viewBox="0 0 32 48" fill="none" stroke="currentColor" stroke-width="3"><rect x="2.5" y="2.5" width="27" height="43" rx="5"/><path d="M12 38h8"/></svg>
+    <svg class="wire" viewBox="0 0 1000 60" preserveAspectRatio="none">
+      <path class="slack" d="M0 12C300 64 700 64 1000 12" pathLength="100"/>
+      <path class="lit" d="M0 12C300 64 700 64 1000 12" pathLength="100"/>
+    </svg>
+    <svg class="end folder" width="52" height="44" viewBox="0 0 52 44" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M2.5 8.5a4 4 0 0 1 4-4h12l5 6h21.5a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4h-38.5a4 4 0 0 1-4-4z"/></svg>
+  </div>
+
+  <div class="wrap saves">
+    <div class="kinds">
+      <h2>What it saves</h2>
+      <div>
+        <h3>Photos, videos and files</h3>
+        <p>The phone's storage and SD card, in the same folders as on the phone. Or only the folders you pick.</p>
       </div>
-      <p class="note">Free and open source under the GPL-3.0 license.</p>
+      <div>
+        <h3>Apps</h3>
+        <p>The apps you installed, ready to put back. Their logins and data stay behind.</p>
+      </div>
+      <div>
+        <h3>Contacts, calls, messages and calendar</h3>
+        <p>Some phones do not allow reading these over USB; the app tells you when.</p>
+      </div>
+      <p class="note">Later backups copy only what is new or changed.</p>
     </div>
 
     <div class="tree mono" role="img" aria-label="Example backup folder: files, apps and data folders inside a folder named after the phone.">
@@ -84,64 +110,42 @@
     </picture>
   </figure>
 
-  <section>
-    <div class="wrap">
-      <h2>What it saves</h2>
-      <p class="section-lead">Tick what you want. The next backup copies only what is new or changed.</p>
-      <div class="cols">
-        <div>
-          <span class="mono">files</span>
-          <h3>Photos, videos and files</h3>
-          <p>Everything in the phone's storage and SD card, in the same folders as on the phone. Or only some folders and types, with the size of each shown first. Caches and WhatsApp's copies of sent media are left out.</p>
-        </div>
-        <div>
-          <span class="mono">apps</span>
-          <h3>Apps</h3>
-          <p>The apps you installed, ready to put back on a phone. Their logins and data do not come with them.</p>
-        </div>
-        <div>
-          <span class="mono">data</span>
-          <h3>Contacts, calls, messages and calendar</h3>
-          <p>Picture messages keep their photos. Contacts open in Google Contacts or any phone. Some phones do not allow reading these over USB.</p>
-        </div>
+  <!-- The cable carries on down the page; each thing the app does plugs into it. -->
+  <div class="wrap">
+    <div class="rail">
+      <div class="plug">
+        <h2>Restore to any phone</h2>
+        <p>Put photos, files and apps back on any Android phone: all of them, or picked from a list with previews. Files the phone already has are never replaced. <strong>Verify</strong> checks that nothing has changed since it was saved.</p>
       </div>
-    </div>
-  </section>
-
-  <section>
-    <div class="wrap">
-      <h2>Restore to any phone</h2>
-      <p class="section-lead">Pick a backup and put back all its photos and files or only the ones you choose, or reinstall missing apps. Large files, duplicates and old files are marked, so they are easy to leave out. Files the phone already has are skipped, never replaced. Verify backup checks that no file has changed since it was saved.</p>
-      <p class="section-lead">Or press Export to get its contacts, calls and messages as spreadsheets and pages you can search, print or save as PDF, the calendar for Google Calendar or Outlook, and its photos sorted into year and month folders.</p>
-    </div>
-  </section>
-
-  <section>
-    <div class="wrap">
-      <h2>Phone to phone</h2>
-      <p class="section-lead">Connect both phones and copy one to the other in one go. The new phone can be backed up first, and nothing changes on it until you have seen what will happen.</p>
-    </div>
-  </section>
-
-  <section>
-    <div class="wrap">
-      <h2>Tools for your backups</h2>
-      <p class="section-lead">Read your messages, contacts, calls and calendar inside the app. Find duplicate files, turn HEIC photos into JPG, merge duplicate contacts, and free up space by deleting files from the phone once they are safely backed up. If <a href="https://github.com/Genymobile/scrcpy">scrcpy</a> is installed, open the phone's screen on your computer.</p>
-    </div>
-  </section>
-
-  <section>
-    <div class="wrap split">
-      <div>
+      <div class="plug">
+        <h2>Phone to phone</h2>
+        <p>Copy one phone straight to another. You see what will change before anything does.</p>
+      </div>
+      <div class="plug">
+        <h2>Read and export</h2>
+        <p>Read a backup's messages, contacts, calls and calendar on your PC. Export them as spreadsheets, printable pages, <code>contacts.vcf</code> and <code>.ics</code>, and sort photos into month folders.</p>
+      </div>
+      <div class="plug">
+        <h2>Tools</h2>
+        <p>Find duplicates, turn HEIC photos into JPG, merge duplicate contacts, free up phone space once files are safely backed up, and show the phone's screen with <a href="https://github.com/Genymobile/scrcpy">scrcpy</a>.</p>
+      </div>
+      <div class="plug">
         <h2>Nothing leaves your computer</h2>
-        <p>No account, no tracking, no subscription. The app goes online only when you ask it to, and it never sends your data. <a href="faq#privacy">What the app reads and sends</a></p>
+        <p>No account, no ads, no tracking. The app goes online only when you ask it to, and it never sends your data. <a href="faq#privacy">What the app reads and sends</a></p>
       </div>
-      <div>
+      <div class="plug">
         <h2>Ready in a few minutes</h2>
-        <p>Download one file, plug in your phone and press Back up now. The <a href="guide">guide</a> shows each step, including Wi-Fi without a cable.</p>
+        <p>One file, nothing to install. Free and open source under the GPL-3.0 license.</p>
+        <div class="actions">
+          <a class="btn primary" href="download">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 20h16"/></svg>
+            Download for Windows
+          </a>
+          <a class="btn" href="guide">Read the guide</a>
+        </div>
       </div>
     </div>
-  </section>
+  </div>
 </main>
 
 <footer>
