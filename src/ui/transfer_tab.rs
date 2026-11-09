@@ -236,7 +236,17 @@ impl App {
             big(top.y, first);
             big(bot.y, "Second phone");
             if !one {
-                small(egui::pos2(tx, top.y + 20.0), "Tap Allow on each phone");
+                // "Allow" only makes sense once a phone is waiting for it.
+                let asking = self
+                    .phones
+                    .as_ref()
+                    .is_some_and(|p| p.contains(&Phone::Unauthorized));
+                let hint = if asking {
+                    "Tap Allow on each phone"
+                } else {
+                    "Plug both in with USB debugging on"
+                };
+                small(egui::pos2(tx, top.y + 20.0), hint);
             } else {
                 small(
                     egui::pos2(tx, bot.y + 20.0),
