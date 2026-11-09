@@ -465,7 +465,7 @@ impl App {
                     Some(Ok(done)) => done.iter().map(|s| s.copied).sum(),
                     _ => 0,
                 };
-                let note = if copied == 0 {
+                let note = if copied == 0 && n == 0 {
                     "Nothing new to copy".to_string()
                 } else {
                     format!("{} copied", files(copied))
