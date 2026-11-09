@@ -336,6 +336,7 @@ impl App {
             self.dupes = None;
             self.tool_msg = None;
             self.export_msg = None;
+            self.restore_msg = None;
         }
     }
 

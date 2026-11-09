@@ -36,8 +36,12 @@ impl App {
             .collect();
         // Keep both choices on connected, different phones as phones come and go.
         let here = |s: &Option<String>| adb.iter().any(|p| Some(&p.0) == s.as_ref());
+        // Never the "to" phone: an unplugged source must not come back as the destination.
         if !here(&self.from) {
-            self.from = adb.first().map(|p| p.0.clone());
+            self.from = adb
+                .iter()
+                .find(|p| Some(&p.0) != self.to.as_ref())
+                .map(|p| p.0.clone());
         }
         if !here(&self.to) || self.to == self.from {
             self.to = adb
