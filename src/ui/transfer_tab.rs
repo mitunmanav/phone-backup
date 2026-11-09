@@ -194,7 +194,13 @@ impl App {
             egui::pos2(x, r.bottom() - if one { 38.0 } else { 22.0 }),
         );
         let (a, b) = (top + vec2(0.0, 34.0), bot - vec2(0.0, 34.0));
-        let loose = egui::pos2(x + 24.0, a.y + (b.y - a.y) * 0.42);
+        // With one phone in, the free plug waits just above the second phone's socket, so it reads
+        // as "plug the second phone in", not as a broken cable.
+        let loose = if one {
+            egui::pos2(x + 18.0, b.y - 30.0)
+        } else {
+            egui::pos2(x + 24.0, a.y + (b.y - a.y) * 0.42)
+        };
         let (plug, seal) = self.cable(
             ui,
             t,
