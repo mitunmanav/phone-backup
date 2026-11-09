@@ -60,7 +60,7 @@ const TOOLS: [Tool; 6] = [
         id: "phone",
         short: "Free up space",
         name: "Free up space on the phone",
-        note: "Deletes files from the phone that are safe in a backup: only those whose backup copy has the same size.",
+        note: "Deletes files from the phone that are safe in a backup: only those whose backup copy has exactly the same contents.",
         glyph: ICON_PHONE,
         safe: "This changes the phone. Nothing goes until you confirm.",
         input: (ICON_PHONE, "Files on the phone"),
