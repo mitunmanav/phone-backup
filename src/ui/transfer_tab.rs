@@ -1,4 +1,4 @@
-use super::backup_tab::{Cord, Phase};
+use super::backup_tab::{Cord, Phase, finished_with};
 use crate::*;
 use egui::Pos2;
 
@@ -116,6 +116,7 @@ impl App {
                 format!("Copying to {to_name}…"),
                 "Keep both phones plugged in and unlocked.".into(),
             ),
+            Phase::Done(n) if n > 0 => (finished_with(n), "The report says what failed.".into()),
             Phase::Done(_) => (
                 "Transfer finished".into(),
                 "No errors. Report saved.".into(),

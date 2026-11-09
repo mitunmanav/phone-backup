@@ -191,7 +191,8 @@ struct App {
     job: Job,
     /// The backup last checked and what the check found.
     verified: Option<(PathBuf, Result<String, String>)>,
-    restore_msg: Option<Result<String, String>>,
+    /// The last restore or transfer: what it did and how many files and apps failed, or why it stopped.
+    restore_msg: Option<Result<(String, usize), String>>,
     /// What the last export made, and its folder for the Open folder button.
     export_msg: Option<(PathBuf, Result<String, String>)>,
     /// The running restore is only a check; holds what it checks.
@@ -638,7 +639,7 @@ impl App {
                         ));
                     }
                     "done" if app.tab != Tab::Backup => {
-                        app.restore_msg = Some(Ok("Copied 1,093 files back to the phone. 47,120 files were already there.".into()));
+                        app.restore_msg = Some(Ok(("Copied 1,093 files back to the phone. 47,120 files were already there.".into(), 0)));
                         app.restore_report = Some(app.dest.join("restore-report.txt"));
                     }
                     "stopped" if app.tab != Tab::Backup => {
@@ -827,7 +828,7 @@ impl eframe::App for App {
                     }
                 }
                 Msg::Restored(r) => match self.checking.take() {
-                    Some(plan) => self.preview = Some((plan, r)),
+                    Some(plan) => self.preview = Some((plan, r.map(|(m, _)| m))),
                     None => {
                         self.restore_msg = Some(r);
                         self.stopped_at = self.fraction;

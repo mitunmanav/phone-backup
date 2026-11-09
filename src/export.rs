@@ -32,22 +32,30 @@ pub fn export(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
         made.push("contacts");
     }
     let names = names(&contacts);
-    if let Some(text) = read("call_log.txt") {
-        let calls = calls(&text, &names);
+    // Like contacts, data with no rows makes no file.
+    let calls = read("call_log.txt")
+        .map(|t| calls(&t, &names))
+        .unwrap_or_default();
+    if !calls.is_empty() {
         write("calls.csv", calls_csv(&calls))?;
         write("calls.html", calls_html(&calls))?;
         made.push("call history");
     }
-    if let Some(text) = read("sms.txt") {
-        let messages = messages(&text, &names);
+    let messages = read("sms.txt")
+        .map(|t| messages(&t, &names))
+        .unwrap_or_default();
+    if !messages.is_empty() {
         write("messages.csv", messages_csv(&messages))?;
         write("messages.html", messages_html(&messages))?;
         write("messages.txt", messages_txt(&messages))?;
         made.push("messages");
     }
     // Backups from before the calendar was saved have no calendar.txt.
-    if let Some(text) = read("calendar.txt") {
-        write("calendar.ics", ics(&rows(&text, &EVENT_KEYS)))?;
+    let events = read("calendar.txt")
+        .map(|t| rows(&t, &EVENT_KEYS))
+        .unwrap_or_default();
+    if !events.is_empty() {
+        write("calendar.ics", ics(&events))?;
         made.push("calendar");
     }
 
@@ -941,6 +949,8 @@ mod tests {
             format!("Row: 0 address=+15550100, date=1767225600000, type=1, body={NASTY}\nRow: 1 address=+15550100, date=1767225660000, type=2, body=Ok 👍\n"),
         )
         .unwrap();
+        // The phone answers "No result found." for an empty calendar.
+        fs::write(data.join("calendar.txt"), "No result found.\n").unwrap();
         let said = export(&root, &|_| {}).unwrap();
         assert!(said.starts_with("Exported contacts, call history, messages to "));
         let out = root.join(EXPORTS);
@@ -955,7 +965,7 @@ mod tests {
         ] {
             assert!(out.join(name).is_file(), "{name}");
         }
-        // No calendar.txt in this backup, so no calendar file.
+        // An empty calendar makes no calendar file.
         assert!(!out.join("calendar.ics").exists());
         assert!(
             fs::read_to_string(out.join("messages.txt"))

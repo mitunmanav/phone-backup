@@ -1,4 +1,4 @@
-use super::backup_tab::{Cord, Phase};
+use super::backup_tab::{Cord, Phase, finished_with};
 use crate::*;
 
 /// "Today", "3 days ago": when a backup was made, to start a line.
@@ -168,7 +168,7 @@ impl App {
                 }
             }
             None => Phase::Idle,
-            Some(Ok(_)) => Phase::Done(0),
+            Some(Ok((_, failed))) => Phase::Done(*failed),
             Some(Err(_)) => Phase::Stopped,
         }
     }
@@ -671,7 +671,8 @@ impl App {
                 },
                 self.status.clone(),
             ),
-            Phase::Done(_) => ("Restore finished".into(), "No errors. Report saved.".into()),
+            Phase::Done(0) => ("Restore finished".into(), "No errors. Report saved.".into()),
+            Phase::Done(n) => (finished_with(n), "The report says what failed.".into()),
             Phase::Stopped => (
                 self.stopped_at.map_or("Restore stopped".into(), |f| {
                     format!("Stopped at {:.0}%", (f * 100.0).floor())
@@ -796,7 +797,7 @@ impl App {
             });
         }
         match &self.restore_msg {
-            Some(Ok(m)) => {
+            Some(Ok((m, _))) => {
                 ui.add_space(16.0);
                 result_box(t).show(ui, |ui| {
                     ui.set_width(ui.available_width());

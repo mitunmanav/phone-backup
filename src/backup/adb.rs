@@ -800,24 +800,29 @@ pub(super) fn adb_backup_run(
         {
             notes.push(note);
         }
+        // Read from the phone and every file of it saved.
+        let mut saved = ok;
         if ok {
+            let mut save = |path: PathBuf, text: String| {
+                if fs::write(&path, text).is_ok() {
+                    written.push(path);
+                } else {
+                    saved = false;
+                }
+            };
             if file == "contacts.txt" {
-                let _ = fs::write(data_dir.join("contacts.vcf"), vcard(&out));
-                written.push(data_dir.join("contacts.vcf"));
+                save(data_dir.join("contacts.vcf"), vcard(&out));
             }
             if let Some(json) = json {
-                let path = data_dir.join(file).with_extension("json");
-                let _ = fs::write(&path, json);
-                written.push(path);
+                save(data_dir.join(file).with_extension("json"), json);
             }
             if file == "mms.txt" {
                 mms_attachments(serial, &data_dir.join("mms"));
                 cut = interrupted(serial);
             }
-            let _ = fs::write(data_dir.join(file), out);
-            written.push(data_dir.join(file));
+            save(data_dir.join(file), out);
         }
-        data.push((label, ok));
+        data.push((label, saved));
     }
     drop(helper);
     if let Some(e) = cut {
