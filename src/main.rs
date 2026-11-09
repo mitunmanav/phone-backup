@@ -1030,14 +1030,10 @@ impl eframe::App for App {
                 .map(|&b| bit(b))
                 .collect(),
         );
-        let folders: Vec<_> = self.pick.folders.iter().cloned().collect();
-        storage.set_string(
-            "folders",
-            folders.join(
-                "
-",
-            ),
-        );
+        // Each folder ends its line, so {""} (top-level files only) saves as a blank line, not
+        // as nothing, which would load back as all folders.
+        let folders: String = self.pick.folders.iter().map(|f| format!("{f}\n")).collect();
+        storage.set_string("folders", folders);
         storage.set_string(
             "max_size",
             self.pick

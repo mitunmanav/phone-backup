@@ -296,7 +296,7 @@ fn merge_vcards(text: &str) -> (String, usize, usize) {
                 // Short codes like 911 are shared by unrelated contacts.
                 (d.len() >= 7).then(|| format!("TEL:{}", &d[d.len().saturating_sub(10)..]))
             }
-            "EMAIL" => Some(format!("EMAIL:{}", value.to_lowercase())),
+            "EMAIL" if !value.is_empty() => Some(format!("EMAIL:{}", value.to_lowercase())),
             "FN" if !value.is_empty() => Some(format!("FN:{}", value.to_lowercase())),
             _ => None,
         }
@@ -567,10 +567,13 @@ mod tests {
         let vcf = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ann Lee\r\nN:;Ann Lee;;;\r\nTEL:+1 555 010 0100\r\nEND:VCARD\r\n\
 BEGIN:VCARD\r\nVERSION:3.0\r\nFN:ann lee\r\nTEL:5550100100\r\nEMAIL:ann@x.com\r\nEND:VCARD\r\n\
 BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Annie\r\nEMAIL:ANN@x.com\r\nTEL:911\r\nEND:VCARD\r\n\
-BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Bob\r\nTEL:911\r\nEND:VCARD\r\n";
+BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Bob\r\nTEL:911\r\nEND:VCARD\r\n\
+BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Cat\r\nEMAIL:\r\nEND:VCARD\r\n\
+BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Dan\r\nEMAIL: \r\nEND:VCARD\r\n";
         let (out, before, after) = merge_vcards(vcf);
-        assert_eq!((before, after), (4, 2));
-        assert_eq!(out.matches("BEGIN:VCARD").count(), 2);
+        // An empty email joins nobody.
+        assert_eq!((before, after), (6, 4));
+        assert_eq!(out.matches("BEGIN:VCARD").count(), 4);
         // One name and one copy of each number and email in the merged card.
         let ann = out.split("END:VCARD").next().unwrap();
         assert_eq!(ann.matches("FN:").count(), 1);

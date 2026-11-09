@@ -31,6 +31,10 @@ impl App {
                         Err(e) if adb.len() > 1 => failed.push(format!("{model}: {e}")),
                         Err(e) => failed.push(e),
                     }
+                    // Stop ends the whole backup, not just this phone's.
+                    if backup::STOP.load(Ordering::Relaxed) {
+                        break;
+                    }
                 }
                 if failed.is_empty() {
                     Ok(done)
