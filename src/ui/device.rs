@@ -57,6 +57,22 @@ impl App {
         (adb, mtp)
     }
 
+    /// The icon for the ADB device with this serial (a phone unless it is a TV or a watch) and its
+    /// size at a phone's `size`: wider glyphs shrink to the phone's width, which layouts assume.
+    pub(crate) fn device_icon(&self, serial: Option<&str>, size: f32) -> (&'static str, f32) {
+        let form = self.phones.iter().flatten().find_map(|p| match p {
+            Phone::Adb {
+                serial: s, form, ..
+            } if Some(s.as_str()) == serial => Some(*form),
+            _ => None,
+        });
+        match form {
+            Some(backup::Form::Tv) => ("\u{E7F4}", size * 0.63),
+            Some(backup::Form::Watch) => ("\u{E917}", size * 0.67),
+            _ => ("\u{E8EA}", size),
+        }
+    }
+
     /// How the phone with this serial stands, in a few words.
     pub(crate) fn phone_note(&self, serial: &str) -> String {
         let found = self.phones.iter().flatten().find_map(|p| match p {

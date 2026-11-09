@@ -32,6 +32,11 @@ impl App {
             wifi,
             battery,
             level: battery.or(Some(82)),
+            form: if model.contains("TV") {
+                backup::Form::Tv
+            } else {
+                backup::Form::Phone
+            },
         };
         self.restore_msg = None;
         self.export_msg = None;
@@ -170,6 +175,7 @@ impl App {
             }
             Fixture::Many => {
                 self.phones = Some(vec![
+                    adb("MiTV AYFR0", true, None),
                     adb("Pixel 8", false, None),
                     adb("Galaxy S23 Ultra", false, Some(14)),
                     adb("Redmi Note 13 Pro+ 5G", true, None),

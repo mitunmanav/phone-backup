@@ -1,7 +1,6 @@
 use crate::*;
 use egui::{Pos2, pos2};
 
-const ICON_PHONE: &str = "\u{E8EA}";
 const ICON_FOLDER: &str = "\u{E8B7}";
 /// Glyph, name and a note, for `KINDS` in order and then Apps and Contacts. The phone holds its
 /// contacts, texts, calls and calendar behind one switch, so they share a tile.
@@ -408,7 +407,9 @@ impl App {
                     coil: None,
                 },
             );
-            icon(ui, phone, ICON_PHONE, 36.0, mix(t.muted, t.ink, plug));
+            let shown = self.adb_phone().map(|p| p.0);
+            let (glyph, size) = self.device_icon(shown.as_deref(), 36.0);
+            icon(ui, phone, glyph, size, mix(t.muted, t.ink, plug));
             icon(ui, folder, ICON_FOLDER, 36.0, mix(t.ink, t.accent, seal));
             badge(ui, t, folder + vec2(FOLDER - 3.0, 17.0), seal);
         }
