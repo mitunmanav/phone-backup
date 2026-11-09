@@ -161,7 +161,7 @@ impl App {
         self.spawn_job(ctx, fail, move |report| {
             let result = export::export(&folder, report);
             if result.is_ok() {
-                let _ = Command::new("explorer").arg(&out).spawn();
+                let _ = backup::explorer().arg(&out).spawn();
             }
             Msg::Exported(out, result)
         });

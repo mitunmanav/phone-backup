@@ -201,11 +201,19 @@ pub(super) const NO_ADB: &str =
 const PLATFORM_TOOLS: &str =
     "https://dl.google.com/android/repository/platform-tools-latest-windows.zip";
 
+fn system_root() -> PathBuf {
+    std::env::var_os("SystemRoot").map_or_else(|| r"C:\Windows".into(), PathBuf::from)
+}
+
+/// Windows' own Explorer, by full path for the same reason as `windows_tool`.
+pub fn explorer() -> Command {
+    Command::new(system_root().join("explorer.exe"))
+}
+
 /// curl or tar from Windows itself. Never searched for: this app's folder may hold anything,
 /// such as a Downloads folder with a file of the same name.
 pub(super) fn windows_tool(name: &str) -> Command {
-    let root = std::env::var_os("SystemRoot").map_or_else(|| r"C:\Windows".into(), PathBuf::from);
-    let mut c = Command::new(root.join("System32").join(name));
+    let mut c = Command::new(system_root().join("System32").join(name));
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
     c

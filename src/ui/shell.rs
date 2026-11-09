@@ -407,7 +407,7 @@ impl App {
                     } else if primary(ui, t, cmd.label, cmd.enabled) {
                         match (cmd.open, cmd.plan) {
                             (Some(path), _) => {
-                                let _ = Command::new("explorer").arg(path).spawn();
+                                let _ = backup::explorer().arg(path).spawn();
                             }
                             (_, plan) if self.tab == Tab::Transfer => self.transfer(ui.ctx(), plan),
                             (_, Some((plan, check))) => self.restore(ui.ctx(), plan, check),

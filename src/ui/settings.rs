@@ -269,7 +269,7 @@ impl App {
                     .save_file()
             {
                 let _ = fs::write(&path, backup::diagnostics(&self.dest));
-                let _ = Command::new("explorer").arg(&path).spawn();
+                let _ = backup::explorer().arg(&path).spawn();
             }
             muted(
                 ui,

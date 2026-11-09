@@ -459,7 +459,7 @@ impl App {
                         && let Some(f) = &folder
                         && primary(ui, t, "Open jpg folder", true)
                     {
-                        let _ = Command::new("explorer").arg(f.join("jpg")).spawn();
+                        let _ = backup::explorer().arg(f.join("jpg")).spawn();
                     }
                     let start = if done {
                         quiet(ui, t, "Convert to JPG", can).clicked()
@@ -493,7 +493,7 @@ impl App {
                             ));
                         }
                         if quiet(ui, t, "Open folder", true).clicked() {
-                            let _ = Command::new("explorer").arg(&data).spawn();
+                            let _ = backup::explorer().arg(&data).spawn();
                         }
                     } else if primary(ui, t, "Merge duplicates", can)
                         && let Some(f) = folder.clone()
