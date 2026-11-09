@@ -73,7 +73,8 @@ impl App {
         let (rail, list) = if area.width() >= 640.0 {
             let rail = Rect::from_min_size(
                 area.min,
-                vec2((area.width() * 0.34).clamp(282.0, 452.0), height),
+                // Capped so a tall window does not stretch the cable into a long empty card.
+                vec2((area.width() * 0.34).clamp(282.0, 452.0), height.min(520.0)),
             );
             (
                 rail,
@@ -185,9 +186,12 @@ impl App {
         );
         let r = frame.shrink2(vec2(10.0, 6.0));
         let x = r.left() + 11.0;
+        // One phone in: it is the first, so the second's end of the cable hangs loose with a hint
+        // under it, which needs a line of room inside the frame.
+        let one = !ready && !adb.is_empty();
         let (top, bot) = (
             egui::pos2(x, r.top() + 24.0),
-            egui::pos2(x, r.bottom() - 22.0),
+            egui::pos2(x, r.bottom() - if one { 38.0 } else { 22.0 }),
         );
         let (a, b) = (top + vec2(0.0, 34.0), bot - vec2(0.0, 34.0));
         let loose = egui::pos2(x + 24.0, a.y + (b.y - a.y) * 0.42);
@@ -202,7 +206,7 @@ impl App {
                 sag: 14.0,
                 phase,
                 connected: ready,
-                phone_at_b: false,
+                phone_at_b: one,
                 coil: Some(frame),
             },
         );
@@ -225,7 +229,7 @@ impl App {
             };
             big(top.y, first);
             big(bot.y, "Second phone");
-            if adb.is_empty() {
+            if !one {
                 small(egui::pos2(tx, top.y + 20.0), "Tap Allow on each phone");
             } else {
                 small(
