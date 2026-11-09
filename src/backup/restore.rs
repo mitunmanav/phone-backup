@@ -55,7 +55,7 @@ pub fn restore_apps(
         packages = only_in(packages, o);
     }
     if !connected(serial) {
-        return Err(DISCONNECTED.into());
+        return Err(DISCONNECTED_APPS.into());
     }
     let installed = shell(serial, "pm list packages");
     let total = packages.len();
@@ -91,6 +91,8 @@ pub fn restore_apps(
         c.args(["-s", serial, "install-multiple", "-r"]).args(apks);
         if String::from_utf8_lossy(&run(c)).contains("Success") {
             done += 1;
+        } else if !connected(serial) {
+            return Err(DISCONNECTED_APPS.into());
         } else {
             failed.push(pkg.clone());
         }
@@ -534,6 +536,7 @@ pub fn restore_files(
 }
 
 pub(super) const DISCONNECTED_RESTORE: &str = "The phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.";
+const DISCONNECTED_APPS: &str = "The phone was disconnected. Apps installed so far stay on the phone; plug it back in and restore again to continue.";
 
 /// Restores photos and files first, then apps, from one backup folder. With `check`, changes
 /// nothing on the phone and says what a restore would do; otherwise saves the restore report
@@ -635,6 +638,7 @@ fn as_transfer(said: String) -> String {
 
 /// Phone to phone, second step: with `safety`, first backs up all of `to` (serial, model) into
 /// its own folder; then restores `ran`, the files and apps of the check's backup in `folder`, to it.
+/// The failed count includes what the safety backup could not save.
 pub fn transfer_now(
     to: (&str, &str),
     dest: &Path,
@@ -644,18 +648,27 @@ pub fn transfer_now(
     safety: bool,
     report: &dyn Fn(Msg),
 ) -> Result<(String, usize), String> {
-    let mut said = String::new();
+    let (mut said, mut missed) = (String::new(), 0);
     if safety {
         let all = Pick::default();
         let s = adb_backup(to.0, to.1, dest, all, report)
             .map_err(|e| format!("Safety backup of {}: {e} Nothing was restored.", to.1))?;
-        said = format!("Safety backup of {} saved in {}.\n", to.1, s.root.display());
+        missed = s.errors.len() + s.data.iter().filter(|d| !d.1).count();
+        said = format!("Safety backup of {} saved in {}", to.1, s.root.display());
+        said += &match missed {
+            0 => ".\n".into(),
+            1 => ", but 1 thing could not be saved; see report.txt there.\n".into(),
+            n => format!(
+                ", but {} things could not be saved; see report.txt there.\n",
+                count(n)
+            ),
+        };
     }
     match restore_in(to, folder, pick, Some(ran), true, false, report)
         .map(|(m, n)| (as_transfer(m), n))
         .map_err(as_transfer)
     {
-        Ok((m, n)) => Ok((said + &m, n)),
+        Ok((m, n)) => Ok((said + &m, n + missed)),
         Err(e) => Err(said + &e),
     }
 }
