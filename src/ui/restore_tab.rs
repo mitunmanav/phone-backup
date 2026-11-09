@@ -153,7 +153,6 @@ fn backup_card(
     (r.clicked(), action, top.center().y)
 }
 
-const ICON_PHONE: &str = "\u{E8EA}";
 const ICON_FOLDER: &str = "\u{E8B7}";
 
 impl App {
@@ -258,7 +257,9 @@ impl App {
             );
         }
         let ink = mix(mix(t.muted, t.ink, plug), t.accent, seal);
-        icon(ui, phone, ICON_PHONE, 36.0, ink);
+        let shown = self.adb_phone().map(|p| p.0);
+        let (glyph, size) = self.device_icon(shown.as_deref(), 36.0);
+        icon(ui, phone, glyph, size, ink);
         badge(ui, t, phone + vec2(12.0, 17.0), seal);
         let tx = right.left() + 36.0;
         // Leaves room for the percent or outcome at the right edge, when there is one.
@@ -331,7 +332,9 @@ impl App {
         );
         icon(ui, folder, ICON_FOLDER, 36.0, t.ink);
         let ink = mix(mix(t.muted, t.ink, plug), t.accent, seal);
-        icon(ui, phone, ICON_PHONE, 36.0, ink);
+        let shown = self.adb_phone().map(|p| p.0);
+        let (glyph, size) = self.device_icon(shown.as_deref(), 36.0);
+        icon(ui, phone, glyph, size, ink);
         badge(ui, t, phone + vec2(8.0, 17.0), seal);
 
         let chosen = self

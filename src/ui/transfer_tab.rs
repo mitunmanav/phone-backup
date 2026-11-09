@@ -2,7 +2,6 @@ use super::backup_tab::{Cord, Phase, finished_with};
 use crate::*;
 use egui::Pos2;
 
-const ICON_PHONE: &str = "\u{E8EA}";
 const ICON_FOLDER: &str = "\u{E8B7}";
 
 impl App {
@@ -217,8 +216,10 @@ impl App {
             },
         );
         let ink = mix(t.muted, t.ink, plug);
-        icon(ui, top, ICON_PHONE, 36.0, ink);
-        icon(ui, bot, ICON_PHONE, 36.0, mix(ink, t.accent, seal));
+        let (from, to) = (self.from.as_deref(), self.to.as_deref());
+        let ((g1, s1), (g2, s2)) = (self.device_icon(from, 36.0), self.device_icon(to, 36.0));
+        icon(ui, top, g1, s1, ink);
+        icon(ui, bot, g2, s2, mix(ink, t.accent, seal));
         badge(ui, t, bot + vec2(12.0, 17.0), seal);
         let tx = r.left() + 38.0;
         let max = r.width() - 38.0;

@@ -59,16 +59,23 @@ pub fn detect() -> Vec<Phone> {
             serial,
             battery,
             level,
+            form,
             ..
         } = p
         {
             // Not stoppable like `shell`, for the same reason as phone_id.
-            let out = logged(adb().args(["-s", serial, "shell", "dumpsys battery"]))
-                .map(|o| o.stdout)
-                .unwrap_or_default();
+            let out = logged(adb().args([
+                "-s",
+                serial,
+                "shell",
+                "dumpsys battery; getprop ro.build.characteristics",
+            ]))
+            .map(|o| o.stdout)
+            .unwrap_or_default();
             let out = String::from_utf8_lossy(&out);
             *battery = low_battery(&out);
             *level = battery_level(&out);
+            *form = device_form(out.lines().last().unwrap_or(""));
         }
     }
     if !phones.is_empty() {
@@ -142,6 +149,7 @@ pub(super) fn parse_adb_devices(text: &str) -> Vec<Phone> {
                     wifi,
                     battery: None,
                     level: None,
+                    form: Form::Phone,
                 });
             }
             // "authorizing" is the moment the Allow prompt is on screen.
@@ -150,6 +158,18 @@ pub(super) fn parse_adb_devices(text: &str) -> Vec<Phone> {
         }
     }
     phones
+}
+
+/// TV or watch from `ro.build.characteristics` (such as "nosdcard,watch"); anything else is a phone.
+pub(super) fn device_form(characteristics: &str) -> Form {
+    let tags: Vec<&str> = characteristics.trim().split(',').collect();
+    if tags.contains(&"tv") {
+        Form::Tv
+    } else if tags.contains(&"watch") {
+        Form::Watch
+    } else {
+        Form::Phone
+    }
 }
 
 /// The level from `dumpsys battery`.

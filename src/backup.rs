@@ -84,6 +84,15 @@ pub enum Msg {
     FolderSizes(Vec<(PathBuf, u64)>),
 }
 
+/// What kind of device an ADB device is: TVs and watches also have USB debugging.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum Form {
+    #[default]
+    Phone,
+    Tv,
+    Watch,
+}
+
 #[derive(Clone, PartialEq)]
 pub enum Phone {
     Adb {
@@ -94,6 +103,7 @@ pub enum Phone {
         battery: Option<u8>,
         /// The battery level whenever the phone gives it.
         level: Option<u8>,
+        form: Form,
     },
     /// Plugged in with USB debugging on, but "Allow" not tapped yet.
     Unauthorized,
@@ -550,13 +560,22 @@ mod tests {
                     model: "Pixel 8".into(),
                     wifi: false,
                     battery: None,
-                    level: None
+                    level: None,
+                    form: Form::Phone,
                 }
         );
         assert!(matches!(&phones[1], Phone::Adb { wifi: true, model, .. } if model == "SM G991B"));
         assert!(phones[2] == Phone::Unauthorized);
         assert!(phones[3] == Phone::Unauthorized);
         assert_eq!(phones.len(), 4);
+    }
+
+    #[test]
+    fn tells_tvs_and_watches_from_phones() {
+        assert!(device_form("tv\n") == Form::Tv);
+        assert!(device_form("nosdcard,watch") == Form::Watch);
+        assert!(device_form("default") == Form::Phone);
+        assert!(device_form("") == Form::Phone);
     }
 
     #[test]
