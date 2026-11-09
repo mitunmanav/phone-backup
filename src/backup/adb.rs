@@ -718,13 +718,13 @@ pub(super) fn adb_backup_run(
                 .replace('\\', "/");
             (local_rel != Path::new(rel)).then(|| (local, j.remote.clone()))
         }));
-        let _ = fs::create_dir_all(&root);
-        let _ = fs::write(
-            root.join(RENAMED),
-            map.iter()
-                .map(|(local, remote)| format!("{local}\t{remote}\n"))
-                .collect::<String>(),
-        );
+        let text: String = map
+            .iter()
+            .map(|(local, remote)| format!("{local}\t{remote}\n"))
+            .collect();
+        fs::create_dir_all(&root)
+            .and_then(|()| fs::write(root.join(RENAMED), text))
+            .map_err(|e| format!("Cannot write in {}: {e}", root.display()))?;
     }
     let files = jobs.len();
     let mut listed: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
@@ -745,7 +745,8 @@ pub(super) fn adb_backup_run(
     let tried = jobs.clone();
     // Old sums of files about to be replaced go first, so a stopped backup leaves no wrong sum.
     let replaced: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
-    update_sums(&root, &replaced, &[], report);
+    update_sums(&root, &replaced, &[], report)
+        .map_err(|e| format!("Cannot write in {}: {e}", root.display()))?;
     // Bytes to copy for each tile (KINDS, then apps), so each tile shows its own progress.
     let apps_dir = root.join("apps");
     let tile = |j: &Job| {
@@ -824,7 +825,7 @@ pub(super) fn adb_backup_run(
             notes.push(note);
         }
         // Read from the phone and every file of it saved.
-        let mut saved = ok;
+        let (mut saved, mut parts_saved) = (ok, true);
         if ok {
             let mut save = |path: PathBuf, text: String| {
                 if fs::write(&path, text).is_ok() {
@@ -840,21 +841,23 @@ pub(super) fn adb_backup_run(
                 save(data_dir.join(file).with_extension("json"), json);
             }
             if file == "mms.txt" {
-                mms_attachments(serial, &data_dir.join("mms"));
+                parts_saved = mms_attachments(serial, &data_dir.join("mms"));
                 cut = interrupted(serial);
             }
             save(data_dir.join(file), out);
         }
-        data.push((label, saved));
+        data.push((label, saved && parts_saved));
     }
     drop(helper);
     if let Some(e) = cut {
         // Their old sums no longer match what was just written.
-        update_sums(&root, &written, &[], report);
+        let _ = update_sums(&root, &written, &[], report);
         return Err(e.into());
     }
     listed.extend(written.iter().cloned());
-    update_sums(&root, &written, &listed, report);
+    if let Err(e) = update_sums(&root, &written, &listed, report) {
+        notes.push(sums_lost(&e));
+    }
 
     let copied: Vec<PathBuf> = tried
         .into_iter()
@@ -877,7 +880,9 @@ pub(super) fn adb_backup_run(
 }
 
 /// Saves the pictures, videos and other files sent in picture messages as `<part id>_<name>`.
-pub(super) fn mms_attachments(serial: &str, dir: &Path) {
+/// False when one could not be written to this computer.
+pub(super) fn mms_attachments(serial: &str, dir: &Path) -> bool {
+    let mut all = true;
     let parts = shell(
         serial,
         "content query --uri content://mms/part --projection _id:ct:cl",
@@ -899,12 +904,22 @@ pub(super) fn mms_attachments(serial: &str, dir: &Path) {
         let bytes = run(c);
         // Stop or an unplug cuts the read short; a short file would be kept for good.
         if interrupted(serial).is_some() {
-            return;
+            return all;
         }
-        if !bytes.is_empty() {
-            let _ = fs::write(file, bytes);
+        // A part cut short by a full disk would also be kept for good.
+        if !bytes.is_empty() && fs::write(&file, bytes).is_err() {
+            let _ = fs::remove_file(&file);
+            all = false;
         }
     }
+    all
+}
+
+/// The note when checksums.sha256 could not be updated.
+pub(super) fn sums_lost(e: &std::io::Error) -> String {
+    format!(
+        "The checksum file could not be saved ({e}), so Verify may report this backup's new files as problems."
+    )
 }
 
 /// Reads `Row: 2 _id=3, ct=image/jpeg, cl=pic.jpg` into (3, "pic.jpg"). Message text and

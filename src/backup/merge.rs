@@ -149,7 +149,7 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
     let sums = |targets: &[PathBuf]| update_sums(into, &[], targets, report);
     for (n, src) in todo.iter().enumerate() {
         if stopped() {
-            sums(&targets);
+            let _ = sums(&targets);
             return Err(format!(
                 "You stopped copying. {} copied so far stay in the backup.",
                 files(copied + renamed_n)
@@ -189,7 +189,7 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
         if let Err(e) = fs::copy(src, &target) {
             // A half-written copy would later read as "already there".
             let _ = fs::remove_file(&target);
-            sums(&targets);
+            let _ = sums(&targets);
             return Err(format!("Could not copy {}: {e}", src.display()));
         }
         targets.push(target);
@@ -207,13 +207,13 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             map.entry(local).or_insert(remote);
         }
     }
-    let _ = fs::write(
+    let names = fs::write(
         into.join(RENAMED),
         map.iter()
             .map(|(l, r)| format!("{l}\t{r}\n"))
             .collect::<String>(),
     );
-    sums(&targets);
+    let sums = sums(&targets);
     let mut msg = format!(
         "Copied {}. {} {} already there.",
         files(copied + renamed_n),
@@ -230,6 +230,14 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
                 "they were"
             }
         );
+    }
+    if let Err(e) = names {
+        msg += &format!(
+            " The list of renamed files could not be saved ({e}), so a restore may use the Windows names."
+        );
+    }
+    if let Err(e) = sums {
+        msg += &format!(" {}", super::adb::sums_lost(&e));
     }
     Ok(msg)
 }
