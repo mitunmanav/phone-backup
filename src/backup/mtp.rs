@@ -24,7 +24,11 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
         let base = if n == 0 {
             root.join("files")
         } else {
-            root.join(format!("storage_{}", safe_name(desc)))
+            // Two cards with the same name would share one folder and skip each other's files.
+            unclashed(
+                &mut seen,
+                &root.join(format!("storage_{}", safe_name(desc))),
+            )
         };
         // The folder's path inside the storage goes along, for the folder and type choices.
         let mut stack = vec![(None, base, String::new())];
