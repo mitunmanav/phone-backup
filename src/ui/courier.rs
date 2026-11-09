@@ -1,5 +1,6 @@
-//! While a backup runs, a small pixel courier carries boxes from the phone along the cable to
-//! shelves in the PC, one shelf per tile. Drawn in whole pixels, scaled up with no smoothing.
+//! A small pixel courier waits by a plugged-in phone, then carries boxes along the cable to
+//! shelves in the PC while a backup runs, one shelf per tile. Drawn in whole pixels, scaled up
+//! with no smoothing.
 use super::backup_tab::Phase;
 use crate::*;
 
@@ -61,6 +62,8 @@ impl App {
                 k => self.pick.files && self.pick.kinds[k],
             };
             match (phase, self.tiles) {
+                // Counts left over from a restore or transfer are not this backup's.
+                (Phase::Idle, _) => 0.0,
                 (Phase::Done(_), _) => on as u8 as f32,
                 (_, Some((done, total))) if k < 6 && total[k] > 0 => {
                     (done[k] as f32 / total[k] as f32).min(1.0)
@@ -70,7 +73,7 @@ impl App {
         })
     }
 
-    /// The courier scene in `area`, for a backup that is running, stopped or finished.
+    /// The courier scene in `area`: waiting by the phone, or a backup running, stopped or finished.
     pub(crate) fn courier(&self, ui: &egui::Ui, t: &Tokens, area: Rect, phase: Phase) {
         let ctx = ui.ctx().clone();
         let id = egui::Id::unique("courier");
