@@ -61,8 +61,13 @@ pub fn sha256_bytes(path: &Path) -> std::io::Result<[u8; 32]> {
 
 /// Drops the sums of `fresh` files (just rewritten) and of files gone from the folder, then
 /// hashes each `known` file that has no sum. Old sums of untouched files are kept, so a later
-/// backup hashes only what it copied.
-pub(crate) fn update_sums(root: &Path, fresh: &[PathBuf], known: &[PathBuf], report: &dyn Fn(Msg)) {
+/// backup hashes only what it copied. A failed write leaves the old checksum file whole.
+pub(crate) fn update_sums(
+    root: &Path,
+    fresh: &[PathBuf],
+    known: &[PathBuf],
+    report: &dyn Fn(Msg),
+) -> std::io::Result<()> {
     let old = read_sums(root);
     let mut sums = old.clone();
     sums.retain(|path, _| root.join(path).is_file());
@@ -89,14 +94,19 @@ pub(crate) fn update_sums(root: &Path, fresh: &[PathBuf], known: &[PathBuf], rep
             sums.insert(rel(root, p), sum);
         }
     }
-    if sums != old {
-        let _ = fs::write(
-            root.join(CHECKSUMS),
-            sums.iter()
-                .map(|(path, sum)| format!("{sum}  {path}\n"))
-                .collect::<String>(),
-        );
+    if sums == old {
+        return Ok(());
     }
+    let part = root.join(format!("{CHECKSUMS}.part"));
+    let text: String = sums
+        .iter()
+        .map(|(path, sum)| format!("{sum}  {path}\n"))
+        .collect();
+    let written = fs::write(&part, text).and_then(|()| fs::rename(&part, root.join(CHECKSUMS)));
+    if written.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    written
 }
 
 /// Re-hashes every file listed in a backup's checksums and says which changed or went missing.

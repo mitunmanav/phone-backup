@@ -80,7 +80,7 @@ pub fn delete_copies(folder: &Path, paths: &[(PathBuf, u64)]) -> Result<String, 
         }
     }
     // Drops the sums of files no longer in the folder; hashes nothing.
-    backup::update_sums(folder, &[], &[], &|_| {});
+    let sums = backup::update_sums(folder, &[], &[], &|_| {});
     let mut msg = format!(
         "Deleted {} from the backup, freeing {}.",
         copies(gone),
@@ -90,6 +90,11 @@ pub fn delete_copies(folder: &Path, paths: &[(PathBuf, u64)]) -> Result<String, 
         msg += &format!(
             " {} could not be deleted; close any app that has them open.",
             copies(failed)
+        );
+    }
+    if let Err(e) = sums {
+        msg += &format!(
+            " The checksum file could not be updated ({e}), so Verify may call the deleted copies missing."
         );
     }
     Ok(msg)
@@ -623,7 +628,7 @@ BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Dan\r\nEMAIL: \r\nEND:VCARD\r\n";
             .map(|(p, ..)| p)
             .collect();
         let all: Vec<PathBuf> = chosen.iter().cloned().collect();
-        backup::update_sums(&dir, &[], &all, &|_| {});
+        backup::update_sums(&dir, &[], &all, &|_| {}).unwrap();
         let wanted = chosen_on_phone(&dir, &chosen).unwrap();
         let (matched, left) = match_on_phone(&serial, &wanted).unwrap();
         assert_eq!((matched.len(), left), (4, 1), "{matched:?}");

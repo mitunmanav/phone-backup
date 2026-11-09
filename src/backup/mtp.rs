@@ -31,7 +31,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
         while let Some((parent, dir, rel)) = stack.pop() {
             if hold() {
                 // Copied files may replace older ones whose sums no longer match.
-                update_sums(&root, &copied, &[], report);
+                let _ = update_sums(&root, &copied, &[], report);
                 return Err(STOPPED.into());
             }
             let now = dir
@@ -81,7 +81,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                 }
                 // Pause waits between files, never inside a download.
                 if hold() {
-                    update_sums(&root, &copied, &[], report);
+                    let _ = update_sums(&root, &copied, &[], report);
                     return Err(STOPPED.into());
                 }
                 // The whole name plus a suffix, so it never matches another file's name.
@@ -119,7 +119,10 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     }
     let _ = fs::create_dir_all(&root);
     kept.extend(copied.iter().cloned());
-    update_sums(&root, &copied, &kept, report);
+    let notes = match update_sums(&root, &copied, &kept, report) {
+        Ok(()) => Vec::new(),
+        Err(e) => vec![super::adb::sums_lost(&e)],
+    };
     let s = Summary {
         name,
         root,
@@ -127,7 +130,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
         copied: copied.len(),
         errors,
         data: Vec::new(),
-        notes: Vec::new(),
+        notes,
         full: false,
         pick: Pick {
             files: true,

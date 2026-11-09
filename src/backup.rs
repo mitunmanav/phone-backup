@@ -625,7 +625,7 @@ mod tests {
         fs::write(root.join(REPORT), "r").unwrap();
         let quiet = |_: Msg| {};
         let known = [a.clone(), b.clone()];
-        update_sums(&root, &[], &known, &quiet);
+        update_sums(&root, &[], &known, &quiet).unwrap();
         let first = fs::read_to_string(root.join(CHECKSUMS)).unwrap();
         // sha256sum format, forward slashes, and the report is left out.
         assert!(first.contains(
@@ -642,7 +642,7 @@ mod tests {
         let a_sum = read_sums(&root)["files/DCIM/a.jpg"].clone();
         fs::write(&a, "abd").unwrap();
         fs::write(&b, "two").unwrap();
-        update_sums(&root, std::slice::from_ref(&b), &known, &quiet);
+        update_sums(&root, std::slice::from_ref(&b), &known, &quiet).unwrap();
         let second = read_sums(&root);
         assert_eq!(second["files/DCIM/a.jpg"], a_sum);
         assert_eq!(second["data/sms.txt"], sha256(&b).unwrap());
@@ -657,8 +657,16 @@ mod tests {
             "{err}"
         );
         // A gone file loses its sum on the next backup.
-        update_sums(&root, &[], &[], &quiet);
+        update_sums(&root, &[], &[], &quiet).unwrap();
         assert_eq!(read_sums(&root).len(), 1);
+        // A failed save says so and keeps the old file whole.
+        let kept = fs::read_to_string(root.join(CHECKSUMS)).unwrap();
+        let part = root.join(format!("{CHECKSUMS}.part"));
+        fs::create_dir(&part).unwrap();
+        fs::write(&b, "three").unwrap();
+        assert!(update_sums(&root, &[], std::slice::from_ref(&b), &quiet).is_err());
+        assert_eq!(fs::read_to_string(root.join(CHECKSUMS)).unwrap(), kept);
+        fs::remove_dir(&part).unwrap();
         fs::remove_dir_all(&root).unwrap();
         assert!(
             verify(&root, &quiet)
