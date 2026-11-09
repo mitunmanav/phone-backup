@@ -385,8 +385,11 @@ impl App {
         let sag = if narrow { 16.0 } else { 30.0 };
         let (adb, mtp) = self.connected();
         let phase = self.phase();
-        // Once a backup starts, the courier carries it; the cable waits for the next one.
-        if self.job == Job::Backup && phase != Phase::Idle {
+        let connected = !adb.is_empty() || mtp.is_some();
+        // The courier waits by a plugged-in phone and carries the backup; with no phone, the
+        // cable's loose plug asks for one.
+        if (self.job == Job::Backup && phase != Phase::Idle) || (phase == Phase::Idle && connected)
+        {
             let area = Rect::from_min_max(rect.min, pos2(rx, by - 8.0));
             self.courier(ui, t, area, phase);
         } else {
@@ -400,7 +403,7 @@ impl App {
                     loose,
                     sag,
                     phase,
-                    connected: !adb.is_empty() || mtp.is_some(),
+                    connected,
                     phone_at_b: false,
                     coil: None,
                 },
