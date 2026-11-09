@@ -785,6 +785,7 @@ mod tests {
             "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ann\\; Lee\r\nN:;Ann\\; Lee;;;\r\nTEL:+1 555\r\nEMAIL:ann@x.com\r\nEND:VCARD\r\n\
              BEGIN:VCARD\r\nVERSION:3.0\r\nFN:\r\nN:;;;;\r\nTEL:112\r\nEND:VCARD\r\n"
         );
+        assert_eq!(adb::vcard_escape("a\r\nb"), "a\\nb");
     }
 
     #[test]

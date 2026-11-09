@@ -415,6 +415,12 @@ fn messages(text: &str, names: &BTreeMap<String, String>) -> Vec<Message> {
 }
 
 fn csv_field(s: &str) -> String {
+    // A leading ' stops spreadsheets running a phone's text as a formula; Excel hides it.
+    let s = &if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    };
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
@@ -638,21 +644,29 @@ fn ics(events: &[Vec<String>]) -> String {
         };
         // Repeating events have no end time on Android; a duration of zero is close enough.
         let end_ms = end.parse::<i64>().unwrap_or(start_ms);
+        let all_day = all_day == "1";
+        let end_ms = if all_day {
+            end_ms.max(start_ms.saturating_add(86_400_000))
+        } else {
+            end_ms
+        };
+        let (from, to) = (utc(start_ms), utc(end_ms));
+        // A time Windows cannot convert: skip the event rather than write a broken date.
+        if from.is_empty() || to.is_empty() {
+            continue;
+        }
         let mut lines = vec![
             "BEGIN:VEVENT".to_string(),
             format!("UID:{start_ms}-{i}@phone-backup"),
             format!("DTSTAMP:{stamp}"),
         ];
         // All-day events are stored as UTC midnights.
-        if all_day == "1" {
-            lines.push(format!("DTSTART;VALUE=DATE:{}", &utc(start_ms)[..8]));
-            lines.push(format!(
-                "DTEND;VALUE=DATE:{}",
-                &utc(end_ms.max(start_ms + 86_400_000))[..8]
-            ));
+        if all_day {
+            lines.push(format!("DTSTART;VALUE=DATE:{}", &from[..8]));
+            lines.push(format!("DTEND;VALUE=DATE:{}", &to[..8]));
         } else {
-            lines.push(format!("DTSTART:{}", utc(start_ms)));
-            lines.push(format!("DTEND:{}", utc(end_ms)));
+            lines.push(format!("DTSTART:{from}"));
+            lines.push(format!("DTEND:{to}"));
         }
         lines.push(format!("SUMMARY:{}", ics_text(title)));
         if !place.is_empty() {
@@ -839,6 +853,10 @@ mod tests {
             ),
             "\u{feff}A,B\r\nplain,\"Hi, \"\"you\"\"\nline two 😀 <script>alert(1)</script> & done\"\r\n"
         );
+        assert_eq!(csv_field("=1+1"), "'=1+1");
+        assert_eq!(csv_field("+1 555"), "'+1 555");
+        assert_eq!(csv_field("@a,b"), "\"'@a,b\"");
+        assert_eq!(csv_field("a=b"), "a=b");
     }
 
     #[test]
@@ -886,7 +904,7 @@ mod tests {
         assert_eq!(
             calls_csv(&calls),
             format!(
-                "\u{feff}Date,Number,Name,Type,Duration\r\n{},+1 555,\"Lee, Ann\",Missed,1:15\r\n",
+                "\u{feff}Date,Number,Name,Type,Duration\r\n{},'+1 555,\"Lee, Ann\",Missed,1:15\r\n",
                 when("0")
             )
         );
@@ -922,6 +940,17 @@ mod tests {
         assert!(ics.contains("DTSTART;VALUE=DATE:20260101\r\nDTEND;VALUE=DATE:20260102\r\n"));
         assert!(ics.contains("RRULE:FREQ=YEARLY\r\n"));
         assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2);
+        // A time too far out to convert is skipped, not written with a broken date.
+        let far = vec![
+            "Far".into(),
+            i64::MAX.to_string(),
+            String::new(),
+            "1".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ];
+        assert!(!super::ics(&[far]).contains("BEGIN:VEVENT"));
         let long = fold(&"é".repeat(60));
         assert!(long.split("\r\n").all(|l| l.len() <= 75));
         assert_eq!(long.replace("\r\n ", ""), format!("{}\r\n", "é".repeat(60)));
@@ -975,7 +1004,7 @@ mod tests {
         assert!(
             fs::read_to_string(out.join("calls.csv"))
                 .unwrap()
-                .contains(",+15550100,\"Ann \"\"A\"\" Lee\",Incoming,1:01")
+                .contains(",'+15550100,\"Ann \"\"A\"\" Lee\",Incoming,1:01")
         );
         let _ = fs::remove_dir_all(&root);
     }
