@@ -41,9 +41,26 @@ pub fn export(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
         write("calls.html", calls_html(&calls))?;
         made.push("call history");
     }
-    let messages = read("sms.txt")
+    let mut messages = read("sms.txt")
         .map(|t| messages(&t, &names))
         .unwrap_or_default();
+    // Picture and group messages, with each attachment named in brackets; the files are in data/mms.
+    let pictures = read("mms.txt").map(|t| picture_messages(root, &t, &names));
+    messages.extend(
+        pictures
+            .into_iter()
+            .flatten()
+            .map(|((ms, number, name, me, text), files)| {
+                let lines =
+                    std::iter::once(text).chain(files.into_iter().map(|(f, _)| format!("[{f}]")));
+                let text = lines
+                    .filter(|l| !l.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (ms, number, name, me, text)
+            }),
+    );
+    messages.sort_by_key(|m| (number_key(&m.1), m.0));
     if !messages.is_empty() {
         write("messages.csv", messages_csv(&messages))?;
         write("messages.html", messages_html(&messages))?;
@@ -1075,6 +1092,18 @@ mod tests {
         assert_eq!(chat[2].text, "Trip");
         assert!(chat[2].me);
         assert_eq!(chat[2].files, [("Attachment".to_string(), None)]);
+        // The export lists picture messages too, naming each attachment.
+        export(&root, &|_| {}).unwrap();
+        let txt = fs::read_to_string(root.join(EXPORTS).join("messages.txt")).unwrap();
+        assert!(
+            txt.contains("Them: Two\r\n    lines\r\n    [pic.jpg]\r\n"),
+            "{txt}"
+        );
+        assert!(txt.contains("Me: Trip\r\n    [Attachment]\r\n"), "{txt}");
+        assert_eq!(
+            txt.matches(" Them: ").count() + txt.matches(" Me: ").count(),
+            3
+        );
 
         // A backup from before part ids were saved still reads, without the file.
         let old = mms
