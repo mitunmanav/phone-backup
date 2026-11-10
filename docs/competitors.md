@@ -2,7 +2,8 @@
 
 This is a list of every feature we could find in Android backup, transfer and phone-manager
 apps. For each feature it shows which apps have it and where Phone Backup stands. Use it to
-spot gaps and to check ideas against [PLAN.md](PLAN.md) before building them.
+spot gaps and to check ideas against [PLAN.md](PLAN.md) before building them. The work
+it leads to is split into groups in [plans/README.md](plans/README.md).
 
 Researched November 2026 from vendor pages, user guides, store listings, release notes and
 reviews. Vendors rename modules, move features between price tiers and inflate claims, and
@@ -355,7 +356,7 @@ About 35 apps in nine groups. Codes are used in the catalog.
 | See pictures in messages | MMS images inline | SBR, PB | ✓ |
 | Export messages to CSV / spreadsheet | | CM, MK, SY, PB | ✓ |
 | Export messages to HTML or printable page | | CM, MK, SY, DT, PB | ✓ |
-| Export messages to text | | CM | — |
+| Export messages to text | | CM, PB | ✓ |
 | Export messages to PDF | | DT, DF (WhatsApp) | ~ (print the page to PDF) |
 | Export contacts to vCard | | CM, MK, SY, DF, AD, PB | ✓ |
 | Export contacts to CSV, Excel | | CM, MK, SY, PB | ✓ |
