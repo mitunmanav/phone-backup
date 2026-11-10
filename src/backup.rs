@@ -187,11 +187,15 @@ impl Pick {
             said.push(format!("Only {}.", and(names)));
         }
         if self.kinds != [true; 5] {
-            let kinds = (0..5)
+            let kinds: Vec<_> = (0..5)
                 .filter(|&k| self.kinds[k])
                 .map(|k| KINDS[k].to_lowercase())
                 .collect();
-            said.push(format!("Only {}.", and(kinds)));
+            said.push(if kinds.is_empty() {
+                "No files.".into()
+            } else {
+                format!("Only {}.", and(kinds))
+            });
         }
         if let Some(max) = self.max_size {
             said.push(format!("Skips files over {}.", size(max)));
@@ -392,6 +396,16 @@ fn safe_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limits_say_no_files_when_no_type_is_picked() {
+        let mut pick = Pick::default();
+        assert_eq!(pick.limits(), "");
+        pick.kinds = [true, false, false, true, false];
+        assert_eq!(pick.limits(), "Only photos and documents.");
+        pick.kinds = [false; 5];
+        assert_eq!(pick.limits(), "No files.");
+    }
 
     #[cfg(windows)]
     #[test]

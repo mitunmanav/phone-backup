@@ -360,7 +360,7 @@ impl App {
                 max,
             );
             let to = if phase == Phase::Stopped && !connected {
-                format!("{phone_name} unplugged")
+                "Phone unplugged".to_string()
             } else {
                 format!("To {phone_name}")
             };

@@ -1083,7 +1083,8 @@ mod tests {
         assert_eq!(super::days_ago(Some(1)), "yesterday");
         assert_eq!(super::days_ago(Some(44)), "44 days ago");
         assert_eq!(super::days_ago(Some(45)), "2 months ago");
-        assert_eq!(super::days_ago(Some(364)), "12 months ago");
+        assert_eq!(super::days_ago(Some(344)), "11 months ago");
+        assert_eq!(super::days_ago(Some(345)), "1 year ago");
         assert_eq!(super::days_ago(Some(365)), "1 year ago");
         assert_eq!(super::days_ago(Some(1284)), "3 years ago");
     }
@@ -1093,6 +1094,7 @@ mod tests {
         assert_eq!(super::time_left(30), "less than a minute left");
         assert_eq!(super::time_left(690), "about 12 min left");
         assert_eq!(super::time_left(3540), "about 59 min left");
+        assert_eq!(super::time_left(3600), "about 1 h left");
         assert_eq!(super::time_left(7800), "about 2 h 10 min left");
     }
 

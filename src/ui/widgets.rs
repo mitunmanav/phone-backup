@@ -897,12 +897,15 @@ pub(crate) fn short_path(ui: &egui::Ui, path: &str) -> String {
             <= ui.available_width()
     };
     let parts: Vec<&str> = path.split('\\').collect();
-    if fits(path) || parts.len() < 3 {
+    // A network path keeps "\\server\share" whole; a drive path keeps "C:".
+    let root = if path.starts_with("\\\\") { 4 } else { 1 };
+    if fits(path) || parts.len() < root + 2 {
         return path.into();
     }
-    let cut = |keep: usize| format!("{}\\…\\{}", parts[0], parts[keep..].join("\\"));
-    // Drop folders after the drive one at a time; if even the last folder alone is too wide, the label truncates it.
-    (2..parts.len())
+    let head = parts[..root].join("\\");
+    let cut = |keep: usize| format!("{head}\\…\\{}", parts[keep..].join("\\"));
+    // Drop folders after the root one at a time; if even the last folder alone is too wide, the label truncates it.
+    (root + 1..parts.len())
         .map(cut)
         .find(|s| fits(s))
         .unwrap_or_else(|| cut(parts.len() - 1))
@@ -915,8 +918,9 @@ pub(crate) fn days_ago(days: Option<u64>) -> String {
         Some(0) => "today".into(),
         Some(1) => "yesterday".into(),
         Some(n @ ..=44) => ago(n, "day"),
-        Some(n @ ..=364) => ago((n + 15) / 30, "month"),
-        Some(n) => ago(n / 365, "year"),
+        // Up to 344 days rounds to at most 11 months; past that, "12 months" reads better as a year.
+        Some(n @ ..=344) => ago((n + 15) / 30, "month"),
+        Some(n) => ago((n / 365).max(1), "year"),
         None => "at an unknown date".into(),
     }
 }
@@ -927,6 +931,7 @@ pub(crate) fn time_left(secs: u64) -> String {
     match min {
         ..=1 => "less than a minute left".into(),
         2..=59 => format!("about {min} min left"),
+        _ if min.is_multiple_of(60) => format!("about {} h left", min / 60),
         _ => format!("about {} h {} min left", min / 60, min % 60),
     }
 }

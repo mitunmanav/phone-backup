@@ -309,7 +309,7 @@ impl App {
                     rect.width() - 2.0,
                 );
             }
-            if r.clicked() && !on {
+            if r.clicked() && self.tab != *tab {
                 self.go(*tab);
             }
             if !busy {
