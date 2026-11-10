@@ -46,6 +46,21 @@ finishes the job once group 01 can write personal data.
 - **Accounts:** `adb shell dumpsys account` lists account types and names; show only types
   and a masked name ("Google: a…@gmail.com") on screen, never in the report file.
 
+## As built
+
+Built on this branch, on top of group 01. Where the build differs from the design above:
+
+- No separate `Move` checklist model. The check already gives one line per kind with
+  counts ("Contacts: will add 312 of 812"), from 01's restore, and the tiles are the ticks.
+  A checklist screen can follow if the lines prove hard to read.
+- No progress file (01 dropped it): a stopped transfer carries on because nothing already
+  on phone B is sent again.
+- The "cannot move" list is one fixed line on the Transfer page.
+- Accounts come from `dumpsys account` on phone A and show only in the check, on screen,
+  masked ("Google (a…@gmail.com)"); they are never written to a file.
+- The finish screen is the existing report, which now has a line per kind and the
+  "choose your messages app again" note when it applies.
+
 ## Steps
 
 1. **Checklist model.** `Move` struct, built from a backup folder and phone B's keys
