@@ -711,7 +711,7 @@ impl App {
                 return;
             }
         };
-        if let Some(yes) = confirm(ctx, title, "Stop", true, |ui| {
+        if let Some(yes) = confirm(ctx, title, "Stop", "Keep going", true, |ui| {
             ui.add(egui::Label::new(body).wrap());
         }) {
             if yes {
@@ -750,27 +750,11 @@ impl App {
                 )
             }
         };
-        let mut answer = None;
-        let modal = egui::Modal::new(egui::Id::unique("confirm_delete"))
-            .frame(dialog_frame(ctx))
-            .show(ctx, |ui| {
-                ui.set_max_width(ui.available_width().min(360.0));
-                ui.label(RichText::new(title).font(semibold(16.0)));
-                ui.label(body);
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button(yes).clicked() {
-                        answer = Some(true);
-                    }
-                    if ui.button("Keep them").clicked() {
-                        answer = Some(false);
-                    }
-                });
-            });
-        if modal.should_close() {
-            answer = Some(false);
-        }
-        let Some(yes) = answer else { return };
+        let Some(yes) = confirm(ctx, &title, &yes, "Keep them", true, |ui| {
+            ui.add(egui::Label::new(body).wrap());
+        }) else {
+            return;
+        };
         match self.confirm.take() {
             Some(Confirm::Copies(list)) if yes => {
                 self.dupes = None;
