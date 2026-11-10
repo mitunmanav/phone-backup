@@ -107,14 +107,15 @@ impl App {
             .unwrap_or_else(|| serial.to_string())
     }
 
-    /// Restores photos and files first, then apps, from one backup folder.
+    /// Restores photos and files first, then apps, then contacts, calls, calendar and messages,
+    /// from one backup folder.
     /// With `check`, changes nothing on the phone and reports what a restore would do.
     pub(crate) fn restore(&mut self, ctx: &egui::Context, plan: Plan, check: bool) {
         self.begin(Job::Restore);
         self.restore_msg = None;
         self.preview = None;
         self.checking = check.then(|| plan.clone());
-        let (serial, folder, files, apps, only) = plan;
+        let (serial, folder, files, apps, only, personal) = plan;
         let phone = self.model_of(&serial);
         self.restore_report = (!check).then(|| folder.join(backup::RESTORE_REPORT));
         let fail = |e| Msg::Restored(Err(e));
@@ -122,7 +123,8 @@ impl App {
             let pick = Pick {
                 files,
                 apps,
-                data: false,
+                data: personal.contains(&true),
+                personal,
                 ..Pick::default()
             };
             let result = backup::restore(
@@ -185,7 +187,7 @@ impl App {
         self.preview = None;
         let (dest, safety) = (self.dest.clone(), self.safety);
         match plan {
-            Some(((_, folder, _, _, Some(ran)), false)) => {
+            Some(((_, folder, _, _, Some(ran), _), false)) => {
                 // Files chosen in the picker narrow what the check backed up. Apps are not in
                 // the picker, so they stay.
                 let ran = match self.only.as_ref().filter(|(f, ..)| *f == folder) {
@@ -218,7 +220,14 @@ impl App {
             }
             _ => {
                 // The folder is filled in when the backup of the first phone has made it.
-                self.checking = Some((to.clone(), PathBuf::new(), pick.files, pick.apps, None));
+                self.checking = Some((
+                    to.clone(),
+                    PathBuf::new(),
+                    pick.files,
+                    pick.apps,
+                    None,
+                    [false; 4],
+                ));
                 self.restore_report = None;
                 let fail = |e| Msg::Transferred(None, Err(e));
                 self.spawn_job(ctx, fail, move |report| {

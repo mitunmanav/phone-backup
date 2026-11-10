@@ -14,6 +14,7 @@ mod checksums;
 mod helper;
 mod merge;
 mod mtp;
+mod personal;
 mod report;
 mod restore;
 
@@ -21,6 +22,7 @@ pub use adb::*;
 pub use checksums::*;
 pub use merge::*;
 pub use mtp::*;
+pub use personal::*;
 pub use report::*;
 pub use restore::*;
 
@@ -142,6 +144,8 @@ pub struct Pick {
     pub kinds: [bool; 5],
     /// Files bigger than this many bytes are skipped.
     pub max_size: Option<u64>,
+    /// Restore only: which of `PERSONAL` to put back, when `data` is on.
+    pub personal: [bool; 4],
 }
 
 impl Default for Pick {
@@ -153,6 +157,7 @@ impl Default for Pick {
             folders: BTreeSet::new(),
             kinds: [true; 5],
             max_size: None,
+            personal: [true; 4],
         }
     }
 }
