@@ -131,10 +131,14 @@ impl App {
     pub(crate) fn phone_actions(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let busy = self.busy.load(Ordering::Relaxed);
         ui.horizontal_wrapped(|ui| {
-            if quiet(ui, t, "Check again", true).clicked() {
+            // Only while adb is missing: once found, checking again would show no change.
+            if !self.adb_ok && quiet(ui, t, "Check again", true).clicked() {
                 self.adb_ok = backup::adb_installed();
             }
-            if quiet(ui, t, "Connect over Wi-Fi…", !busy).clicked() {
+            if quiet(ui, t, "Connect over Wi-Fi…", !busy)
+                .on_disabled_hover_text("Wait for the job to finish.")
+                .clicked()
+            {
                 self.wifi_open = true;
             }
             self.report_buttons(ui, t, busy);
@@ -167,7 +171,13 @@ impl App {
             } else {
                 "Save phone report…".into()
             };
-            if quiet(ui, t, &label, !busy && !self.report_working).clicked()
+            if quiet(ui, t, &label, !busy && !self.report_working)
+                .on_disabled_hover_text(if busy {
+                    "Wait for the job to finish."
+                } else {
+                    "Reading the phone…"
+                })
+                .clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .set_directory(&self.dest)
                     .set_file_name("phone-report.txt")

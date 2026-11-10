@@ -335,11 +335,15 @@ impl App {
                     egui::UiBuilder::new()
                         .max_rect(end)
                         .layout(Layout::right_to_left(Align::Center)),
-                    |ui| quiet(ui, t, "Find another…", !running),
+                    |ui| {
+                        quiet(ui, t, "Find another…", !running)
+                            .on_disabled_hover_text("Wait for the job to finish.")
+                    },
                 )
                 .inner
             } else {
                 quiet(ui, t, "Find another…", !running)
+                    .on_disabled_hover_text("Wait for the job to finish.")
             };
             if find.clicked()
                 && let Some(dir) = rfd::FileDialog::new()
@@ -435,8 +439,8 @@ impl App {
             if self.tool_busy == Some(k.id) {
                 let stopping = tools::STOP.load(Ordering::Relaxed);
                 let label = if stopping { "Stopping…" } else { "Stop" };
-                // Only these two look at tools::STOP; the others end on their own.
-                if quiet(ui, t, label, !stopping && matches!(k.id, "dupes" | "heic")).clicked() {
+                // Only these two look at tools::STOP; the others end on their own, so get no button.
+                if matches!(k.id, "dupes" | "heic") && quiet(ui, t, label, !stopping).clicked() {
                     self.stop_tool = true;
                 }
                 return;

@@ -74,7 +74,9 @@ impl App {
         };
         let mut change = false;
         plate(ui, t, "\u{E8B7}", &title, &free, |ui| {
-            change = quiet(ui, t, "Change…", !busy).clicked();
+            change = quiet(ui, t, "Change…", !busy)
+                .on_disabled_hover_text("Wait for the job to finish.")
+                .clicked();
         });
         if change {
             self.change_folder();
