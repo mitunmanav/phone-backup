@@ -715,11 +715,15 @@ impl App {
 }
 
 impl App {
-    /// A backup or restore ended: the sound if chosen, and a taskbar flash if the window is
-    /// in the background.
-    fn finished(&self, ctx: &egui::Context) {
+    /// A job ended: the chosen sound, or the problem sound if it did not end well, and a taskbar
+    /// flash if the window is in the background.
+    fn finished(&self, ctx: &egui::Context, ok: bool) {
         if self.sound {
-            backup::play_sound(self.sound_pick);
+            backup::play_sound(if ok {
+                backup::SOUNDS[self.sound_pick].1
+            } else {
+                backup::PROBLEM
+            });
         }
         if !ctx.input(|i| i.focused) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -815,8 +819,8 @@ impl eframe::App for App {
                     }
                 }
                 Msg::Tidied(r) => {
+                    self.finished(ui.ctx(), r.is_ok());
                     self.tidy_msg = Some(r);
-                    self.finished(ui.ctx());
                     let dir = self.scanned.clone();
                     self.scan(&dir);
                 }
@@ -830,9 +834,10 @@ impl eframe::App for App {
                 Msg::Restored(r) => match self.checking.take() {
                     Some(plan) => self.preview = Some((plan, r.map(|(m, _)| m))),
                     None => {
+                        // Some files or apps not restored is a problem too.
+                        self.finished(ui.ctx(), matches!(r, Ok((_, 0))));
                         self.restore_msg = Some(r);
                         self.stopped_at = self.fraction;
-                        self.finished(ui.ctx());
                     }
                 },
                 Msg::Sizes(serial, list, apps) => {
@@ -840,18 +845,18 @@ impl eframe::App for App {
                     self.tally = None;
                 }
                 Msg::Exported(folder, r) => {
+                    self.finished(ui.ctx(), r.is_ok());
                     self.export_msg = Some((folder, r));
-                    self.finished(ui.ctx());
                 }
                 Msg::Done(r) => {
+                    self.finished(ui.ctx(), r.as_ref().is_ok_and(|d| ui::problems(d) == 0));
                     self.result = Some(r);
                     self.stopped_at = self.fraction;
                     self.free = None;
-                    self.finished(ui.ctx());
                 }
                 Msg::Verified(folder, r) => {
+                    self.finished(ui.ctx(), r.is_ok());
                     self.verified = Some((folder, r));
-                    self.finished(ui.ctx());
                 }
             }
         }

@@ -158,7 +158,11 @@ pub(super) fn now_text() -> String {
 }
 
 /// Notes: pitch in Hz, then start and length in seconds.
-type Tune = &'static [(f32, f32, f32)];
+pub type Tune = &'static [(f32, f32, f32)];
+
+/// When a job ends with a problem, whatever tune is picked: a soft step down, so it never
+/// sounds like success.
+pub const PROBLEM: Tune = &[(523.3, 0.0, 0.3), (392.0, 0.16, 0.8)];
 
 /// The tunes for the end of a job.
 pub const SOUNDS: [(&str, Tune); 6] = [
@@ -235,11 +239,11 @@ fn wav(notes: &[(f32, f32, f32)]) -> Vec<u8> {
 }
 
 /// Plays on its own thread so the window never waits; a new sound cuts off the last one.
-pub fn play_sound(i: usize) {
+pub fn play_sound(tune: Tune) {
     #[cfg(windows)]
     std::thread::spawn(move || {
         use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT};
-        let bytes = wav(SOUNDS[i].1);
+        let bytes = wav(tune);
         // SAFETY: without SND_ASYNC the call returns only when the sound ends, so `bytes` outlives it.
         unsafe {
             PlaySoundW(
@@ -250,7 +254,7 @@ pub fn play_sound(i: usize) {
         };
     });
     #[cfg(not(windows))]
-    let _ = i;
+    let _ = tune;
 }
 
 /// Facts that help someone fix a problem: app, Windows and adb versions and the phones adb sees.
@@ -281,7 +285,7 @@ mod tests {
 
     #[test]
     fn sounds_are_valid_wav() {
-        for (_, notes) in SOUNDS {
+        for notes in SOUNDS.iter().map(|s| s.1).chain([PROBLEM]) {
             let w = wav(notes);
             assert_eq!(&w[..4], b"RIFF");
             assert_eq!(
