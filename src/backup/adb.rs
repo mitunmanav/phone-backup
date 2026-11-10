@@ -989,6 +989,8 @@ pub(super) fn vcard_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace(',', "\\,")
         .replace(';', "\\;")
+        .replace('\r', "")
+        .replace('\n', "\\n")
 }
 
 /// Wraps a path in single quotes for the phone's shell.
