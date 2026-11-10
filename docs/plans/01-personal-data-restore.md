@@ -90,6 +90,25 @@ largest gap in the core job and the base for groups 02, 10 and 13.
 - Remove the "cannot be copied to a phone yet" line.
 - Report gains one line per kind with added, skipped, failed counts.
 
+## As built
+
+Built on this branch; the Android round trip is still to be tried on real phones (see Tests).
+Where the build differs from the design above:
+
+- No `keys` op. The PC lists what the phone has with the existing `list` op and makes the
+  keys itself, so one function in `src/backup/personal.rs` keys both sides. `list` gained
+  the `mms` kind for that.
+- No `restore-progress.json`. Because nothing already on the phone is sent again, running
+  the restore again carries on where it stopped; a progress file would add state that can
+  go stale.
+- Event keys use title, start and repeat rule, not the end: a repeating event comes back
+  with a duration instead of an end.
+- Contact photos, contact groups and event reminders are not in backups (the helper skips
+  blobs and does not read groups or reminders), so they do not come back yet.
+- An MMS that arrives while the helper is the messages app is not kept; texts are.
+- Instrumented Kotlin tests are not set up; `e2e_personal_restore_adds_nothing_twice`
+  (ignored, needs an emulator) covers contacts, calls and calendar from the PC side.
+
 ## Steps
 
 1. **Protocol and duplicate keys, Rust side.** `helper.rs`: `insert`, `keys`, `sms_role`

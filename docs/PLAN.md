@@ -40,7 +40,7 @@ The goal of 1.0: back up, restore and move an Android phone for free, with files
 |---|---|
 | Easy start | Get adb from the app, phone-brand steps for USB debugging, Wi-Fi pairing by QR code, clear words when Windows sees a phone but adb does not. |
 | Companion app | A small open-source Android helper, installed over adb and removed afterwards, that reads contacts, call history, messages and calendar on phones that refuse the older method. See [android-design.md](android-design.md). |
-| Restore and transfer | Restore photos, files and apps, all or picked from a list; copy one phone to another; read and export a backup's personal data. |
+| Restore and transfer | Restore photos, files, apps, contacts, call history, calendar and messages, never adding anything twice; copy one phone to another; read and export a backup's personal data. |
 
 ## After 1.0
 
@@ -50,7 +50,6 @@ Each item lands as its own pull request so it can be rolled back alone.
 |---|---|---|
 | Phone manager | Browse and copy files both ways; list, install, save, uninstall or turn off apps. | Medium |
 | WhatsApp move | A guided move between Android phones using WhatsApp's own local restore. | Medium |
-| Personal data restore | Put contacts, call history, calendar and messages back on a phone, with a count of what arrived and resuming after a break. | Large |
 | Comfort | Optional password-protected backups (AES-256-GCM, Argon2id key); a plain list of what the app never does; keyboard shortcuts; screen-reader labels; large text support; drop a backup folder on the window to open it. | Medium |
 | Trust | Signed releases and an installer, where free options allow. | Medium |
 
