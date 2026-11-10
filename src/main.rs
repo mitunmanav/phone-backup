@@ -50,7 +50,7 @@ fn main() -> eframe::Result {
             .with_inner_size([960.0, 700.0])
             .with_min_inner_size([360.0, 540.0])
             .with_icon({
-                let (rgba, n) = logo_pixels();
+                let (rgba, n) = logo_pixels(true);
                 egui::IconData {
                     rgba,
                     width: n as u32,
