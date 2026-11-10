@@ -1090,10 +1090,10 @@ impl App {
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             if quiet(ui, t, "Open backup folder", true).clicked() {
-                                let _ = Command::new("explorer").arg(&s.root).spawn();
+                                let _ = backup::explorer().arg(&s.root).spawn();
                             }
                             if quiet(ui, t, "Open report", true).clicked() {
-                                let _ = Command::new("explorer").arg(s.root.join(backup::REPORT)).spawn();
+                                let _ = backup::explorer().arg(s.root.join(backup::REPORT)).spawn();
                             }
                             if !s.errors.is_empty() && quiet(ui, t, "Copy problem list", true).clicked() {
                                 ui.ctx().copy_text(s.errors.join("\n"));

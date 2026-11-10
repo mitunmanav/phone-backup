@@ -179,7 +179,7 @@ impl App {
                 thread::spawn(move || {
                     let r = backup::phone_report(&serial, &path);
                     if r.is_ok() {
-                        let _ = Command::new("explorer").arg(&path).spawn();
+                        let _ = backup::explorer().arg(&path).spawn();
                     }
                     let _ = tx.send(Msg::PhoneReport(r));
                     ctx.request_repaint();

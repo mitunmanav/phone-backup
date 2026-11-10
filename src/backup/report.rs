@@ -261,7 +261,7 @@ pub fn diagnostics(dest: &Path) -> String {
             .unwrap_or_else(|e| e.to_string())
     };
     let windows = if cfg!(windows) {
-        out(Command::new("cmd").args(["/c", "ver"]))
+        out(windows_tool("cmd.exe").args(["/c", "ver"]))
     } else {
         String::new()
     };

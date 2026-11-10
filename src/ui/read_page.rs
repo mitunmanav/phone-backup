@@ -313,7 +313,7 @@ fn attachment(
     }
     clicked |= ui.link(name).on_hover_text("Show in folder").clicked();
     if clicked {
-        let mut explorer = Command::new("explorer");
+        let mut explorer = backup::explorer();
         // Explorer reads this argument itself and does not accept it quoted as a whole.
         #[cfg(windows)]
         std::os::windows::process::CommandExt::raw_arg(

@@ -629,7 +629,7 @@ impl App {
         }
         match action {
             Some((0, path)) => {
-                let _ = Command::new("explorer").arg(path).spawn();
+                let _ = backup::explorer().arg(path).spawn();
             }
             Some((1, path)) => {
                 let name = path
@@ -795,7 +795,7 @@ impl App {
                 ui.label(text.as_str());
                 ui.add_space(4.0);
                 if ui.button("Open folder").clicked() {
-                    let _ = Command::new("explorer").arg(folder).spawn();
+                    let _ = backup::explorer().arg(folder).spawn();
                 }
             });
         }
@@ -960,7 +960,7 @@ impl App {
         if let Some(path) = &self.restore_report {
             ui.add_space(4.0);
             if ui.button("Open report").clicked() {
-                let _ = Command::new("explorer").arg(path).spawn();
+                let _ = backup::explorer().arg(path).spawn();
             }
         }
     }
