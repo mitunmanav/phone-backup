@@ -26,6 +26,9 @@ struct Installed {
     serial: String,
     /// The port on this computer; 0 until adb has chosen one.
     port: u16,
+    /// Left on the phone: it is still the phone's messages app, and removing that leaves some
+    /// phones with none.
+    keep: bool,
 }
 
 impl Drop for Installed {
@@ -35,7 +38,9 @@ impl Drop for Installed {
             let forward = format!("tcp:{}", self.port);
             let _ = logged(adb().args(["-s", serial, "forward", "--remove", &forward]));
         }
-        let _ = logged(adb().args(["-s", serial, "uninstall", PACKAGE]));
+        if !self.keep {
+            let _ = logged(adb().args(["-s", serial, "uninstall", PACKAGE]));
+        }
     }
 }
 
@@ -51,6 +56,7 @@ fn start_with(serial: &str, token: &str) -> Result<Helper, String> {
     let mut installed = Installed {
         serial: serial.to_string(),
         port: 0,
+        keep: false,
     };
     let _ = logged(adb().args(["-s", serial, "uninstall", PACKAGE]));
     let file = std::env::temp_dir().join(format!("phone-backup-helper-{token}.apk"));
@@ -155,6 +161,92 @@ impl Helper {
     }
 }
 
+impl Helper {
+    /// Everything of one kind on the phone now, even none; None when the list did not arrive whole.
+    pub fn items(&self, kind: &str) -> Option<Vec<Value>> {
+        list_all(&self.socket, kind)
+    }
+
+    /// Adds one batch of items of `kind` (see `batches`) to the phone. Returns how many were
+    /// added and how many failed, or None when the phone did not answer.
+    pub fn insert(&self, kind: &str, items: &[&Value]) -> Option<(usize, usize)> {
+        // Adding a batch of contacts can take the phone a while.
+        let _ = self.socket.set_read_timeout(Some(Duration::from_secs(120)));
+        let request = insert_request(kind, items);
+        let reply: Value = serde_json::from_str(&ask(&self.socket, &request)).ok()?;
+        let n = |key: &str| reply[key].as_u64().map(|n| n as usize);
+        Some((n("inserted")?, n("failed")?))
+    }
+
+    /// Whether the helper is the phone's messages app now, and the package and name of the one
+    /// that is. None when the phone did not answer.
+    pub fn sms_role(&self) -> Option<(bool, String, String)> {
+        let _ = self.socket.set_read_timeout(Some(Duration::from_secs(5)));
+        let reply: Value =
+            serde_json::from_str(&ask(&self.socket, r#"{"id":"sms_role","op":"sms_role"}"#))
+                .ok()?;
+        let s = |key: &str| reply[key].as_str().unwrap_or("").to_string();
+        Some((reply["default"].as_bool()?, s("package"), s("name")))
+    }
+
+    /// Opens the helper's screen on the phone to ask to become its messages app for now.
+    pub fn ask_sms_role(&self) {
+        let start = format!("am start -n {PACKAGE}/.MainActivity --ez sms_role true");
+        shell(&self._installed.serial, &start);
+    }
+
+    /// Opens the phone's default apps screen, where the user picks the messages app.
+    pub fn open_default_apps(&self) {
+        let start = "am start -a android.settings.MANAGE_DEFAULT_APPS_SETTINGS";
+        shell(&self._installed.serial, start);
+    }
+
+    /// Where on the phone pushed files wait for the helper to read them.
+    pub fn inbox(&self) -> String {
+        format!("/sdcard/Android/data/{PACKAGE}/files/in")
+    }
+
+    /// Leaves the helper on the phone after this job.
+    pub fn keep(&mut self) {
+        self._installed.keep = true;
+    }
+}
+
+/// Requests longer than this many bytes are not sent: the helper drops a line over 64K characters.
+const MAX_REQUEST: usize = 60_000;
+
+fn insert_request(kind: &str, items: &[&Value]) -> String {
+    let items: Vec<String> = items.iter().map(|i| i.to_string()).collect();
+    format!(
+        r#"{{"id":"insert","op":"insert","kind":"{kind}","items":[{}]}}"#,
+        items.join(",")
+    )
+}
+
+/// `items` in batches of at most 200 that each fit one request. An item too big for any request
+/// is left out and returned on its own.
+pub fn batches<'a>(kind: &str, items: &[&'a Value]) -> (Vec<Vec<&'a Value>>, usize) {
+    let empty = insert_request(kind, &[]).len();
+    let (mut out, mut too_big) = (vec![Vec::new()], 0);
+    let mut size = empty;
+    for item in items {
+        let len = item.to_string().len() + 1;
+        if empty + len > MAX_REQUEST {
+            too_big += 1;
+            continue;
+        }
+        let last = out.last_mut().unwrap();
+        if last.len() == 200 || size + len > MAX_REQUEST {
+            out.push(Vec::new());
+            size = empty;
+        }
+        out.last_mut().unwrap().push(*item);
+        size += len;
+    }
+    out.retain(|b| !b.is_empty());
+    (out, too_big)
+}
+
 /// The helper's answer, unless the old method sees more rows: a phone can hide rows from an
 /// ordinary app without saying so, and a backup must not shrink because of it.
 pub fn fuller(old: String, helper: Option<(String, String)>) -> (String, Option<String>) {
@@ -183,8 +275,13 @@ pub fn note(file: &str, old: &str, out: &str, saved: bool, why: Option<&str>) ->
 
 /// Reads one list to its end line, whose count must match. None on an error, Stop, a cut or an
 /// empty list: a phone can hide data by answering "nothing" without an error, so the old method
-/// has to confirm it. The id keeps late lines of an earlier list out of this one.
-fn list(mut socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
+/// has to confirm it.
+fn list(socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
+    list_all(socket, kind).filter(|items| !items.is_empty())
+}
+
+/// `list`, empty lists included. The id keeps late lines of an earlier list out of this one.
+fn list_all(mut socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
     // A big list takes the phone a while to start sending.
     socket
         .set_read_timeout(Some(Duration::from_secs(60)))
@@ -201,7 +298,7 @@ fn list(mut socket: &TcpStream, kind: &str) -> Option<Vec<Value>> {
             return None;
         }
         if reply["end"] == true {
-            return (reply["count"] == items.len() && !items.is_empty()).then_some(items);
+            return (reply["count"] == items.len()).then_some(items);
         }
         items.push(reply.get_mut("item")?.take());
     }
@@ -522,6 +619,23 @@ mod tests {
                 (String::new(), vec![("TEL", "3".to_string())]),
             ]
         );
+    }
+
+    #[test]
+    fn batches_fit_the_helpers_line_limit() {
+        let small = serde_json::json!({"body": "hi"});
+        let big = serde_json::json!({"body": "x".repeat(25_000)});
+        let huge = serde_json::json!({"body": "x".repeat(70_000)});
+        let items: Vec<&Value> = std::iter::repeat_n(&small, 450).collect();
+        let (out, too_big) = batches("sms", &items);
+        assert_eq!(out.iter().map(Vec::len).collect::<Vec<_>>(), [200, 200, 50]);
+        assert_eq!(too_big, 0);
+        let (out, too_big) = batches("sms", &[&big, &big, &huge, &big, &small]);
+        assert_eq!(too_big, 1);
+        assert_eq!(out.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2]);
+        for batch in out {
+            assert!(insert_request("sms", &batch).len() <= MAX_REQUEST);
+        }
     }
 
     #[test]
