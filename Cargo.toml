@@ -19,3 +19,6 @@ zune-heic = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Media_Audio","Win32_System_SystemInformation", "Win32_System_Power", "Win32_System_Time", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+winresource = "0.1.34"

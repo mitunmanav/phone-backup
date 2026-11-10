@@ -4,7 +4,7 @@ impl App {
     pub(crate) fn logo_id(&mut self, ctx: &egui::Context) -> egui::TextureId {
         self.logo
             .get_or_insert_with(|| {
-                let (rgba, n) = logo_pixels();
+                let (rgba, n) = logo_pixels(false);
                 ctx.load_texture(
                     "logo",
                     egui::ColorImage::from_rgba_unmultiplied([n, n], &rgba),

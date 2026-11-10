@@ -503,62 +503,19 @@ pub(crate) fn rope(
     pts
 }
 
-/// The app's mark, a phone with a copper cable: RGBA pixels and the side length.
-pub(crate) fn logo_pixels() -> (Vec<u8>, usize) {
-    let n = 64usize;
-    let (tile, copper, white) = ([0x0B, 0x6E, 0x63], [0xE3, 0x9C, 0x66], [255, 255, 255]);
-    let round = |x: f32, y: f32, l: f32, top: f32, r: f32, b: f32, rad: f32| {
-        let dx = (l + rad - x).max(x - (r - rad)).max(0.0);
-        let dy = (top + rad - y).max(y - (b - rad)).max(0.0);
-        x >= l && x <= r && y >= top && y <= b && dx * dx + dy * dy <= rad * rad
+/// The app's mark as RGBA pixels and the side length. `small` is the simpler drawing for the
+/// window icon, which Windows shows at 16 to 24 px.
+pub(crate) fn logo_pixels(small: bool) -> (Vec<u8>, usize) {
+    let png: &[u8] = if small {
+        include_bytes!("../../assets/logo-small.png")
+    } else {
+        include_bytes!("../../assets/logo.png")
     };
-    let cable: Vec<Pos2> = (0..=40)
-        .map(|i| {
-            let s = i as f32 / 40.0;
-            let m = 1.0 - s;
-            let at = |a: f32, b: f32, c: f32, d: f32| {
-                m * m * m * a + 3.0 * m * m * s * b + 3.0 * m * s * s * c + s * s * s * d
-            };
-            pos2(at(13.0, 13.0, 26.0, 26.0), at(24.0, 31.0, 31.0, 14.0))
-        })
-        .collect();
-    let mut rgba = Vec::with_capacity(n * n * 4);
-    for py in 0..n {
-        for px in 0..n {
-            let (mut sum, mut hits) = ([0u32; 3], 0u32);
-            for sy in 0..3 {
-                for sx in 0..3 {
-                    let x = (px as f32 + (sx as f32 + 0.5) / 3.0) / 2.0;
-                    let y = (py as f32 + (sy as f32 + 0.5) / 3.0) / 2.0;
-                    if !round(x, y, 0.0, 0.0, 32.0, 32.0, 7.0) {
-                        continue;
-                    }
-                    let on_cable = cable.iter().any(|c| c.distance_sq(pos2(x, y)) < 1.7);
-                    let c = if round(x, y, 9.0, 6.5, 17.0, 21.0, 1.0) {
-                        tile
-                    } else if round(x, y, 7.0, 4.0, 19.0, 24.0, 2.5) {
-                        white
-                    } else if on_cable || round(x, y, 24.0, 8.0, 28.0, 14.0, 0.8) {
-                        copper
-                    } else {
-                        tile
-                    };
-                    for i in 0..3 {
-                        sum[i] += c[i] as u32;
-                    }
-                    hits += 1;
-                }
-            }
-            let d = hits.max(1);
-            rgba.extend_from_slice(&[
-                (sum[0] / d) as u8,
-                (sum[1] / d) as u8,
-                (sum[2] / d) as u8,
-                (hits * 255 / 9) as u8,
-            ]);
-        }
-    }
-    (rgba, n)
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .expect("the bundled logo is a valid PNG")
+        .into_rgba8();
+    let n = img.width() as usize;
+    (img.into_raw(), n)
 }
 
 /// egui draws no focus for a hand-made widget.
@@ -979,10 +936,12 @@ mod tests {
 
     #[test]
     fn logo_is_opaque_inside_and_clear_at_the_corners() {
-        let (rgba, n) = logo_pixels();
-        assert_eq!(rgba.len(), n * n * 4);
-        assert_eq!(rgba[3], 0);
-        assert_eq!(rgba[(n * n / 2 + n / 2) * 4 + 3], 255);
+        for small in [false, true] {
+            let (rgba, n) = logo_pixels(small);
+            assert_eq!(rgba.len(), n * n * 4);
+            assert_eq!(rgba[3], 0);
+            assert_eq!(rgba[(n * n / 2 + n / 2) * 4 + 3], 255);
+        }
     }
 
     #[test]

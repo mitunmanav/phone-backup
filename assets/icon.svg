@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="dk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3A3A40"/><stop offset="1" stop-color="#141414"/></linearGradient>
+    <linearGradient id="scr" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FBE9DA"/><stop offset="1" stop-color="#E9A876"/></linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#F2AE7B"/><stop offset="1" stop-color="#A5531E"/></linearGradient>
+  </defs>
+  <path d="M196.1 46.8A106 106 0 1 0 233.9 120" fill="none" stroke="url(#ring)" stroke-width="18" stroke-linecap="round"/>
+  <path d="M212 120H256L234 90Z" fill="#A5531E"/>
+  <rect x="120" y="52" width="64" height="110" rx="16" fill="none" stroke="#E39C66" stroke-opacity=".6" stroke-width="8"/>
+  <rect x="98" y="66" width="70" height="118" rx="16" fill="#C2652A" fill-opacity=".6"/>
+  <rect x="72" y="82" width="78" height="130" rx="16.25" fill="url(#dk)"/>
+  <rect x="79.3" y="90.1" width="63.4" height="113.8" rx="9.75" fill="url(#scr)"/>
+</svg>

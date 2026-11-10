@@ -1,5 +1,6 @@
 //! Puts the helper APK where src/backup/helper.rs embeds it from. Without a built APK (no Android
 //! tools on this computer) the file is empty: the app still builds, only the helper is missing.
+//! Also gives the exe its icon, the one Explorer and shortcuts show.
 
 use std::path::Path;
 
@@ -12,5 +13,12 @@ fn main() {
     let apk = "companion/build/outputs/apk/release/companion-release.apk";
     if std::fs::copy(apk, &embedded).is_err() {
         std::fs::write(&embedded, b"").unwrap();
+    }
+    println!("cargo::rerun-if-changed=assets/icon.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        winresource::WindowsResource::new()
+            .set_icon("assets/icon.ico")
+            .compile()
+            .unwrap();
     }
 }
