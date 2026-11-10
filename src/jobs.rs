@@ -179,7 +179,8 @@ impl App {
         let pick = Pick {
             files: self.restore_files,
             apps: self.restore_apps,
-            data: false,
+            data: self.restore_personal.contains(&true),
+            personal: self.restore_personal,
             ..Pick::default()
         };
         self.begin(Job::Restore);
@@ -226,7 +227,7 @@ impl App {
                     pick.files,
                     pick.apps,
                     None,
-                    [false; 4],
+                    pick.personal,
                 ));
                 self.restore_report = None;
                 let fail = |e| Msg::Transferred(None, Err(e));

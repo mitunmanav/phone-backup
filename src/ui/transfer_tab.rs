@@ -52,7 +52,8 @@ impl App {
         let ready = adb.len() >= 2;
         let phase = self.transfer_phase();
 
-        let picked = self.restore_files || self.restore_apps;
+        let picked =
+            self.restore_files || self.restore_apps || self.restore_personal.contains(&true);
         let folder = self
             .source
             .as_ref()
@@ -65,7 +66,7 @@ impl App {
                 self.restore_files,
                 self.restore_apps,
                 Some(ran),
-                [false; 4],
+                self.restore_personal,
             )),
             _ => None,
         };
@@ -355,7 +356,18 @@ impl App {
             w,
         );
         let (files_line, label) = self.picked_words(folder.as_ref());
-        self.onto_tiles(ui, t, room, &files_line, (true, true), None, locked, phase);
+        // The first phone is backed up during the check, so every kind may be there.
+        let personal = Some([true; 4]);
+        self.onto_tiles(
+            ui,
+            t,
+            room,
+            &files_line,
+            (true, true),
+            personal,
+            locked,
+            phase,
+        );
         ui.add_space(6.0);
         // The files to choose from exist once the check has backed up the first phone.
         let can = !locked && self.restore_files;
@@ -381,8 +393,8 @@ impl App {
         );
         for fact in [
             "The first phone is backed up into its own folder, then copied to the second.",
-            "Files the second phone already has are skipped, never replaced. Apps come back without their logins and data.",
-            "Contacts and messages cannot be copied to a phone yet.",
+            "Anything the second phone already has is skipped, never replaced. Apps come back without their logins and data.",
+            "These do not move: app data and logins, alarms, settings, Wi-Fi passwords and the home screen. Move bank, authenticator and eSIM apps with their own transfer.",
         ] {
             ui.add(egui::Label::new(txt(fact, 12.0, 400.0, t.muted)).wrap());
         }
