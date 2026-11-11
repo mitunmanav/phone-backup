@@ -1,10 +1,19 @@
 name: Release
 
-# Every push to main whose Cargo.toml version has no tag yet publishes that version.
-# Features merge without a version change; a pull request that bumps the version ships them together.
+# Every merge to main that changes the app publishes a new version, numbered by itself:
+# one past the newest release tag (1.0.1, 1.0.2, ...). To start a new minor or major
+# version, raise `version` in Cargo.toml; the next release uses it, then counts on from it.
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "companion/**"
+      - "assets/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -23,13 +32,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read version
+      - name: Pick the next version
         id: version
         shell: pwsh
         run: |
-          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          # A rerun on an already released commit publishes nothing.
+          if (git tag --points-at HEAD --list "v*") { "new=false" >> $env:GITHUB_OUTPUT; exit 0 }
+          $floor = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $last = git tag --list "v*" | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            ForEach-Object { [version]$_.Substring(1) } | Sort-Object -Descending | Select-Object -First 1
+          if ($floor -match '-' -or -not $last -or [version]$floor -gt $last) { $version = $floor }
+          else { $version = "{0}.{1}.{2}" -f $last.Major, $last.Minor, ($last.Build + 1) }
+          if (git tag --list "v$version") { throw "v$version is already released" }
+          # The build carries the number, so the app shows it and Check for updates compares it.
+          (Get-Content Cargo.toml -Raw) -replace '(?m)^version = ".*"', "version = `"$version`"" |
+            Set-Content Cargo.toml -NoNewline
+          (Get-Content Cargo.lock -Raw) -replace '(name = "phone-backup"\r?\nversion = )"[^"]*"', "`$1`"$version`"" |
+            Set-Content Cargo.lock -NoNewline
           "version=$version" >> $env:GITHUB_OUTPUT
-          if (git tag --list "v$version") { "new=false" >> $env:GITHUB_OUTPUT } else { "new=true" >> $env:GITHUB_OUTPUT }
+          "new=true" >> $env:GITHUB_OUTPUT
 
       - uses: dtolnay/rust-toolchain@stable
         if: steps.version.outputs.new == 'true'
