@@ -263,10 +263,193 @@ pub fn protects(scope: Scope, rel: &str) -> bool {
     }
     match scope {
         Scope::Data => top == "data",
-        Scope::All => {
-            top == "data" || top == "files" || top == "apps" || top.starts_with("sdcard_")
+        // Also files the app makes from them, such as the HEIC tool's JPGs.
+        Scope::All => top != crate::export::EXPORTS && top != HISTORY,
+    }
+}
+
+/// The error for a sealed file whose backup is not unlocked.
+fn locked_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::PermissionDenied, LOCKED)
+}
+
+/// The backup folder holding `path`: the nearest folder above it with a password file.
+pub fn root_of(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .skip(1)
+        .find(|a| a.join(LOCK).is_file())
+        .map(Path::to_path_buf)
+}
+
+/// True for a sealed file (`.pbenc`).
+pub fn is_sealed(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == crypt::EXT)
+}
+
+/// `path` without `.pbenc`: the file's own name.
+pub fn plain_path(path: &Path) -> PathBuf {
+    if is_sealed(path) {
+        path.with_extension("")
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Where the copy of `path` is kept: `path` itself, or its sealed copy. None when neither is.
+pub fn stored(path: &Path) -> Option<PathBuf> {
+    if path.exists() {
+        return Some(path.to_path_buf());
+    }
+    let sealed = crypt::sealed_path(path);
+    sealed.exists().then_some(sealed)
+}
+
+/// The key that opens a sealed file: its backup's, when unlocked in this session.
+fn key_near(sealed: &Path) -> std::io::Result<crypt::Key> {
+    root_of(sealed)
+        .and_then(|r| key(&r))
+        .ok_or_else(locked_error)
+}
+
+/// Reads a file of a backup. `path` may name the file or its sealed copy; a sealed copy is
+/// opened with its backup's key.
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    let at = stored(path).ok_or(std::io::ErrorKind::NotFound)?;
+    if !is_sealed(&at) {
+        return fs::read(at);
+    }
+    let k = key_near(&at)?;
+    let mut out = Vec::new();
+    crypt::decrypt(
+        &k,
+        &mut std::io::BufReader::new(fs::File::open(&at)?),
+        &mut out,
+    )?;
+    Ok(out)
+}
+
+/// `read_file` as text, or None when it cannot be read.
+pub fn read_text(path: &Path) -> Option<String> {
+    String::from_utf8(read_file(path).ok()?).ok()
+}
+
+struct Hasher(sha2::Sha256);
+
+impl std::io::Write for Hasher {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        sha2::Digest::update(&mut self.0, b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// SHA-256 of a file's own bytes: a sealed copy is opened first. Read in chunks.
+pub fn plain_sha256(path: &Path) -> std::io::Result<[u8; 32]> {
+    let at = stored(path).ok_or(std::io::ErrorKind::NotFound)?;
+    if !is_sealed(&at) {
+        return sha256_bytes(&at);
+    }
+    let k = key_near(&at)?;
+    let mut h = Hasher(sha2::Digest::new());
+    crypt::decrypt(
+        &k,
+        &mut std::io::BufReader::new(fs::File::open(&at)?),
+        &mut h,
+    )?;
+    Ok(sha2::Digest::finalize(h.0).into())
+}
+
+/// Copies the file at `src` (plain or sealed) to `dst`, sealing it with `seal` (then saved as
+/// `dst.pbenc`). Written to a side file first. Returns where the copy is.
+pub fn copy_plain(src: &Path, dst: &Path, seal: Option<&crypt::Key>) -> std::io::Result<PathBuf> {
+    let at = stored(src).ok_or(std::io::ErrorKind::NotFound)?;
+    let target = match seal {
+        Some(_) => crypt::sealed_path(dst),
+        None => dst.to_path_buf(),
+    };
+    if !is_sealed(&at) && seal.is_none() {
+        fs::copy(&at, &target)?;
+        return Ok(target);
+    }
+    let mut part = target.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let written = (|| {
+        let mut r = std::io::BufReader::new(fs::File::open(&at)?);
+        let mut w = std::io::BufWriter::new(fs::File::create(&part)?);
+        match (is_sealed(&at), seal) {
+            (true, None) => crypt::decrypt(&key_near(&at)?, &mut r, &mut w)?,
+            (false, Some(k)) => crypt::encrypt(k, &mut r, &mut w)?,
+            (true, Some(k)) => {
+                // Opened into memory first; such copies are between two protected backups.
+                let mut plain = zeroize::Zeroizing::new(Vec::new());
+                crypt::decrypt(&key_near(&at)?, &mut r, &mut *plain)?;
+                crypt::encrypt(k, &mut &plain[..], &mut w)?
+            }
+            (false, None) => unreachable!("plain to plain is a copy"),
+        };
+        std::io::Write::flush(&mut w)?;
+        drop(w);
+        fs::rename(&part, &target)
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_file(&part);
+        return Err(e);
+    }
+    Ok(target)
+}
+
+/// The key to seal a file at `path` with, when backup `root`'s password protects that place.
+/// Err when it protects it but was not unlocked.
+pub fn seal_in(root: &Path, path: &Path) -> std::io::Result<Option<crypt::Key>> {
+    match lock_of(root).map_err(std::io::Error::other)? {
+        Some(l) if protects(l.scope, &rel(root, path)) => {
+            key_of(&l).map(Some).ok_or_else(locked_error)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Writes `bytes` to `path` in backup `root`, sealed when its password protects that place.
+/// Returns where the file is.
+pub fn write_file(root: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    match seal_in(root, path)? {
+        Some(k) => {
+            let sealed = crypt::sealed_path(path);
+            fs::write(&sealed, crypt::encrypt_bytes(&k, bytes))?;
+            Ok(sealed)
+        }
+        None => {
+            fs::write(path, bytes)?;
+            Ok(path.to_path_buf())
         }
     }
+}
+
+/// The folder for opened copies of sealed files, emptied when the app closes.
+fn open_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("phone-backup-open-{}", std::process::id()))
+}
+
+/// A plain copy of a sealed file in a temporary folder, for opening in another program.
+/// Plain files are returned as they are.
+pub fn open_copy(path: &Path) -> std::io::Result<PathBuf> {
+    let at = stored(path).ok_or(std::io::ErrorKind::NotFound)?;
+    if !is_sealed(&at) {
+        return Ok(at);
+    }
+    // A folder per file keeps two attachments of the same name apart.
+    let dir = open_dir().join(hex(&crypt::random::<4>()));
+    fs::create_dir_all(&dir)?;
+    let name = plain_path(&at);
+    copy_plain(&at, &dir.join(name.file_name().unwrap_or_default()), None)
+}
+
+/// Deletes the opened copies of sealed files.
+pub fn remove_open_copies() {
+    let _ = fs::remove_dir_all(open_dir());
 }
 
 #[cfg(test)]
@@ -328,6 +511,54 @@ mod tests {
     }
 
     #[test]
+    fn reads_copies_and_hashes_sealed_files() {
+        let root = dir("files");
+        fs::create_dir_all(root.join("data")).unwrap();
+        fs::write(root.join("data/plain.txt"), "plain").unwrap();
+        set_password(&root, "pw", Scope::Data).unwrap();
+        let sms = root.join("data/sms.txt");
+        let at = write_file(&root, &sms, b"hello").unwrap();
+        assert_eq!(at, crypt::sealed_path(&sms));
+        assert_eq!(stored(&sms), Some(at.clone()));
+        assert_eq!(plain_path(&at), sms);
+        assert_eq!(root_of(&at), Some(root.clone()));
+        // By either name.
+        assert_eq!(read_file(&sms).unwrap(), b"hello");
+        assert_eq!(read_file(&at).unwrap(), b"hello");
+        assert_eq!(read_file(&root.join("data/plain.txt")).unwrap(), b"plain");
+        assert_eq!(plain_sha256(&at).unwrap(), {
+            use sha2::Digest;
+            <[u8; 32]>::from(sha2::Sha256::digest(b"hello"))
+        });
+        // Outside the scope stays plain.
+        assert_eq!(
+            write_file(&root, &root.join("note.txt"), b"x").unwrap(),
+            root.join("note.txt")
+        );
+
+        let out = dir("files-out");
+        let plain = copy_plain(&at, &out.join("sms.txt"), None).unwrap();
+        assert_eq!(fs::read(&plain).unwrap(), b"hello");
+        let other = Key::random();
+        let resealed = copy_plain(&at, &out.join("again.txt"), Some(&other)).unwrap();
+        assert_eq!(resealed, out.join("again.txt.pbenc"));
+        let back = crypt::decrypt_bytes(&other, &fs::read(&resealed).unwrap()).unwrap();
+        assert_eq!(back.as_slice(), b"hello");
+
+        forget(&root);
+        let err = read_file(&sms).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(write_file(&root, &sms, b"new").is_err());
+        assert_eq!(
+            read_file(&sms).map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::PermissionDenied)
+        );
+        assert!(!out.join("bad.txt.part").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&out);
+    }
+
+    #[test]
     fn json_round_trips_and_damage_is_refused() {
         let lock = Lock {
             id: "ab".into(),
@@ -361,6 +592,8 @@ mod tests {
             ("apps/com.x/base.apk", false, true),
             ("history/2026-11-10_143205/files/DCIM/a.jpg", false, true),
             ("history/2026-11-10_143205/run.json", false, false),
+            ("jpg/files/DCIM/a.jpg", false, true),
+            ("jpg/files/DCIM/a.jpg", false, true),
             ("checksums.sha256", false, false),
             ("report.txt", false, false),
             ("encryption.json", false, false),

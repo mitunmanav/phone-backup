@@ -245,11 +245,20 @@ fn upright(mut exif: Vec<u8>) -> Vec<u8> {
 /// merged into one. `contacts.vcf` is left as it is, so deleting the merged file undoes it.
 pub fn merge_contacts(folder: &Path) -> Result<String, String> {
     let src = folder.join("data").join("contacts.vcf");
-    let text = fs::read_to_string(&src).map_err(|_| {
-        "This backup has no contacts.vcf. Back up with contacts ticked first.".to_string()
-    })?;
+    let text = match backup::read_file(&src) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(e.to_string()),
+        Err(_) => {
+            return Err(
+                "This backup has no contacts.vcf. Back up with contacts ticked first.".into(),
+            );
+        }
+    };
     let (merged, before, after) = merge_vcards(&text);
-    fs::write(folder.join("data").join(MERGED), merged)
+    let out = folder.join("data").join(MERGED);
+    // A copy left from before the backup had a password goes, so only one is there.
+    let _ = fs::remove_file(crypt_or_plain_other(&out));
+    backup::write_file(folder, &out, merged.as_bytes())
         .map_err(|e| format!("Cannot save {MERGED}: {e}"))?;
     Ok(if before == after {
         format!(
@@ -266,6 +275,23 @@ pub fn merge_contacts(folder: &Path) -> Result<String, String> {
 }
 
 pub const MERGED: &str = "contacts-merged.vcf";
+
+/// The merged contacts file of the other kind: the sealed copy if the backup now writes plain
+/// files, else the plain one. Both are removed by Undo.
+fn crypt_or_plain_other(out: &Path) -> PathBuf {
+    match backup::stored(out) {
+        Some(p) if backup::is_sealed(&p) => out.to_path_buf(),
+        _ => backup::crypt::sealed_path(out),
+    }
+}
+
+/// Removes the merged contacts file, plain or sealed.
+pub fn unmerge_contacts(folder: &Path) -> Result<String, String> {
+    let out = folder.join("data").join(MERGED);
+    let at = backup::stored(&out).ok_or_else(|| format!("{MERGED} is already gone."))?;
+    fs::remove_file(&at).map_err(|e| format!("Cannot remove {MERGED}: {e}"))?;
+    Ok(format!("Removed {MERGED}. contacts.vcf was never changed."))
+}
 
 /// Merges vCards that share a name, a phone number (last 10 digits) or an email. Returns the
 /// merged file and the number of cards before and after.
@@ -565,6 +591,26 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].len(), 2);
         assert!(groups[0][0].0.ends_with("a.jpg"));
+    }
+
+    #[test]
+    fn merges_contacts_of_a_protected_backup_sealed() {
+        let f = std::env::temp_dir().join(format!("pb-merge-vcf-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&f);
+        fs::create_dir_all(f.join("data")).unwrap();
+        backup::set_password(&f, "pw", backup::Scope::Data).unwrap();
+        let card = "BEGIN:VCARD\nVERSION:3.0\nFN:Ann\nTEL:+15550100\nEND:VCARD\n";
+        backup::write_file(&f, &f.join("data/contacts.vcf"), card.repeat(2).as_bytes()).unwrap();
+        let said = merge_contacts(&f).unwrap();
+        assert!(said.starts_with("Merged 2 contacts into 1"), "{said}");
+        let out = f.join("data").join(MERGED);
+        assert!(!out.exists());
+        assert!(backup::read_text(&out).unwrap().contains("FN:Ann"));
+        assert!(unmerge_contacts(&f).unwrap().starts_with("Removed"));
+        assert!(backup::stored(&out).is_none());
+        backup::forget(&f);
+        assert!(merge_contacts(&f).unwrap_err().contains("password"));
+        let _ = fs::remove_dir_all(&f);
     }
 
     #[test]

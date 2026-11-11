@@ -232,12 +232,17 @@ pub fn as_of(root: &Path, name: &str) -> AsOf {
     v
 }
 
-/// `path` (inside the backup, with `/`) as of run `version`, or the latest for None.
+/// `path` (inside the backup, with `/`) as of run `version`, or the latest for None: the copy
+/// itself or its sealed copy. None when that version did not have it.
 pub fn file_as_of(root: &Path, version: Option<&str>, path: &str) -> Option<PathBuf> {
-    match version {
-        None => Some(root.join(path)),
-        Some(name) => as_of(root, name).file(root, path),
-    }
+    let v = match version {
+        None => return stored(&root.join(path)),
+        Some(name) => as_of(root, name),
+    };
+    [path.to_string(), format!("{path}.{}", crypt::EXT)]
+        .iter()
+        .filter_map(|p| v.file(root, p))
+        .find(|f| f.exists())
 }
 
 /// Records one run while it happens. Dropping it saves `run.json`, so a stopped or failed run
@@ -565,8 +570,14 @@ mod tests {
         rec.finish();
         assert_eq!(open(&crypt::sealed_path(&sms)), "two");
         assert_eq!(open(&dir2.join("data/sms.txt.pbenc")), "one");
-        let runs = runs(&root);
-        assert_eq!(runs.last().unwrap().replaced[0].path, "data/sms.txt.pbenc");
+        let all = runs(&root);
+        assert_eq!(all.last().unwrap().replaced[0].path, "data/sms.txt.pbenc");
+        // Each version reads back by the file's own name: the plain copy from before the
+        // password, the first sealed text, then the latest.
+        let read = |v: Option<&str>| read_text(&file_as_of(&root, v, "data/sms.txt").unwrap());
+        assert_eq!(read(Some(&all[0].name)).unwrap(), "one");
+        assert_eq!(read(None).unwrap(), "two");
+        assert_eq!(file_as_of(&root, None, "data/none.txt"), None);
         forget(&root);
         let _ = fs::remove_dir_all(&root);
     }

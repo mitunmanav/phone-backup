@@ -1097,10 +1097,25 @@ impl App {
     }
 
     /// Runs the job that stopped to ask for a password again.
-    fn unlocked(&mut self, ctx: &egui::Context, job: Job) {
-        if job == Job::Backup {
+    fn unlocked(&mut self, ctx: &egui::Context, job: Option<Job>) {
+        if job == Some(Job::Backup) {
             self.start(ctx);
         }
+    }
+
+    /// Asks for the backup's password when it has one not yet entered. True when it asked:
+    /// the caller then waits for the next click.
+    pub(crate) fn ask_password(&mut self, folder: &Path) -> bool {
+        let ask = backup::locked(folder);
+        if ask {
+            self.ask = Some(Ask::Unlock(
+                folder.to_path_buf(),
+                Default::default(),
+                None,
+                None,
+            ));
+        }
+        ask
     }
 
     pub(crate) fn open_restore_report(&self, ui: &mut egui::Ui) {

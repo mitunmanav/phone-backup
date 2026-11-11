@@ -301,6 +301,8 @@ fn attachment(
         return;
     };
     let mut clicked = false;
+    let sealed = backup::is_sealed(path);
+    let hint = if sealed { "Open" } else { "Show in folder" };
     if let Some(Some(texture)) = previews.get(path) {
         let image = egui::Image::new(texture)
             .corner_radius(4)
@@ -308,11 +310,16 @@ fn attachment(
         clicked = ui
             .add(image)
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Show in folder")
+            .on_hover_text(hint)
             .clicked();
     }
-    clicked |= ui.link(name).on_hover_text("Show in folder").clicked();
-    if clicked {
+    clicked |= ui.link(name).on_hover_text(hint).clicked();
+    // A sealed file means nothing in Explorer, so a plain copy opens instead.
+    if clicked && sealed {
+        if let Ok(copy) = backup::open_copy(path) {
+            let _ = backup::explorer().arg(copy).spawn();
+        }
+    } else if clicked {
         let mut explorer = backup::explorer();
         // Explorer reads this argument itself and does not accept it quoted as a whole.
         #[cfg(windows)]

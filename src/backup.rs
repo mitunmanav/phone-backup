@@ -949,6 +949,63 @@ mod tests {
     }
 
     #[test]
+    fn copies_between_protected_backups_keep_files_protected() {
+        let root = std::env::temp_dir().join(format!("pb-merge-sealed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (a, b, plain) = (root.join("A_1"), root.join("B_2"), root.join("C_3"));
+        for d in [&a, &b, &plain] {
+            fs::create_dir_all(d.join("files")).unwrap();
+            fs::create_dir_all(d.join("data")).unwrap();
+        }
+        set_password(&a, "a", Scope::Data).unwrap();
+        set_password(&b, "b", Scope::Data).unwrap();
+        write_file(&a, &a.join("data/sms.txt"), b"from a").unwrap();
+        write_file(&b, &b.join("data/sms.txt"), b"from b").unwrap();
+        write_file(&a, &a.join("data/same.txt"), b"same").unwrap();
+        write_file(&b, &b.join("data/same.txt"), b"same").unwrap();
+        fs::write(a.join("files/x.jpg"), "photo").unwrap();
+        fs::write(plain.join("data/calls.txt"), "plain calls").unwrap();
+
+        // A protected backup never copies into one that would hold its data plain.
+        let refused = merge_backups(&a, &plain, &|_| {}).unwrap_err();
+        assert!(refused.contains("has a password"), "{refused}");
+        assert!(!plain.join("data/sms.txt").exists());
+
+        let msg = merge_backups(&a, &b, &|_| {}).unwrap();
+        assert!(msg.starts_with("Copied 2 files. 1 file was"), "{msg}");
+        // Sealed again with B's key, and kept apart from B's own sms.txt.
+        assert_eq!(read_file(&b.join("data/sms (2).txt")).unwrap(), b"from a");
+        assert_eq!(read_file(&b.join("data/sms.txt")).unwrap(), b"from b");
+        assert!(b.join("data/sms (2).txt.pbenc").exists());
+        assert_eq!(fs::read(b.join("files/x.jpg")).unwrap(), b"photo");
+        // B's password file is its own.
+        assert_ne!(
+            fs::read(a.join(LOCK)).unwrap(),
+            fs::read(b.join(LOCK)).unwrap()
+        );
+        // A plain backup's data is sealed when copied into a protected one.
+        merge_backups(&plain, &b, &|_| {}).unwrap();
+        assert!(b.join("data/calls.txt.pbenc").exists());
+        assert!(!b.join("data/calls.txt").exists());
+        assert_eq!(
+            read_file(&b.join("data/calls.txt")).unwrap(),
+            b"plain calls"
+        );
+
+        // A backup whose password was not entered asks for it first.
+        forget(&a);
+        let asked = std::cell::Cell::new(false);
+        let err = merge_backups(&a, &b, &|m| {
+            asked.set(asked.get() | matches!(m, Msg::Locked(_)))
+        })
+        .unwrap_err();
+        assert_eq!(err, LOCKED);
+        assert!(asked.get());
+        forget(&b);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn renames_and_deletes_backups() {
         let root =
             std::env::temp_dir().join(format!("phone-backup-tidy-test-{}", std::process::id()));

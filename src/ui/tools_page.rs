@@ -449,6 +449,7 @@ impl App {
                 "read" => {
                     if primary(ui, t, "Open", can)
                         && let Some(f) = folder.clone()
+                        && !self.ask_password(&f)
                     {
                         let version = self.version_of(&f);
                         self.run_tool(ui.ctx(), "read", move |say| {
@@ -486,22 +487,14 @@ impl App {
                     if merged && let Some(f) = &folder {
                         let data = f.join("data");
                         if primary(ui, t, "Undo", true) {
-                            self.tool_msg = Some((
-                                "contacts",
-                                match fs::remove_file(data.join(tools::MERGED)) {
-                                    Ok(()) => Ok(format!(
-                                        "Removed {}. contacts.vcf was never changed.",
-                                        tools::MERGED
-                                    )),
-                                    Err(e) => Err(format!("Cannot remove {}: {e}", tools::MERGED)),
-                                },
-                            ));
+                            self.tool_msg = Some(("contacts", tools::unmerge_contacts(f)));
                         }
                         if quiet(ui, t, "Open folder", true).clicked() {
                             let _ = backup::explorer().arg(&data).spawn();
                         }
                     } else if primary(ui, t, "Merge duplicates", can)
                         && let Some(f) = folder.clone()
+                        && !self.ask_password(&f)
                     {
                         self.run_tool(ui.ctx(), "contacts", move |_| {
                             tools::Done::Text(tools::merge_contacts(&f))

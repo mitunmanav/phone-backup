@@ -193,6 +193,9 @@ impl App {
     /// Exports the backup's contacts, calls, messages, calendar and photos to its exports folder,
     /// then opens that folder.
     pub(crate) fn export(&mut self, ctx: &egui::Context, folder: PathBuf) {
+        if self.ask_password(&folder) {
+            return;
+        }
         self.begin(Job::Export);
         self.export_msg = None;
         let out = folder.join(export::EXPORTS);

@@ -128,7 +128,12 @@ enum Ask {
     Copy(PathBuf, Option<PathBuf>),
     /// A backup's password is needed: the backup, the password being typed, why the last try
     /// failed, and the job to run again once it is unlocked.
-    Unlock(PathBuf, zeroize::Zeroizing<String>, Option<String>, Job),
+    Unlock(
+        PathBuf,
+        zeroize::Zeroizing<String>,
+        Option<String>,
+        Option<Job>,
+    ),
 }
 
 struct App {
@@ -882,7 +887,7 @@ impl eframe::App for App {
                     self.scan(&dir);
                 }
                 Msg::Locked(root) => {
-                    self.ask = Some(Ask::Unlock(root, Default::default(), None, self.job));
+                    self.ask = Some(Ask::Unlock(root, Default::default(), None, Some(self.job)));
                 }
                 Msg::FolderSizes(sizes) => {
                     for (path, n) in sizes {
@@ -1070,8 +1075,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
-        // Unlocked backup keys are wiped from memory.
+        // Unlocked backup keys are wiped from memory, and opened copies of sealed files deleted.
         backup::forget_keys();
+        backup::remove_open_copies();
     }
 
     fn persist_egui_memory(&self) -> bool {
