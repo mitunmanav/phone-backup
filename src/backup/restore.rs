@@ -582,7 +582,8 @@ pub(super) fn restore_in(
         result = restore_apps(serial, folder, apps_only, check, report).map(&mut keep);
     }
     if pick.data && result.is_ok() {
-        result = restore_personal(serial, folder, pick.personal, check, report).map(&mut keep);
+        result =
+            restore_personal((serial, phone), folder, pick.personal, check, report).map(&mut keep);
     }
     let result = match result {
         Ok(()) => Ok((
@@ -618,11 +619,7 @@ pub fn transfer_check(
     pick: Pick,
     report: &dyn Fn(Msg),
 ) -> (Option<Run>, Result<String, String>) {
-    let source = Pick {
-        data: false,
-        ..pick.clone()
-    };
-    let (s, ran) = match adb_backup_run(from.0, from.1, dest, source, report) {
+    let (s, ran) = match adb_backup_run(from.0, from.1, dest, pick.clone(), report) {
         Ok(s) => s,
         Err(e) => return (None, Err(format!("Backing up {}: {e}", from.1))),
     };
@@ -634,11 +631,57 @@ pub fn transfer_check(
         );
     }
     let found = restore_in(to, &s.root, pick, Some(&ran), true, true, report);
+    // On screen only: the check is not saved, and names of accounts stay off disk.
+    let accounts = accounts(&shell(from.0, "dumpsys account"));
+    let sign_in = match accounts.is_empty() {
+        true => String::new(),
+        false => format!("\nSign in again on {}: {}.", to.1, accounts.join(", ")),
+    };
     let said = match found.map(|(m, _)| as_transfer(m)).map_err(as_transfer) {
-        Ok(m) => Ok(format!("{said}\n{m}")),
+        Ok(m) => Ok(format!("{said}\n{m}{sign_in}")),
         Err(e) => Err(format!("{said}\n{e}")),
     };
     (Some((s.root, ran)), said)
+}
+
+/// The accounts in `dumpsys account`, as "Google (a…@gmail.com)": each once, names masked.
+pub(super) fn accounts(dumpsys: &str) -> Vec<String> {
+    const NAMES: [(&str, &str); 8] = [
+        ("com.google", "Google"),
+        ("com.whatsapp", "WhatsApp"),
+        ("com.whatsapp.w4b", "WhatsApp Business"),
+        ("org.telegram.messenger", "Telegram"),
+        ("com.facebook.auth.login", "Facebook"),
+        ("com.osp.app.signin", "Samsung account"),
+        ("com.xiaomi", "Xiaomi account"),
+        ("com.microsoft.workaccount", "Microsoft"),
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for line in dumpsys.lines() {
+        let Some(rest) = line.trim().strip_prefix("Account {name=") else {
+            continue;
+        };
+        let Some((name, kind)) = rest
+            .strip_suffix('}')
+            .and_then(|r| r.rsplit_once(", type="))
+        else {
+            continue;
+        };
+        let kind = NAMES
+            .iter()
+            .find(|(t, _)| *t == kind)
+            .map_or(kind, |(_, n)| *n);
+        let first: String = name.chars().take(1).collect();
+        let masked = match name.split_once('@') {
+            Some((_, domain)) => format!("{first}…@{domain}"),
+            None => format!("{first}…"),
+        };
+        let said = format!("{kind} ({masked})");
+        if !out.contains(&said) {
+            out.push(said);
+        }
+    }
+    out
 }
 
 /// The restore's words as the Transfer page says them: a transfer ends in a restore.
@@ -688,6 +731,20 @@ pub fn transfer_now(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accounts_are_listed_once_and_masked() {
+        let dumpsys = "Accounts: 3\n    Account {name=ann.lee@gmail.com, type=com.google}\n    Account {name=+919876543210, type=com.whatsapp}\n    Account {name=x, type=org.example.sync}\n\nAccount visibility:\n    Account {name=ann.lee@gmail.com, type=com.google}\n";
+        assert_eq!(
+            super::accounts(dumpsys),
+            [
+                "Google (a…@gmail.com)",
+                "WhatsApp (+…)",
+                "org.example.sync (x…)"
+            ]
+        );
+        assert!(super::accounts("Accounts: 0\n").is_empty());
+    }
+
     #[test]
     fn transfer_words() {
         let said = super::as_transfer(

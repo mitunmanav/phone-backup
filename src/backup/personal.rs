@@ -354,7 +354,7 @@ const STOPPED_DATA: &str = "You stopped the restore. What was added so far stays
 /// Adds the chosen `which` of `PERSONAL` from the backup in `folder` to the phone. With `check`,
 /// changes nothing and says what a restore would add. Also returns how many items failed.
 pub fn restore_personal(
-    serial: &str,
+    (serial, phone): (&str, &str),
     folder: &Path,
     which: [bool; 4],
     check: bool,
@@ -443,7 +443,7 @@ pub fn restore_personal(
             continue;
         }
         if matches!(*kind, "sms" | "mms") && previous.is_none() {
-            let taken = take_sms_role(&helper, report, &mut previous);
+            let taken = take_sms_role(&helper, phone, report, &mut previous);
             if let Err(e) = taken {
                 result = Err(e);
                 break;
@@ -498,7 +498,7 @@ pub fn restore_personal(
     });
     // Also after a Stop or a failed switch: the user may have said yes on the phone anyway.
     if let Some(previous) = previous
-        && let Some(note) = give_back_sms_role(&mut helper, &previous, report)
+        && let Some(note) = give_back_sms_role(&mut helper, phone, &previous, report)
     {
         said.push(note);
     }
@@ -512,6 +512,7 @@ pub fn restore_personal(
 /// `previous` to the name of the app that was, to switch back to, before asking the user.
 fn take_sms_role(
     helper: &helper::Helper,
+    phone: &str,
     report: &dyn Fn(Msg),
     previous: &mut Option<String>,
 ) -> Result<(), String> {
@@ -522,9 +523,9 @@ fn take_sms_role(
         return Ok(());
     }
     *previous = Some(name);
-    report(Msg::Status(
-        "On the phone, choose Phone Backup Helper as the messages app for now. You switch back at the end.".into(),
-    ));
+    report(Msg::Status(format!(
+        "On {phone}, choose Phone Backup Helper as the messages app for now. You switch back at the end."
+    )));
     helper.ask_sms_role();
     let end = std::time::Instant::now() + Duration::from_secs(180);
     while std::time::Instant::now() < end {
@@ -545,6 +546,7 @@ fn take_sms_role(
 /// with none, and the returned note says so.
 fn give_back_sms_role(
     helper: &mut helper::Helper,
+    phone: &str,
     previous: &str,
     report: &dyn Fn(Msg),
 ) -> Option<String> {
@@ -552,7 +554,7 @@ fn give_back_sms_role(
         return None;
     }
     report(Msg::Status(format!(
-        "On the phone, choose {previous} as the messages app again."
+        "On {phone}, choose {previous} as the messages app again."
     )));
     helper.open_default_apps();
     let end = std::time::Instant::now() + Duration::from_secs(180);
@@ -566,7 +568,7 @@ fn give_back_sms_role(
     }
     helper.keep();
     Some(format!(
-        "Phone Backup Helper is still the phone's messages app, so it stays on the phone. In Settings, under Default apps, choose {previous} again; then you can uninstall Phone Backup Helper."
+        "Phone Backup Helper is still the messages app on {phone}, so it stays there. In Settings, under Default apps, choose {previous} again; then you can uninstall Phone Backup Helper."
     ))
 }
 
@@ -839,15 +841,18 @@ mod tests {
         ]);
         let which = [true, true, true, false];
         let quiet = |_| {};
-        let (said, _) = restore_personal(&serial, &dir, which, true, &quiet).unwrap();
+        let (said, _) =
+            restore_personal((&serial, "E2E phone"), &dir, which, true, &quiet).unwrap();
         assert_eq!(said.matches("will add all 1.").count(), 3, "{said}");
-        let (said, failed) = restore_personal(&serial, &dir, which, false, &quiet).unwrap();
+        let (said, failed) =
+            restore_personal((&serial, "E2E phone"), &dir, which, false, &quiet).unwrap();
         assert_eq!(
             (said.matches("added 1 of 1").count(), failed),
             (3, 0),
             "{said}"
         );
-        let (said, _) = restore_personal(&serial, &dir, which, false, &quiet).unwrap();
+        let (said, _) =
+            restore_personal((&serial, "E2E phone"), &dir, which, false, &quiet).unwrap();
         assert_eq!(said.matches("added 0 of 1").count(), 3, "{said}");
         let _ = fs::remove_dir_all(&dir);
     }

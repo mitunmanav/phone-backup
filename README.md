@@ -25,7 +25,7 @@ No account, no cloud. Your backup is an ordinary folder on your PC.
 |---|---|
 | **Back up** | Photos, videos, files, SD cards and installed apps, plus contacts, call history, messages and the calendar. Pick whole types or single folders; later backups copy only what changed, and you can pause and carry on later. |
 | **Restore** | Put files, apps, contacts, call history, calendar and messages back on any Android phone, files all of them or picked from a list with previews. Nothing the phone already has is replaced or added twice. **Verify** on the Restore page checks every file against its SHA-256 checksum. |
-| **Phone to phone** | Copy one phone straight to another, after seeing what will change. |
+| **Phone to phone** | Copy one phone straight to another, contacts and messages included, after seeing what will change and which accounts to sign in to again. |
 | **Read and export** | Read a backup's messages, contacts, calls and calendar in the app. Export them as spreadsheets, printable pages, `contacts.vcf` and `.ics`, and sort photos by month. |
 | **Tools** | Find duplicates, turn HEIC photos into JPG, merge duplicate contacts, free up phone space once files are safely backed up, and open the phone's screen with [scrcpy](https://github.com/Genymobile/scrcpy). |
 | **Connect your way** | USB file transfer, USB debugging, or Wi-Fi by scanning a QR code. The app shows the steps for your phone's brand and can fetch Google's adb for you. |
