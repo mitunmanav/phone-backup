@@ -42,5 +42,5 @@ To add a screen: add its file in `src/ui/`, a line in `src/ui.rs`, and a branch 
 - Include tests for changed backup, restore, parsing, or device-detection behavior.
 - Describe any manual checks, including Windows version and phone connection mode when relevant.
 - Call out changes that could affect existing backups or restore behavior.
-- Do not change `version` in `Cargo.toml`. Each merge that changes the app is published as the next patch version on its own. A maintainer raises `version` only to start a new minor or major version.
+- Version numbers: a bug fix needs nothing; its merge is published as the next patch (1.0.0 to 1.0.1) on its own. A pull request that adds a feature sets `version` in `Cargo.toml` to the next minor (1.1.0); a major change sets the next major (2.0.0). Later fixes count on from there.
 - Do not include real phone backups, contacts, messages, serial numbers, or unredacted logs in issues or pull requests.

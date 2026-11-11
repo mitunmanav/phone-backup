@@ -1,8 +1,9 @@
 name: Release
 
 # Every merge to main that changes the app publishes a new version, numbered by itself:
-# one past the newest release tag (1.0.1, 1.0.2, ...). To start a new minor or major
-# version, raise `version` in Cargo.toml; the next release uses it, then counts on from it.
+# one past the newest release tag (1.0.1, 1.0.2, ...) for a fix. A feature sets `version` in
+# Cargo.toml to the next minor (1.1.0), a major change to the next major (2.0.0); the next
+# release uses it, then counts on from it.
 on:
   push:
     branches: [main]
