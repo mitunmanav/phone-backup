@@ -281,7 +281,7 @@ impl App {
                                         ui.vertical(|ui| {
                                             ui.spacing_mut().interact_size.y = 20.0;
                                             ui.spacing_mut().item_spacing.y = 0.0;
-                                            let name = path
+                                            let name = backup::plain_path(path)
                                                 .file_name()
                                                 .map(|n| n.to_string_lossy().into_owned())
                                                 .unwrap_or_default();

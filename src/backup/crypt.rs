@@ -375,6 +375,22 @@ mod tests {
         assert_ne!(a.bytes(), d.bytes());
     }
 
+    /// How fast files are sealed and opened. Run with
+    /// `cargo test --release speed -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn speed() {
+        let (k, plain) = (key(9), sample(256 << 20));
+        let t = std::time::Instant::now();
+        let sealed = encrypt_bytes(&k, &plain);
+        let seal = t.elapsed();
+        let t = std::time::Instant::now();
+        decrypt_bytes(&k, &sealed).unwrap();
+        let open = t.elapsed();
+        let mbs = |d: std::time::Duration| 256.0 / d.as_secs_f64();
+        println!("seal {:.0} MB/s, open {:.0} MB/s", mbs(seal), mbs(open));
+    }
+
     #[test]
     fn no_sealed_file_has_impossible_sizes() {
         assert_eq!(plain_len(0), None);

@@ -52,7 +52,7 @@ pub fn duplicates(folder: &Path, say: &dyn Fn(String)) -> Result<Vec<Vec<(PathBu
                 files(total)
             ));
             done += 1;
-            if let Ok(h) = backup::sha256_bytes(&path) {
+            if let Ok(h) = backup::plain_sha256(&path) {
                 by_hash.entry(h).or_default().push(path);
             }
         }
@@ -115,7 +115,8 @@ pub fn heic_to_jpg(folder: &Path, say: &dyn Fn(String)) -> Result<String, String
         .into_iter()
         .map(|(p, ..)| p)
         .filter(|p| {
-            p.extension()
+            backup::plain_path(p)
+                .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("heic") || e.eq_ignore_ascii_case("heif"))
         })
         .collect();
@@ -133,15 +134,24 @@ pub fn heic_to_jpg(folder: &Path, say: &dyn Fn(String)) -> Result<String, String
             backup::count(i + 1),
             files(heic.len())
         ));
+        let plain = backup::plain_path(src);
         let dst = out_root
-            .join(src.strip_prefix(folder).unwrap_or(src))
+            .join(plain.strip_prefix(folder).unwrap_or(&plain))
             .with_extension("jpg");
-        if dst.exists() {
+        if backup::stored(&dst).is_some() {
             had += 1;
             continue;
         }
         let _ = fs::create_dir_all(dst.parent().unwrap_or(&out_root));
-        match to_jpg(src, &dst) {
+        // With scope "all" the JPG is sealed like the photo it came from.
+        let made_one = to_jpg(src, &dst).and_then(|()| match backup::seal_in(folder, &dst) {
+            Ok(None) => Ok(()),
+            Ok(Some(k)) => backup::copy_plain(&dst, &dst, Some(&k))
+                .and_then(|_| fs::remove_file(&dst))
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        });
+        match made_one {
             Ok(()) => made += 1,
             Err(_) => {
                 let _ = fs::remove_file(&dst);
@@ -174,7 +184,7 @@ pub fn heic_to_jpg(folder: &Path, say: &dyn Fn(String)) -> Result<String, String
 fn to_jpg(src: &Path, dst: &Path) -> Result<(), String> {
     use image::ImageEncoder;
     use zune_heic::zune_core::bytestream::ZCursor;
-    let data = fs::read(src).map_err(|e| e.to_string())?;
+    let data = backup::read_file(src).map_err(|e| e.to_string())?;
     let mut d = zune_heic::HeifDecoder::new(ZCursor::new(&data));
     let pixels = d.decode().map_err(|e| format!("{e:?}"))?;
     let (Some(w), Some(h), Some(cs)) = (d.width(), d.height(), d.colorspace()) else {
@@ -396,10 +406,16 @@ pub fn chosen_on_phone(
         .into_iter()
         .filter(|j| chosen.contains(&j.local))
         .map(|j| {
-            let sum = sums
-                .get(&backup::rel(folder, &j.local))
-                .cloned()
-                .unwrap_or_default();
+            // The phone holds the file itself, so a sealed copy is opened and hashed again.
+            let sum = if backup::is_sealed(&j.local) {
+                backup::plain_sha256(&j.local)
+                    .map(|h| h.iter().map(|b| format!("{b:02x}")).collect())
+                    .unwrap_or_default()
+            } else {
+                sums.get(&backup::rel(folder, &j.local))
+                    .cloned()
+                    .unwrap_or_default()
+            };
             (j.remote, j.size, sum)
         })
         .collect())

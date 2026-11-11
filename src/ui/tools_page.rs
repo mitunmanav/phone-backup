@@ -449,7 +449,7 @@ impl App {
                 "read" => {
                     if primary(ui, t, "Open", can)
                         && let Some(f) = folder.clone()
-                        && !self.ask_password(&f)
+                        && !self.ask_password(&f, false)
                     {
                         let version = self.version_of(&f);
                         self.run_tool(ui.ctx(), "read", move |say| {
@@ -472,7 +472,10 @@ impl App {
                     } else {
                         primary(ui, t, "Convert to JPG", can)
                     };
-                    if start && let Some(f) = folder.clone() {
+                    if start
+                        && let Some(f) = folder.clone()
+                        && !self.ask_password(&f, true)
+                    {
                         self.run_tool(ui.ctx(), "heic", move |say| {
                             tools::Done::Text(tools::heic_to_jpg(&f, say))
                         });
@@ -494,7 +497,7 @@ impl App {
                         }
                     } else if primary(ui, t, "Merge duplicates", can)
                         && let Some(f) = folder.clone()
-                        && !self.ask_password(&f)
+                        && !self.ask_password(&f, false)
                     {
                         self.run_tool(ui.ctx(), "contacts", move |_| {
                             tools::Done::Text(tools::merge_contacts(&f))
@@ -505,6 +508,7 @@ impl App {
                     let ready = can && serial.is_some() && !many && !chosen.is_empty();
                     if primary(ui, t, "Delete from phone…", ready)
                         && let (Some(f), Some(serial)) = (folder.clone(), serial.clone())
+                        && !self.ask_password(&f, true)
                     {
                         self.run_tool(ui.ctx(), "phone", move |say| {
                             say("Checking the files on the phone…".into());
@@ -682,7 +686,10 @@ impl App {
         } else {
             primary(ui, t, "Find duplicates", can)
         };
-        if start && let Some(f) = folder {
+        if start
+            && let Some(f) = folder
+            && !self.ask_password(&f, true)
+        {
             self.dupes = None;
             self.run_tool(ui.ctx(), "dupes", move |say| {
                 tools::Done::Dupes(tools::duplicates(&f, say))

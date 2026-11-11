@@ -741,6 +741,13 @@ pub(super) fn adb_backup_run(
             .and_then(|()| fs::write(root.join(RENAMED), text))
             .map_err(|e| format!("Cannot write in {}: {e}", root.display()))?;
     }
+    // With scope "all", files are kept sealed as X.pbenc; the names above stay the plain ones.
+    for j in &mut jobs {
+        if rec.seal_for(&j.local).is_some() {
+            j.local = crypt::sealed_path(&j.local);
+        }
+    }
+    let seal = rec.seal_for(&root.join("files").join("x")).cloned();
     let files = jobs.len();
     let mut listed: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
     let ran: HashSet<PathBuf> = listed.iter().cloned().collect();
@@ -791,7 +798,7 @@ pub(super) fn adb_backup_run(
         .map(|j| j.local.clone())
         .collect();
     let keep = |old: &Path| rec.keep_old(old).is_ok();
-    let errors = pull(serial, jobs, &root, report, &each, &keep);
+    let errors = pull(serial, jobs, &root, report, &each, &keep, seal.as_ref());
     for j in &tried {
         if !existed.contains(&j.local) && !needs_copy(j) {
             rec.added(&j.local, j.size);
@@ -1097,18 +1104,20 @@ pub(crate) fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
     out
 }
 
-/// True when the local copy is missing or differs in size or time.
+/// True when the local copy is missing or differs in size or time. A sealed copy is
+/// compared by the size of the file inside it.
 pub(super) fn needs_copy(job: &Job) -> bool {
     let Ok(meta) = fs::metadata(&job.local) else {
         return true;
     };
+    let len = plain_size(&job.local, meta.len());
     let local_mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs() as i64);
     // 2 s slack: exFAT/FAT drives store times in 2-second steps.
-    meta.len() != job.size || (local_mtime - job.mtime).abs() > 2
+    len != Some(job.size) || (local_mtime - job.mtime).abs() > 2
 }
 
 /// Copies jobs with one `adb pull` per folder (one per file is far slower), then checks each
@@ -1121,13 +1130,30 @@ pub(super) fn pull(
     report: &dyn Fn(Msg),
     each: &dyn Fn(&[Job]),
     keep: &dyn Fn(&Path) -> bool,
+    seal: Option<&crypt::Key>,
 ) -> Vec<String> {
     let total = jobs.len();
     let mut done = 0;
     let mut errors = Vec::new();
     let mut by_dir: BTreeMap<PathBuf, Vec<Job>> = BTreeMap::new();
+    let mut sealed_by_dir: BTreeMap<PathBuf, Vec<Job>> = BTreeMap::new();
     let mut single = Vec::new();
+    let tmp = root.join(".pulling");
     for job in jobs {
+        // Sealed files are pulled into a temporary folder a folder at a time, then sealed.
+        if is_sealed(&job.local) {
+            let plain = plain_path(&job.local);
+            let same_name =
+                plain.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
+            match (same_name && seal.is_some(), job.local.parent()) {
+                (true, Some(dir)) => sealed_by_dir
+                    .entry(dir.to_path_buf())
+                    .or_default()
+                    .push(job),
+                _ => single.push(job),
+            }
+            continue;
+        }
         // adb pull into a folder keeps the phone's file name, so renamed files go one by one.
         let same_name =
             job.local.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
@@ -1181,7 +1207,42 @@ pub(super) fn pull(
         done += jobs.len();
     }
 
-    let tmp = root.join(".pulling");
+    let batch_dir = tmp.join("batch");
+    for (dir, jobs) in sealed_by_dir {
+        let now = dir.strip_prefix(root).unwrap_or(&dir).display().to_string();
+        let Some(key) = seal else { continue };
+        for (n, batch) in jobs.chunks(100).enumerate() {
+            report(Msg::Progress {
+                done: done + n * 100,
+                total,
+                now: now.clone(),
+            });
+            if hold() {
+                let _ = fs::remove_dir_all(&tmp);
+                return errors;
+            }
+            let _ = fs::remove_dir_all(&batch_dir);
+            if fs::create_dir_all(&batch_dir)
+                .and_then(|()| fs::create_dir_all(&dir))
+                .is_err()
+            {
+                continue;
+            }
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a"])
+                .args(batch.iter().map(|j| &j.remote))
+                .arg(&batch_dir);
+            run(c);
+            for job in batch {
+                let name = job.remote.rsplit('/').next().unwrap_or_default();
+                seal_pulled(&batch_dir.join(name), job, key, keep);
+            }
+            each(batch);
+        }
+        record_failures(&jobs, &mut errors);
+        done += jobs.len();
+    }
+
     for job in &single {
         if hold() {
             break;
@@ -1194,7 +1255,16 @@ pub(super) fn pull(
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
         }
-        if too_long(&job.local) || job.local.exists() {
+        if let (true, Some(key)) = (is_sealed(&job.local), seal) {
+            let short = tmp.join("file");
+            let _ = fs::create_dir_all(&tmp);
+            let _ = fs::remove_file(&short);
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a", &job.remote])
+                .arg(&short);
+            run(c);
+            seal_pulled(&short, job, key, keep);
+        } else if too_long(&job.local) || job.local.exists() {
             // adb.exe cannot write past 260 characters; Rust's fs can, so pull short and move.
             let short = tmp.join("file");
             let _ = fs::create_dir_all(&tmp);
@@ -1224,6 +1294,22 @@ pub(super) fn pull(
         now: String::new(),
     });
     errors
+}
+
+/// Seals a whole pulled file into the job's place, once the older copy is kept. A cut-short
+/// file is dropped and counts as not copied.
+fn seal_pulled(pulled: &Path, job: &Job, key: &crypt::Key, keep: &dyn Fn(&Path) -> bool) {
+    if !fs::metadata(pulled).is_ok_and(|m| m.len() == job.size) {
+        let _ = fs::remove_file(pulled);
+        return;
+    }
+    if let Ok(part) = seal_beside(pulled, &job.local, key, Some(job.mtime)) {
+        if keep(&job.local) {
+            let _ = fs::rename(&part, &job.local);
+        } else {
+            let _ = fs::remove_file(&part);
+        }
+    }
 }
 
 /// Paths near Windows' 260-character limit, which adb.exe cannot write to.

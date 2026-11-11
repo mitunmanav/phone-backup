@@ -794,7 +794,9 @@ fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, St
         .iter()
         .map(|(p, ..)| p)
         .filter(|p| {
-            let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase());
+            let ext = backup::plain_path(p)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase());
             ext.is_some_and(|e| MEDIA.contains(&e.as_str()))
                 // Hidden folders hold thumbnails and app caches.
                 && !p.strip_prefix(root).unwrap_or(p).iter().any(|c| c.to_string_lossy().starts_with('.'))
@@ -823,9 +825,11 @@ fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, St
         };
         // shortcut: names are given in path order, so a same-named file added by a later backup
         // can shift which file gets " (2)"; fine while exports are rebuilt by hand when needed.
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-        let ext = path.extension().unwrap_or_default().to_string_lossy();
-        let mut target = dir.join(path.file_name().unwrap_or_default());
+        // A sealed photo is exported opened, under its own name.
+        let plain = backup::plain_path(path);
+        let stem = plain.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = plain.extension().unwrap_or_default().to_string_lossy();
+        let mut target = dir.join(plain.file_name().unwrap_or_default());
         let mut n = 1;
         while !taken.insert(target.to_string_lossy().to_lowercase()) {
             n += 1;
@@ -836,15 +840,26 @@ fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, St
         }
         fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
         // Drives without hard links (FAT, exFAT, network shares) get a copy instead.
-        if fs::hard_link(path, &target).is_err()
-            && let Err(e) = fs::copy(path, &target)
-        {
+        let copied = if backup::is_sealed(path) {
+            backup::copy_plain(path, &target, None).map(|_| ())
+        } else if fs::hard_link(path, &target).is_ok() {
+            Ok(())
+        } else {
+            fs::copy(path, &target).map(|_| ())
+        };
+        if let Err(e) = copied {
             // A half copy would be skipped as done by the next export.
             let _ = fs::remove_file(&target);
             return Err(format!("Cannot copy {}: {e}", path.display()));
         }
     }
     Ok(media.len())
+}
+
+/// `sort_photos` for tests in other modules.
+#[cfg(test)]
+pub(crate) fn sort_photos_for_test(root: &Path, to: &Path) {
+    sort_photos(root, to, &|_| {}).unwrap();
 }
 
 #[cfg(test)]

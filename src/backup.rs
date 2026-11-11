@@ -1006,6 +1006,77 @@ mod tests {
     }
 
     #[test]
+    fn protected_files_are_listed_and_compared_by_their_own_name_and_size() {
+        let root = std::env::temp_dir().join(format!("pb-all-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("files/DCIM")).unwrap();
+        fs::create_dir_all(root.join("apps/com.x")).unwrap();
+        set_password(&root, "pw", Scope::All).unwrap();
+        assert!(!needs_password(&root, true));
+        let k = key(&root).unwrap();
+
+        // A photo pulled to a temporary file, sealed in place with the phone's time.
+        let tmp = root.join("pulled.jpg");
+        fs::write(&tmp, "photo bytes").unwrap();
+        let photo = crypt::sealed_path(&root.join("files/DCIM/a.jpg"));
+        let part = seal_beside(&tmp, &photo, &k, Some(1_700_000_000)).unwrap();
+        assert!(!tmp.exists());
+        fs::rename(&part, &photo).unwrap();
+        let job = |size, mtime| Job {
+            remote: "/sdcard/DCIM/a.jpg".into(),
+            size,
+            mtime,
+            local: photo.clone(),
+        };
+        assert!(!needs_copy(&job(11, 1_700_000_000)));
+        assert!(needs_copy(&job(12, 1_700_000_000)));
+        assert!(needs_copy(&job(11, 1_700_000_100)));
+
+        write_file(&root, &root.join("apps/com.x/base.apk"), b"apk").unwrap();
+        let (jobs, _) = saved_files(&root, None).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].remote, "/sdcard/DCIM/a.jpg");
+        assert_eq!(jobs[0].size, 11);
+        assert_eq!(jobs[0].local, photo);
+        let apps = saved_apps(&root).unwrap();
+        assert_eq!(apps[0].1, [root.join("apps/com.x/base.apk.pbenc")]);
+
+        // Two identical sealed photos are found as copies, though their sealed bytes differ.
+        write_file(&root, &root.join("files/DCIM/b.jpg"), b"photo bytes").unwrap();
+        let dupes = crate::tools::duplicates(&root, &|_| {}).unwrap();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0].len(), 2);
+
+        // Photos export opened, under their own names.
+        let out = root.join("exports/photos");
+        crate::export::sort_photos_for_test(&root, &out);
+        let mut exported = Vec::new();
+        let mut stack = vec![out.clone()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).unwrap().flatten() {
+                match e.path() {
+                    p if p.is_dir() => stack.push(p),
+                    p => exported.push(p.to_string_lossy().into_owned()),
+                }
+            }
+        }
+        assert!(
+            exported.iter().any(|p| p.ends_with("a.jpg")),
+            "{exported:?}"
+        );
+        assert!(exported.iter().all(|p| !p.ends_with(".pbenc")));
+
+        forget(&root);
+        assert!(needs_password(&root, true) && needs_password(&root, false));
+        let _ = fs::remove_dir_all(&root);
+        let data_only = std::env::temp_dir().join(format!("pb-data-only-{}", std::process::id()));
+        set_password(&data_only, "pw", Scope::Data).unwrap();
+        forget(&data_only);
+        assert!(!needs_password(&data_only, true) && needs_password(&data_only, false));
+        let _ = fs::remove_dir_all(&data_only);
+    }
+
+    #[test]
     fn renames_and_deletes_backups() {
         let root =
             std::env::temp_dir().join(format!("phone-backup-tidy-test-{}", std::process::id()));

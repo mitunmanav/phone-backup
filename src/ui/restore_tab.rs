@@ -1103,10 +1103,11 @@ impl App {
         }
     }
 
-    /// Asks for the backup's password when it has one not yet entered. True when it asked:
-    /// the caller then waits for the next click.
-    pub(crate) fn ask_password(&mut self, folder: &Path) -> bool {
-        let ask = backup::locked(folder);
+    /// Asks for the backup's password when reading what the job needs takes one not yet
+    /// entered: personal data, or with `files` files and apps too. True when it asked: the
+    /// caller then waits for the next click.
+    pub(crate) fn ask_password(&mut self, folder: &Path, files: bool) -> bool {
+        let ask = backup::needs_password(folder, files);
         if ask {
             self.ask = Some(Ask::Unlock(
                 folder.to_path_buf(),

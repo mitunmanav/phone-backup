@@ -82,9 +82,16 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                 if is_junk(&format!("/sdcard/{path}")) || !pick.wants(&path, obj.size) {
                     continue;
                 }
+                // With scope "all", the file is kept sealed as X.pbenc.
+                let seal = rec.seal_for(&local);
+                let local = match seal {
+                    Some(_) => crypt::sealed_path(&local),
+                    None => local,
+                };
                 files += 1;
                 // shortcut: MTP compares size only (no file times); a same-size edit is missed.
-                if fs::metadata(&local).is_ok_and(|m| m.len() == obj.size) {
+                if fs::metadata(&local).is_ok_and(|m| plain_size(&local, m.len()) == Some(obj.size))
+                {
                     kept.push(local);
                     continue;
                 }
@@ -113,9 +120,18 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                             .map_err(|e| e.to_string())?;
                     }
                     drop(out);
+                    let ready = match seal {
+                        Some(key) => {
+                            seal_beside(&part, &local, key, None).map_err(|e| e.to_string())?
+                        }
+                        None => part.clone(),
+                    };
                     // Only a fully downloaded file gets its real name, once the older copy is kept.
-                    rec.keep_old(&local).map_err(|e| e.to_string())?;
-                    fs::rename(&part, &local).map_err(|e| e.to_string())
+                    if let Err(e) = rec.keep_old(&local) {
+                        let _ = fs::remove_file(&ready);
+                        return Err(e.to_string());
+                    }
+                    fs::rename(&ready, &local).map_err(|e| e.to_string())
                 }
                 .await;
                 match result {

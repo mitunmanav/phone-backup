@@ -412,6 +412,57 @@ pub fn seal_in(root: &Path, path: &Path) -> std::io::Result<Option<crypt::Key>> 
     }
 }
 
+/// Seals the plain file `tmp` into a side file beside `sealed`, with the file time `mtime`
+/// (Unix seconds) when given, and deletes `tmp`. Returns the side file, for the caller to
+/// rename into place once the older copy is kept.
+pub fn seal_beside(
+    tmp: &Path,
+    sealed: &Path,
+    key: &crypt::Key,
+    mtime: Option<i64>,
+) -> std::io::Result<PathBuf> {
+    let mut part = sealed.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let written = (|| {
+        let mut r = std::io::BufReader::new(fs::File::open(tmp)?);
+        let mut w = std::io::BufWriter::new(fs::File::create(&part)?);
+        crypt::encrypt(key, &mut r, &mut w)?;
+        let file = w.into_inner().map_err(|e| e.into_error())?;
+        if let Some(t) = mtime {
+            file.set_modified(UNIX_EPOCH + Duration::from_secs(t.max(0) as u64))?;
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_file(tmp);
+    match written {
+        Ok(()) => Ok(part),
+        Err(e) => {
+            let _ = fs::remove_file(&part);
+            Err(e)
+        }
+    }
+}
+
+/// The plain size of the file stored at `path`, sealed or not.
+pub fn plain_size(path: &Path, stored_len: u64) -> Option<u64> {
+    if is_sealed(path) {
+        crypt::plain_len(stored_len)
+    } else {
+        Some(stored_len)
+    }
+}
+
+/// True when reading the backup needs a password not yet entered: for its personal data, or
+/// with `files` for its files and apps, which only scope "all" protects.
+pub fn needs_password(root: &Path, files: bool) -> bool {
+    locked(root)
+        && (!files
+            || lock_of(root)
+                .map(|l| l.is_none_or(|l| l.scope == Scope::All))
+                .unwrap_or(true))
+}
+
 /// Writes `bytes` to `path` in backup `root`, sealed when its password protects that place.
 /// Returns where the file is.
 pub fn write_file(root: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
