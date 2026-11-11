@@ -11,6 +11,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 mod adb;
 mod checksums;
+pub mod crypt;
 mod helper;
 mod history;
 mod merge;
