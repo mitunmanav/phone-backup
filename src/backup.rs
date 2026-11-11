@@ -17,16 +17,17 @@ mod history;
 mod lock;
 mod merge;
 mod mtp;
+mod protect;
 mod report;
 mod restore;
 
 pub use adb::*;
 pub use checksums::*;
 pub use history::*;
-#[allow(unused_imports)]
 pub use lock::*;
 pub use merge::*;
 pub use mtp::*;
+pub use protect::*;
 pub use report::*;
 pub use restore::*;
 

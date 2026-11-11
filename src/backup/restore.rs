@@ -156,6 +156,8 @@ pub struct Saved {
     pub age_days: Option<u64>,
     /// None until a worker has added it up.
     pub bytes: Option<u64>,
+    /// It has a password.
+    pub password: bool,
 }
 
 /// The folder itself when it is a backup, else the backups inside it, newest first.
@@ -206,6 +208,7 @@ pub(super) fn saved(path: &Path) -> Option<Saved> {
             .and_then(|s| s.elapsed().ok())
             .map(|d| d.as_secs() / 86_400),
         bytes: None,
+        password: has_password(path),
     })
 }
 

@@ -2,8 +2,6 @@
 //! this session. The file holds the Argon2id settings and salt, the data key wrapped by the
 //! password's key, what the password protects, and the data key wrapped by the recovery key.
 //! It never holds the password or the data key itself.
-// Callers arrive with the writers, readers and settings in the next steps.
-#![allow(dead_code)]
 
 use super::crypt::{self, Key};
 use super::*;
@@ -30,6 +28,14 @@ impl Scope {
     }
 }
 
+/// A change to the backup's files that was started and not finished (stopped, or the app
+/// closed): sealing them for the scope, or opening them all before the password goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pending {
+    Protect,
+    Remove,
+}
+
 /// A backup's `encryption.json`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lock {
@@ -44,6 +50,7 @@ pub struct Lock {
     pub scope: Scope,
     /// The data key wrapped by the recovery key's key, when one was made.
     recovery: Option<Vec<u8>>,
+    pub pending: Option<Pending>,
 }
 
 impl Lock {
@@ -59,6 +66,11 @@ impl Lock {
             "key": hex(&self.wrapped),
             "scope": self.scope.word(),
             "recovery": self.recovery.as_deref().map(hex),
+            "unfinished": match self.pending {
+                Some(Pending::Protect) => Some("protect"),
+                Some(Pending::Remove) => Some("remove"),
+                None => None,
+            },
         });
         serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"
     }
@@ -90,6 +102,11 @@ impl Lock {
             recovery: match &v["recovery"] {
                 serde_json::Value::Null => None,
                 r => Some(r.as_str().and_then(unhex).ok_or_else(bad)?),
+            },
+            pending: match v["unfinished"].as_str() {
+                Some("protect") => Some(Pending::Protect),
+                Some("remove") => Some(Pending::Remove),
+                _ => None,
             },
         })
     }
@@ -172,6 +189,7 @@ pub fn set_password(root: &Path, password: &str, scope: Scope) -> Result<(), Str
         wrapped: crypt::wrap(&crypt::from_password(password, &salt, m, t, p)?, &data),
         scope,
         recovery: None,
+        pending: None,
     };
     save(root, &lock)?;
     keys().insert(lock.id, data);
@@ -203,6 +221,13 @@ pub fn change_password(root: &Path, password: &str) -> Result<(), String> {
 pub fn set_scope(root: &Path, scope: Scope) -> Result<(), String> {
     let mut lock = lock_of(root)?.ok_or("This backup has no password.")?;
     lock.scope = scope;
+    save(root, &lock)
+}
+
+/// Marks a change to the backup's files as started (Some) or finished (None).
+pub(super) fn set_pending(root: &Path, pending: Option<Pending>) -> Result<(), String> {
+    let mut lock = lock_of(root)?.ok_or("This backup has no password.")?;
+    lock.pending = pending;
     save(root, &lock)
 }
 
@@ -620,6 +645,7 @@ mod tests {
             wrapped: vec![255, 0],
             scope: Scope::All,
             recovery: Some(vec![9]),
+            pending: Some(Pending::Remove),
         };
         assert_eq!(Lock::from_json(&lock.to_json()).unwrap(), lock);
         assert!(Lock::from_json("{}").is_err());

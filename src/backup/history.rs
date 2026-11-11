@@ -245,6 +245,36 @@ pub fn file_as_of(root: &Path, version: Option<&str>, path: &str) -> Option<Path
         .find(|f| f.exists())
 }
 
+/// Rewrites every run's file names with `name` (a sealed file's name changes when its
+/// backup's password is turned on or off). A replaced copy whose name changed, or that is in
+/// `fresh` (rewritten), gets the SHA-256 of its new bytes.
+pub(super) fn rename_in_runs(
+    root: &Path,
+    name: &dyn Fn(&Path, &str) -> String,
+    fresh: &HashSet<PathBuf>,
+) {
+    for mut run in runs(root) {
+        let dir = root.join(HISTORY).join(&run.name);
+        let before = run.clone();
+        for (p, _) in &mut run.added {
+            *p = name(root, p);
+        }
+        for r in &mut run.replaced {
+            let new = name(&dir, &r.path);
+            if new != r.path || fresh.contains(&dir.join(&new)) {
+                r.sum = sha256(&dir.join(&new)).ok();
+                r.path = new;
+            }
+        }
+        if run != before {
+            let part = dir.join(format!("{RUN}.part"));
+            if fs::write(&part, run.to_json()).is_ok() {
+                let _ = fs::rename(&part, dir.join(RUN));
+            }
+        }
+    }
+}
+
 /// Records one run while it happens. Dropping it saves `run.json`, so a stopped or failed run
 /// still lists the copies it moved aside.
 pub(super) struct Recorder {

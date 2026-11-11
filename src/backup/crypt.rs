@@ -9,8 +9,6 @@
 //!   cut short, reordered or with a changed byte fails to open instead of opening wrong.
 //!
 //! Files are read and written a chunk at a time, so videos never sit whole in memory.
-// Callers arrive with the writers and readers in the next steps.
-#![allow(dead_code)]
 
 use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit, Nonce};
