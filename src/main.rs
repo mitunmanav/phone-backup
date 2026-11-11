@@ -916,42 +916,48 @@ impl eframe::App for App {
         }
         if self.confirm_close {
             let transfer = self.tab == Tab::Transfer && self.job == Job::Restore;
-            let modal = egui::Modal::new(egui::Id::unique("confirm_close")).frame(dialog_frame(ui.ctx())).show(ui.ctx(), |ui| {
-                ui.set_max_width(ui.available_width().min(320.0));
-                let (title, body) = match self.job {
-                    _ if transfer => ("Stop the transfer?", "Files copied so far are kept."),
-                    Job::Restore => ("Stop restoring?", "Everything restored so far stays on the phone."),
-                    Job::Backup => ("Stop the backup?", "Files copied so far are kept. The next backup continues where this one stopped."),
-                    Job::Copy => ("Stop copying?", "Files copied so far stay in the backup."),
-                    Job::Verify => ("Stop checking the backup?", "The backup is not changed. You can check it again later."),
-                    Job::Export => ("Stop exporting?", "Files exported so far are kept. The backup itself is not changed."),
-                    Job::Delete => ("Close when the delete ends?", "Windows is moving the backup to the Recycle Bin. The window closes when it has finished."),
-                };
-                ui.label(RichText::new(title).font(semibold(16.0)));
-                ui.label(body);
-                ui.horizontal(|ui| {
-                    let (go, stay) = match self.job {
-                        _ if transfer => ("Stop and close", "Keep transferring"),
-                        Job::Restore => ("Stop and close", "Keep restoring"),
-                        Job::Backup => ("Stop and close", "Keep backing up"),
-                        Job::Copy => ("Stop and close", "Keep copying"),
-                        Job::Delete => ("Close when done", "Keep open"),
-                        Job::Verify => ("Stop and close", "Keep checking"),
-                        Job::Export => ("Stop and close", "Keep exporting"),
-                    };
-                    let go = if self.stop_only { "Stop" } else { go };
-                    if ui.button(go).clicked() {
-                        backup::STOP.store(true, Ordering::Relaxed);
-                        self.closing = !self.stop_only;
-                        self.confirm_close = false;
-                    }
-                    if ui.button(stay).clicked() {
-                        self.confirm_close = false;
-                    }
-                });
-            });
+            let (title, body) = match self.job {
+                _ if transfer => ("Stop the transfer?", "Files copied so far are kept."),
+                Job::Restore => (
+                    "Stop restoring?",
+                    "Everything restored so far stays on the phone.",
+                ),
+                Job::Backup => (
+                    "Stop the backup?",
+                    "Files copied so far are kept. The next backup continues where this one stopped.",
+                ),
+                Job::Copy => ("Stop copying?", "Files copied so far stay in the backup."),
+                Job::Verify => (
+                    "Stop checking the backup?",
+                    "The backup is not changed. You can check it again later.",
+                ),
+                Job::Export => (
+                    "Stop exporting?",
+                    "Files exported so far are kept. The backup itself is not changed.",
+                ),
+                Job::Delete => (
+                    "Close when the delete ends?",
+                    "Windows is moving the backup to the Recycle Bin. The window closes when it has finished.",
+                ),
+            };
+            let (go, stay) = match self.job {
+                _ if transfer => ("Stop and close", "Keep transferring"),
+                Job::Restore => ("Stop and close", "Keep restoring"),
+                Job::Backup => ("Stop and close", "Keep backing up"),
+                Job::Copy => ("Stop and close", "Keep copying"),
+                Job::Delete => ("Close when done", "Keep open"),
+                Job::Verify => ("Stop and close", "Keep checking"),
+                Job::Export => ("Stop and close", "Keep exporting"),
+            };
+            let go = if self.stop_only { "Stop" } else { go };
             // Esc or a click outside means keep going, the safe answer.
-            if modal.should_close() {
+            if let Some(yes) = confirm(ui.ctx(), title, go, stay, true, |ui| {
+                ui.add(egui::Label::new(body).wrap());
+            }) {
+                if yes {
+                    backup::STOP.store(true, Ordering::Relaxed);
+                    self.closing = !self.stop_only;
+                }
                 self.confirm_close = false;
             }
         }

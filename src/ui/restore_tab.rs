@@ -879,6 +879,7 @@ impl App {
                     ctx,
                     &format!("Delete the backup of {name}?"),
                     "Delete",
+                    "Cancel",
                     true,
                     |ui| {
                         ui.label("This moves the whole folder to the Recycle Bin:");
@@ -887,16 +888,18 @@ impl App {
                     },
                 )
             }
-            Ask::Rename(_, name, err) => confirm(ctx, "Rename backup", "Rename", true, |ui| {
-                let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
-                r.request_focus();
-                if let Some(e) = err {
-                    ui.label(RichText::new(e.as_str()).color(t.error));
-                }
-                ui.label(muted(
-                    "The next backup of this phone starts a new folder with its usual name.",
-                ));
-            }),
+            Ask::Rename(_, name, err) => {
+                confirm(ctx, "Rename backup", "Rename", "Cancel", true, |ui| {
+                    let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+                    r.request_focus();
+                    if let Some(e) = err {
+                        ui.label(RichText::new(e.as_str()).color(t.error));
+                    }
+                    ui.label(muted(
+                        "The next backup of this phone starts a new folder with its usual name.",
+                    ));
+                })
+            }
             Ask::Copy(from, into) => {
                 let (name, _) = label_of(from);
                 let others: Vec<_> = self
@@ -915,6 +918,7 @@ impl App {
                     ctx,
                     "Copy files into another backup",
                     "Copy files",
+                    "Cancel",
                     into.is_some(),
                     |ui| {
                         ui.label(format!(
