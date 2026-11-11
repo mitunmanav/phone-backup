@@ -83,3 +83,57 @@ archive file** for moving a backup to another disk or person, not in shrinking i
 ## Not in this group
 
 Cloud upload of archives (not planned), signing releases (14).
+
+## As built
+
+Built on branch `ccr-b9ef6697-ktzzs2` (this work session's branch), on top of group 03, rather
+than `plan/04-encryption-and-archives`.
+
+- `src/backup/crypt.rs`: Argon2id (64 MiB, 3 passes, 1 lane) turns the password into a key that
+  wraps a random data key with AES-256-GCM. **Change from the plan:** each `X.pbenc` starts
+  with `PBE1` and a random 32-byte file id instead of one 12-byte nonce. The file is sealed in
+  1 MiB chunks with AES-256-GCM under a key made for that file alone (HKDF-SHA256 of the data
+  key and the id); the nonce holds the chunk number and a last-chunk flag. A cut, reordered or
+  changed file fails to open. Known-answer tests were checked against Python's `cryptography`.
+  About 760 MB/s sealing and 620 MB/s opening on one core, far above what USB delivers.
+- `src/backup/lock.rs`: `encryption.json` holds the settings, salt, wrapped key, scope
+  (`data` or `all`), the key wrapped by the recovery key, and an `unfinished` mark. Unlocked
+  keys live in memory for the session, by the backup's random id (so a rename keeps them), and
+  are wiped when the app closes. Helpers read, hash, copy and write files plain or sealed.
+- Writers: personal data, picture-message files and merged contacts are sealed when the scope
+  covers `data/`; unchanged data is compared with the text inside the sealed copy. With scope
+  `all`, adb pulls a folder at a time into a temporary folder and seals each whole file into
+  place with the phone's file time; MTP seals each download. Sealed copies are compared by the
+  size inside them, so unchanged files are still skipped. Checksums cover the sealed bytes, so
+  Verify needs no password.
+- Readers: export, Read page (previews in memory, attachments open as temporary plain copies),
+  history versions, restore (each file opened to a temporary file before `adb push`; app
+  installers to a temporary folder), Find duplicates, Free up space (hashes of the files
+  themselves), HEIC to JPG (JPGs sealed too) and photo export. Each job asks for the password
+  first when it needs one; files and apps need it only with scope `all`.
+- **Change from the plan:** turning the password on or off, or changing its scope, needs no
+  progress file. `src/backup/protect.rs` writes each file whole under its new name with its
+  old time before deleting the old one, then renames the checksums and every `run.json`. Run
+  again after Stop or a crash, it carries on. The Lock dialog offers to finish such a change.
+- UI: **Lock** on each backup in Restore sets a password (typed twice, at least 8 characters,
+  personal data or everything, an "I understand" tick), then shows the recovery key once with
+  Copy and a printable page. With a password it can change it (one value rewrapped), protect
+  more or less, lock now, make a new recovery key, or remove the password after a confirm.
+  The password prompt offers the recovery key; after using it a new password is asked for.
+- Copy into another backup refuses a target that would hold protected files plain, and seals
+  files again with the target's key.
+- **Change from the plan:** "Open archive" unpacks the zip into the backup folder as a new
+  backup rather than reading the zip in place. Archives hold plain files (sealed ones opened)
+  with a fresh `checksums.sha256` and `phone-backup-archive.json`; a backup with a password can
+  only be saved with a zip password (WinZip AES-256). A zip made from a protected backup comes
+  back protected with the zip's password and the same scope, with a new recovery key.
+- Exports stay ordinary files, and the export result says so. File names, sizes, dates, the
+  checksums and the version lists stay visible; the FAQ says so.
+- Tests: round trips, wrong password, cut, changed and reordered files, conversion on, wider,
+  after a simulated crash and off with Verify passing each time, merges between protected
+  backups, archives with and without a password. The ignored `e2e_password_protected_backup`
+  needs a phone or emulator and has not been run yet. 7-Zip opening a password zip is a manual
+  check on Windows.
+- Not done: restoring contacts, calls, messages and calendar to the phone comes from group 01
+  (#90). When 01 merges, its readers must read through `read_file`, and its restore must ask
+  for the password first.

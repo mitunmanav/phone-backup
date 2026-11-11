@@ -1587,6 +1587,99 @@ mod tests {
         let _ = fs::remove_dir_all(&dest);
     }
 
+    /// Needs a phone or emulator (PB_E2E_SERIAL). A backup protected with scope "all" keeps its
+    /// files and data sealed, skips unchanged files, passes Verify without the key, restores an
+    /// older sealed version to the phone, and comes back plain when the password goes.
+    #[test]
+    #[ignore]
+    fn e2e_password_protected_backup() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let dest = std::env::temp_dir().join(format!("pb-e2e-password-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let pick = Pick {
+            apps: false,
+            folders: ["E2E".to_string()].into(),
+            ..Pick::default()
+        };
+        let quiet = |_: Msg| {};
+        let put = |text: &str| {
+            shell(
+                &serial,
+                &format!("mkdir -p /sdcard/E2E/Docs; echo {text} > /sdcard/E2E/Docs/secret.txt"),
+            );
+            std::thread::sleep(Duration::from_secs(3));
+        };
+        put("first");
+        let one = adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
+        let root = one.root;
+        set_password(&root, "e2e password", Scope::All).unwrap();
+        protect(&root, &quiet).unwrap();
+        let sealed = root.join("files/E2E/Docs/secret.txt.pbenc");
+        assert!(sealed.exists() && !root.join("files/E2E/Docs/secret.txt").exists());
+
+        put("second");
+        let two = adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
+        // Only the changed file was copied again, though every file is sealed.
+        assert_eq!(two.copied, 1, "{:?}", two.errors);
+        assert_eq!(read_text(&sealed).unwrap(), "second\n");
+        if root.join("data").is_dir() {
+            let plain_data = walk_files(&root.join("data"));
+            assert!(plain_data.iter().all(|p| is_sealed(p)), "{plain_data:?}");
+        }
+        forget(&root);
+        assert!(verify(&root, &quiet).is_ok());
+        unlock(&root, "e2e password").unwrap();
+
+        let runs = runs(&root);
+        let first = runs.first().unwrap().name.clone();
+        shell(&serial, "rm /sdcard/E2E/Docs/secret.txt");
+        let only: HashSet<PathBuf> = backup_files(&root, Some(&first))
+            .unwrap()
+            .into_iter()
+            .map(|f| f.0)
+            .filter(|f| f.to_string_lossy().contains("secret.txt"))
+            .collect();
+        let files_only = Pick {
+            apps: false,
+            ..Pick::default()
+        };
+        let (said, failed) = restore_version(
+            &serial,
+            "E2E",
+            &root,
+            files_only,
+            Some(&only),
+            Some(&first),
+            false,
+            &quiet,
+        )
+        .unwrap();
+        assert_eq!(failed, 0, "{said}");
+        assert_eq!(shell(&serial, "cat /sdcard/E2E/Docs/secret.txt"), "first\n");
+
+        unprotect(&root, &quiet).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("files/E2E/Docs/secret.txt")).unwrap(),
+            "second\n"
+        );
+        assert!(verify(&root, &quiet).is_ok());
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    /// Every file under `dir`.
+    fn walk_files(dir: &Path) -> Vec<PathBuf> {
+        let (mut out, mut stack) = (Vec::new(), vec![dir.to_path_buf()]);
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).into_iter().flatten().flatten() {
+                match e.path() {
+                    p if p.is_dir() => stack.push(p),
+                    p => out.push(p),
+                }
+            }
+        }
+        out
+    }
+
     /// Needs the emulator (PB_E2E_SERIAL). Stop during the contacts, calls and messages step ends
     /// the backup and leaves the last full copy of that data as it was.
     #[test]

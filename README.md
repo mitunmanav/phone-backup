@@ -27,7 +27,8 @@ No account, no cloud. Your backup is an ordinary folder on your PC.
 | **Restore** | Put files and apps back on any Android phone, all of them or picked from a list with previews. Pick **Version** to restore the backup as it was after any earlier backup. Files the phone already has are never replaced. **Verify** on the Restore page checks every file against its SHA-256 checksum. |
 | **Phone to phone** | Copy one phone straight to another, after seeing what will change. |
 | **Read and export** | Read a backup's messages, contacts, calls and calendar in the app. Export them as spreadsheets, printable pages, `contacts.vcf` and `.ics`, and sort photos by month. |
-| **Tools** | Find duplicates, turn HEIC photos into JPG, merge duplicate contacts, free up phone space once files are safely backed up, and open the phone's screen with [scrcpy](https://github.com/Genymobile/scrcpy). |
+| **Password** | **Lock** on the Restore page encrypts a backup with your password (AES-256-GCM, Argon2id): personal data, or everything. A recovery key opens it if the password is forgotten. Verify still works without the password. |
+| **Tools** | Find duplicates, turn HEIC photos into JPG, merge duplicate contacts, free up phone space once files are safely backed up, save a backup as one `.zip` (optionally with a password 7-Zip opens) and open one again, and open the phone's screen with [scrcpy](https://github.com/Genymobile/scrcpy). |
 | **Connect your way** | USB file transfer, USB debugging, or Wi-Fi by scanning a QR code. The app shows the steps for your phone's brand and can fetch Google's adb for you. |
 
 ## Get started
@@ -40,7 +41,7 @@ The [guide](https://phonebackup.oddlybuilt.in/guide) covers Wi-Fi, restoring and
 
 ## Privacy
 
-The app goes online only when you click **Get adb** (to download it from Google) or **Check for updates** (to ask GitHub). It never sends your data: no account, ads or tracking. To read contacts, calls, messages and the calendar, it puts a small open-source helper app on the phone and removes it afterwards. Backups are not encrypted, so keep them on a drive only you use. Details are in the [FAQ](https://phonebackup.oddlybuilt.in/faq#privacy).
+The app goes online only when you click **Get adb** (to download it from Google) or **Check for updates** (to ask GitHub). It never sends your data: no account, ads or tracking. To read contacts, calls, messages and the calendar, it puts a small open-source helper app on the phone and removes it afterwards. Backups are ordinary files unless you give one a password with **Lock**; the password is never saved, and only the recovery key can stand in for it. Details are in the [FAQ](https://phonebackup.oddlybuilt.in/faq#privacy).
 
 ## Build from source
 
@@ -72,10 +73,10 @@ Work after 1.0 is split into small groups, and each one ships as its own release
 
 - Put contacts, call history, calendar and messages back on a phone ([#90](https://github.com/mitunmanav/phone-backup/pull/90)), and move them in **Phone to phone** too ([#91](https://github.com/mitunmanav/phone-backup/pull/91)).
 - Backup history: keep older copies of changed files and restore from any earlier backup.
+- Password-protected backups, and saving a backup as a single archive.
 
 **Next**
 
-- Password-protected backups, and saving a backup as a single archive.
 - WhatsApp: save its local backup and move it to a new Android phone.
 
 **Later**
