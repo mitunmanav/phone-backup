@@ -4,6 +4,7 @@ impl App {
     pub(crate) fn start(&mut self, ctx: &egui::Context) {
         let phones = self.phones.clone().unwrap_or_default();
         let (dest, pick) = (self.dest.clone(), self.pick.clone());
+        let (_, keep, months) = KEEP[self.keep];
         self.begin(Job::Backup);
         self.result = None;
         let fail = |e| Msg::Done(Err(e));
@@ -15,19 +16,34 @@ impl App {
                     _ => None,
                 })
                 .collect();
+            // Older versions go only after a backup that copied everything it was asked to.
+            let prune = |s: &mut backup::Summary| {
+                if s.errors.is_empty()
+                    && let Err(e) = backup::prune(&s.root, keep, months)
+                {
+                    s.notes
+                        .push(format!("Older versions could not all be removed: {e}"));
+                }
+            };
             let result = if let Err(e) = fs::create_dir_all(&dest) {
                 Err(format!(
                     "Cannot use the folder {}: {e}. Choose another folder.",
                     dest.display()
                 ))
             } else if adb.is_empty() {
-                backup::mtp_backup(&dest, &pick, report).map(|s| vec![s])
+                backup::mtp_backup(&dest, &pick, report).map(|mut s| {
+                    prune(&mut s);
+                    vec![s]
+                })
             } else {
                 // One phone failing (say, unplugged) must not skip the others.
                 let (mut done, mut failed) = (Vec::new(), Vec::new());
                 for (serial, model) in &adb {
                     match backup::adb_backup(serial, model, &dest, pick.clone(), report) {
-                        Ok(s) => done.push(s),
+                        Ok(mut s) => {
+                            prune(&mut s);
+                            done.push(s)
+                        }
                         Err(e) if adb.len() > 1 => failed.push(format!("{model}: {e}")),
                         Err(e) => failed.push(e),
                     }
@@ -116,6 +132,7 @@ impl App {
         self.checking = check.then(|| plan.clone());
         let (serial, folder, files, apps, only) = plan;
         let phone = self.model_of(&serial);
+        let version = self.version_of(&folder);
         self.restore_report = (!check).then(|| folder.join(backup::RESTORE_REPORT));
         let fail = |e| Msg::Restored(Err(e));
         self.spawn_job(ctx, fail, move |report| {
@@ -125,17 +142,40 @@ impl App {
                 data: false,
                 ..Pick::default()
             };
-            let result = backup::restore(
+            let result = backup::restore_version(
                 &serial,
                 &phone,
                 &folder,
                 pick,
                 only.as_deref(),
+                version.as_deref(),
                 check,
                 report,
             );
             Msg::Restored(result)
         });
+    }
+
+    /// The older version chosen for `folder`, or None for the latest.
+    pub(crate) fn version_of(&self, folder: &Path) -> Option<String> {
+        self.version
+            .as_ref()
+            .filter(|(f, _)| f == folder)
+            .map(|(_, name)| name.clone())
+    }
+
+    /// Restores and reads `folder` as of run `name` from now on (None: the latest). Files picked
+    /// and a check made for another version no longer apply.
+    pub(crate) fn use_version(&mut self, folder: PathBuf, name: Option<String>) {
+        if self.version_of(&folder) == name {
+            return;
+        }
+        if self.only.as_ref().is_some_and(|(f, ..)| *f == folder) {
+            self.only = None;
+        }
+        self.preview = None;
+        self.restore_msg = None;
+        self.version = name.map(|n| (folder, n));
     }
 
     /// Re-hashes a backup's files in a worker and compares them with its checksums.

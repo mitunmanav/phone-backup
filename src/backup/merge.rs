@@ -116,7 +116,8 @@ pub(super) fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Copies every file of backup `from` into backup `into`. A file already there with the same
 /// bytes is skipped; one with different bytes is never replaced: the copy gets " (2)", " (3)"...
-/// The reports are left out (each backup keeps its own). Returns what it did, in plain words.
+/// The reports are left out (each backup keeps its own), and so are older versions: they
+/// describe `from` and would not match `into`'s files. Returns what it did, in plain words.
 pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
     if saved(from).is_none() || saved(into).is_none() {
         return Err("Both folders must be phone backups.".into());
@@ -132,6 +133,9 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             .flatten()
         {
             let path = entry.path();
+            if dir == from && entry.file_name() == HISTORY {
+                continue;
+            }
             if path.is_dir() {
                 stack.push(path);
             } else if !(dir == from
@@ -220,6 +224,15 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
         files(same),
         were(same)
     );
+    let older = runs(from).len();
+    if older > 0 {
+        msg += &format!(
+            " Its {} older {} stay in {}, since they belong to that backup.",
+            count(older),
+            if older == 1 { "version" } else { "versions" },
+            from.display()
+        );
+    }
     if renamed_n > 0 {
         msg += &format!(
             " {} had the same name as a different file, so {} saved with \" (2)\" added.",

@@ -260,9 +260,49 @@ pub(crate) fn saved_files(
     Ok((jobs, missing))
 }
 
-/// Every file a backup could restore, with its size and time (Unix seconds), in phone-path order.
-pub fn backup_files(folder: &Path) -> Result<Vec<(PathBuf, u64, i64)>, String> {
-    Ok(saved_files(folder, None)?
+/// `saved_files` as the backup was right after run `version`; None for the latest. A file a
+/// later run replaced is read from that run's history; one added later is left out.
+pub(crate) fn saved_files_as_of(
+    folder: &Path,
+    volumes: Option<&str>,
+    version: Option<&str>,
+) -> Result<(Vec<Job>, Vec<String>), String> {
+    let (mut jobs, missing) = saved_files(folder, volumes)?;
+    if let Some(name) = version {
+        let root = if folder.file_name().is_some_and(|n| n == "files") {
+            folder.parent().unwrap_or(folder)
+        } else {
+            folder
+        };
+        let v = as_of(root, name);
+        jobs = jobs
+            .into_iter()
+            .filter_map(|mut j| {
+                let local = v.file(root, &rel(root, &j.local))?;
+                if local != j.local {
+                    let meta = fs::metadata(&local).ok()?;
+                    j.size = meta.len();
+                    j.mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_secs() as i64);
+                    j.local = local;
+                }
+                Some(j)
+            })
+            .collect();
+    }
+    Ok((jobs, missing))
+}
+
+/// Every file a backup could restore, with its size and time (Unix seconds), in phone-path
+/// order, as of run `version` (None: the latest).
+pub fn backup_files(
+    folder: &Path,
+    version: Option<&str>,
+) -> Result<Vec<(PathBuf, u64, i64)>, String> {
+    Ok(saved_files_as_of(folder, None, version)?
         .0
         .into_iter()
         .map(|j| (j.local, j.size, j.mtime))
@@ -305,18 +345,21 @@ pub fn flags(list: &[(PathBuf, u64, i64)], now: i64) -> Vec<u8> {
 /// Copies the photos and files of a backup back to the phone, skipping any file the phone
 /// already has, so restoring twice copies nothing twice and nothing on the phone is replaced.
 /// With `check`, copies nothing and says what a restore would do. `only` limits it to those
-/// files of the backup. Also returns how many files could not be copied.
+/// files of the backup, and `version` to the backup as of that run. Also returns how many files
+/// could not be copied.
 pub fn restore_files(
     serial: &str,
     folder: &Path,
     only: Option<&HashSet<PathBuf>>,
+    version: Option<&str>,
     check: bool,
     report: &dyn Fn(Msg),
 ) -> Result<(String, usize), String> {
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
-    let (mut jobs, missing) = saved_files(folder, Some(&shell(serial, "ls /storage")))?;
+    let volumes = shell(serial, "ls /storage");
+    let (mut jobs, missing) = saved_files_as_of(folder, Some(&volumes), version)?;
     jobs.retain(|j| only.is_none_or(|o| o.contains(&j.local)));
     let total = jobs.len();
 
@@ -542,24 +585,39 @@ const DISCONNECTED_APPS: &str = "The phone was disconnected. Apps installed so f
 /// nothing on the phone and says what a restore would do; otherwise saves the restore report
 /// in the backup folder. `phone` names the phone in that report. Also returns how many files
 /// and apps failed.
-pub fn restore(
+/// `version` restores the backup as it was right after that run; None restores the latest.
+/// Apps always come from the latest: an app's older installer is rarely wanted back.
+#[allow(clippy::too_many_arguments)]
+pub fn restore_version(
     serial: &str,
     phone: &str,
     folder: &Path,
     pick: Pick,
     only: Option<&HashSet<PathBuf>>,
+    version: Option<&str>,
     check: bool,
     report: &dyn Fn(Msg),
 ) -> Result<(String, usize), String> {
-    restore_in((serial, phone), folder, pick, only, false, check, report)
+    restore_in(
+        (serial, phone),
+        folder,
+        pick,
+        only,
+        version,
+        false,
+        check,
+        report,
+    )
 }
 
 /// `restore` for phone (serial, name); with `apps_too`, `only` limits the apps as well as the files.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn restore_in(
     (serial, phone): (&str, &str),
     folder: &Path,
     pick: Pick,
     only: Option<&HashSet<PathBuf>>,
+    version: Option<&str>,
     apps_too: bool,
     check: bool,
     report: &dyn Fn(Msg),
@@ -571,7 +629,7 @@ pub(super) fn restore_in(
     };
     let mut result = Ok(());
     if pick.files {
-        result = restore_files(serial, folder, only, check, report).map(&mut keep);
+        result = restore_files(serial, folder, only, version, check, report).map(&mut keep);
     }
     if pick.apps && result.is_ok() {
         let apps_only = only.filter(|_| apps_too);
@@ -593,7 +651,7 @@ pub(super) fn restore_in(
 }
 
 /// A backup folder and the files and app installers one run put or kept in it.
-pub(super) type Run = (PathBuf, HashSet<PathBuf>);
+pub(super) type RunFiles = (PathBuf, HashSet<PathBuf>);
 
 /// Phone to phone, first step: backs up `from` (serial, model), then checks what restoring that
 /// backup to `to` would do. Returns the new backup's folder and the files and apps of this run, once
@@ -604,7 +662,7 @@ pub fn transfer_check(
     dest: &Path,
     pick: Pick,
     report: &dyn Fn(Msg),
-) -> (Option<Run>, Result<String, String>) {
+) -> (Option<RunFiles>, Result<String, String>) {
     let source = Pick {
         data: false,
         ..pick.clone()
@@ -620,7 +678,7 @@ pub fn transfer_check(
             files(s.errors.len())
         );
     }
-    let found = restore_in(to, &s.root, pick, Some(&ran), true, true, report);
+    let found = restore_in(to, &s.root, pick, Some(&ran), None, true, true, report);
     let said = match found.map(|(m, _)| as_transfer(m)).map_err(as_transfer) {
         Ok(m) => Ok(format!("{said}\n{m}")),
         Err(e) => Err(format!("{said}\n{e}")),
@@ -664,7 +722,7 @@ pub fn transfer_now(
             ),
         };
     }
-    match restore_in(to, folder, pick, Some(ran), true, false, report)
+    match restore_in(to, folder, pick, Some(ran), None, true, false, report)
         .map(|(m, n)| (as_transfer(m), n))
         .map_err(as_transfer)
     {
