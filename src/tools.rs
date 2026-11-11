@@ -27,6 +27,8 @@ pub enum Done {
     Text(Result<String, String>),
     /// A backup read for the Read page.
     Book(Result<crate::export::Book, String>),
+    /// An archive unpacked into a new backup.
+    Opened(Result<backup::Opened, String>),
 }
 
 /// Identical files in the backup's photos and files: same size first, then the same SHA-256.

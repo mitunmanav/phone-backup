@@ -21,6 +21,7 @@ aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "al
 getrandom = "0.4"
 hkdf = "0.13"
 zeroize = "1.9"
+zip = { version = "9.5.1", default-features = false, features = ["aes-crypto", "deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Media_Audio","Win32_System_SystemInformation", "Win32_System_Power", "Win32_System_Time", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

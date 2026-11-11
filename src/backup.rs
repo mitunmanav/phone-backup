@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 mod adb;
+mod archive;
 mod checksums;
 pub mod crypt;
 mod helper;
@@ -22,6 +23,7 @@ mod report;
 mod restore;
 
 pub use adb::*;
+pub use archive::*;
 pub use checksums::*;
 pub use history::*;
 pub use lock::*;

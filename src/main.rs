@@ -179,6 +179,16 @@ enum Ask {
     ),
     /// A new recovery key, shown once, and whether the user ticked that they kept it.
     Recovery(PathBuf, zeroize::Zeroizing<String>, bool),
+    /// Saving a backup as one zip: the backup, the password typed twice (none for a plain
+    /// archive), and why the last try was refused.
+    Archive(
+        PathBuf,
+        zeroize::Zeroizing<String>,
+        zeroize::Zeroizing<String>,
+        Option<String>,
+    ),
+    /// Opening a zip that has a password: the file, the password, why the last try failed.
+    OpenArchive(PathBuf, zeroize::Zeroizing<String>, Option<String>),
     /// The password dialog of a backup.
     Password(PathBuf, PwStep),
 }
@@ -613,7 +623,7 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [history] [settings] [sound] [privacy] [license] [intro[=<step>]]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-6>] [history] [settings] [sound] [privacy] [license] [intro[=<step>]]
         // [delete|rename|copy|password|password-menu|unlock|recovery] [light|dark] [wifi] [busy [paused]] [stopask] [stoptool] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; paused shows it paused; stopask asks whether to stop it; stoptool asks whether to stop a running duplicate search; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
@@ -1024,6 +1034,17 @@ impl eframe::App for App {
                     self.confirm = Some(Confirm::Phone(serial, list, left));
                 }
                 tools::Done::Text(r) => self.tool_msg = Some((which, r)),
+                tools::Done::Opened(r) => {
+                    let said = r.as_ref().map(|o| o.said.clone()).map_err(Clone::clone);
+                    self.tool_msg = Some((which, said));
+                    if let Ok(o) = r {
+                        let dir = self.scanned.clone();
+                        self.scan(&dir);
+                        if let Some(key) = o.recovery {
+                            self.ask = Some(Ask::Recovery(o.folder, key.into(), false));
+                        }
+                    }
+                }
             }
         }
 

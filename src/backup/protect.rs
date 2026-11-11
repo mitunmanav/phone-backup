@@ -143,6 +143,13 @@ fn rename_lists(root: &Path, fresh: &HashSet<PathBuf>) {
     rename_in_runs(root, &by_rule, fresh);
 }
 
+/// Points a backup's lists at its files as they are now and works out every sum again: for a
+/// backup unpacked from an archive, whose files are all plain.
+pub(super) fn relist(root: &Path) {
+    let all: HashSet<PathBuf> = backup_files_all(root).into_iter().collect();
+    rename_lists(root, &all);
+}
+
 /// Seals the backup's files for its password's scope: on a new password, after the scope
 /// changed, or to finish a change that was stopped.
 pub fn protect(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {

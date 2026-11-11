@@ -1060,6 +1060,59 @@ impl App {
                 let (name, _) = label_of(path);
                 recovery_dialog(ctx, t, &name, key, kept)
             }
+            Ask::Archive(path, pw, again, err) => {
+                let (name, _) = label_of(path);
+                let must = backup::has_password(path);
+                let ready = !must || (!pw.is_empty() && !again.is_empty());
+                confirm(
+                    ctx,
+                    &format!("Save {name} as one file"),
+                    "Choose where…",
+                    "Cancel",
+                    ready,
+                    |ui| {
+                        ui.label(if must {
+                        "This backup has a password, so the archive gets one too. It can be the same password or another."
+                    } else {
+                        "A password is optional. Without one, anyone with the file can open it."
+                    });
+                        for (label, text) in
+                            [("Password", &mut *pw), ("Type it again", &mut *again)]
+                        {
+                            ui.label(label);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut **text)
+                                    .password(true)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        }
+                        if let Some(e) = err {
+                            ui.label(RichText::new(e.as_str()).color(t.error));
+                        }
+                        ui.label(muted("With a password, 7-Zip opens the archive and asks for it; Windows' own zip folders cannot. Photos and videos are stored as they are, so the file is about as big as the backup."));
+                    },
+                )
+            }
+            Ask::OpenArchive(_, pw, err) => {
+                let ready = !pw.is_empty();
+                confirm(
+                    ctx,
+                    "Password for this archive",
+                    "Open",
+                    "Cancel",
+                    ready,
+                    |ui| {
+                        let edit = egui::TextEdit::singleline(&mut **pw)
+                            .password(true)
+                            .desired_width(f32::INFINITY);
+                        ui.add(edit).request_focus();
+                        if let Some(e) = err {
+                            ui.label(RichText::new(e.as_str()).color(t.error));
+                        }
+                        ui.label(muted("It is unpacked into your backup folder as a new backup. If it came from a backup with a password, it gets this password."));
+                    },
+                )
+            }
             Ask::History(path, runs, pick) => {
                 let (name, _) = label_of(path);
                 confirm(
@@ -1140,6 +1193,21 @@ impl App {
                     }
                 }
                 Some(Ask::Recovery(..)) => {}
+                Some(Ask::Archive(path, pw, again, _)) => {
+                    if pw.is_empty() && again.is_empty() {
+                        self.save_zip(ctx, path, None);
+                    } else if pw.chars().count() < 8 || *pw != *again {
+                        let why = if *pw != *again {
+                            "The two passwords are not the same."
+                        } else {
+                            "Use at least 8 characters."
+                        };
+                        self.ask = Some(Ask::Archive(path, pw, again, Some(why.into())));
+                    } else {
+                        self.save_zip(ctx, path, Some(pw.to_string()));
+                    }
+                }
+                Some(Ask::OpenArchive(zip, pw, _)) => self.open_zip(ctx, zip, Some(pw.to_string())),
                 Some(Ask::Rename(path, name, _)) => match backup::rename_backup(&path, &name) {
                     Ok(new) => {
                         self.choose(Some(new.clone()));
