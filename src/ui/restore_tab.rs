@@ -1015,31 +1015,50 @@ impl App {
                     ));
                 })
             }
-            Ask::Unlock(path, password, err, _) => {
+            Ask::Unlock(path, password, err, _, recovery) => {
                 let (name, _) = label_of(path);
                 let ready = !password.is_empty();
-                confirm(
-                    ctx,
-                    &format!("Password for {name}"),
-                    "Unlock",
-                    "Cancel",
-                    ready,
-                    |ui| {
-                        ui.label("This backup is protected with a password.");
-                        let edit = egui::TextEdit::singleline(&mut **password)
-                            .password(true)
-                            .desired_width(f32::INFINITY);
-                        ui.add(edit).request_focus();
-                        if let Some(e) = err {
-                            ui.label(RichText::new(e.as_str()).color(t.error));
-                        }
-                        ui.label(muted("It stays unlocked until you close Phone Backup."));
-                    },
-                )
+                let title = if *recovery {
+                    format!("Recovery key for {name}")
+                } else {
+                    format!("Password for {name}")
+                };
+                let can_recover = backup::has_recovery(path);
+                confirm(ctx, &title, "Unlock", "Cancel", ready, |ui| {
+                    ui.label(if *recovery {
+                        "Type the recovery key you kept when the password was set."
+                    } else {
+                        "This backup is protected with a password."
+                    });
+                    let edit = egui::TextEdit::singleline(&mut **password)
+                        .password(!*recovery)
+                        .desired_width(f32::INFINITY);
+                    ui.add(edit).request_focus();
+                    if let Some(e) = err {
+                        ui.label(RichText::new(e.as_str()).color(t.error));
+                    }
+                    let other = match (*recovery, can_recover) {
+                        (true, _) => Some("Use the password instead"),
+                        (false, true) => Some("Forgot the password? Use the recovery key"),
+                        (false, false) => None,
+                    };
+                    if let Some(other) = other
+                        && ui.link(other).clicked()
+                    {
+                        *recovery = !*recovery;
+                        password.clear();
+                        *err = None;
+                    }
+                    ui.label(muted("It stays unlocked until you close Phone Backup."));
+                })
             }
             Ask::Password(path, step) => {
                 let (name, _) = label_of(path);
                 password_dialog(ctx, t, path, &name, step)
+            }
+            Ask::Recovery(path, key, kept) => {
+                let (name, _) = label_of(path);
+                recovery_dialog(ctx, t, &name, key, kept)
             }
             Ask::History(path, runs, pick) => {
                 let (name, _) = label_of(path);
@@ -1095,11 +1114,32 @@ impl App {
                 Some(Ask::History(path, _, pick)) => self.use_version(path, pick),
                 Some(Ask::Copy(from, into)) => self.tidy(ctx, Job::Copy, from, into),
                 Some(Ask::Password(path, step)) => self.password_step(ctx, path, step),
-                Some(Ask::Unlock(path, password, _, job)) => match backup::unlock(&path, &password)
-                {
-                    Ok(()) => self.unlocked(ctx, job),
-                    Err(e) => self.ask = Some(Ask::Unlock(path, password, Some(e), job)),
-                },
+                Some(Ask::Unlock(path, password, _, job, recovery)) => {
+                    let opened = if recovery {
+                        backup::unlock_with_recovery(&path, &password)
+                    } else {
+                        backup::unlock(&path, &password)
+                    };
+                    match opened {
+                        Ok(()) => {
+                            self.unlocked(ctx, job);
+                            // The password was forgotten, so a new one is asked for.
+                            if recovery {
+                                let step = PwStep::Change {
+                                    pw: Default::default(),
+                                    again: Default::default(),
+                                    err: None,
+                                };
+                                self.ask = Some(Ask::Password(path, step));
+                            }
+                        }
+                        Err(e) => {
+                            let ask = Ask::Unlock(path, password, Some(e), job, recovery);
+                            self.ask = Some(ask);
+                        }
+                    }
+                }
+                Some(Ask::Recovery(..)) => {}
                 Some(Ask::Rename(path, name, _)) => match backup::rename_backup(&path, &name) {
                     Ok(new) => {
                         self.choose(Some(new.clone()));
@@ -1144,7 +1184,13 @@ impl App {
                     backup::Scope::Data
                 };
                 match check(&pw, &again).and_then(|()| backup::set_password(&path, &pw, scope)) {
-                    Ok(()) => self.protect(ctx, path, false),
+                    Ok(()) => {
+                        let key = backup::make_recovery(&path);
+                        self.protect(ctx, path.clone(), false);
+                        if let Ok(key) = key {
+                            self.ask = Some(Ask::Recovery(path, key.into(), false));
+                        }
+                    }
                     Err(e) => {
                         let err = Some(e);
                         let step = PwStep::New {
@@ -1198,6 +1244,13 @@ impl App {
                 }
             },
             PwStep::Lock => backup::forget(&path),
+            PwStep::NewRecovery => match backup::make_recovery(&path) {
+                Ok(key) => self.ask = Some(Ask::Recovery(path, key.into(), false)),
+                Err(e) => {
+                    self.job = Job::Protect;
+                    self.tidy_msg = Some(Err(e));
+                }
+            },
         }
     }
 
@@ -1219,6 +1272,7 @@ impl App {
                 Default::default(),
                 None,
                 None,
+                false,
             ));
         }
         ask
@@ -1284,7 +1338,7 @@ fn password_dialog(
                 ui.radio_value(all, true, "Everything copied from the phone");
                 ui.label(muted("Photos, videos and files then open only through Phone Backup, not with a double-click in Explorer."));
                 ui.add_space(6.0);
-                ui.checkbox(sure, "I understand that a lost password cannot be recovered, not even by Phone Backup.");
+                ui.checkbox(sure, "I understand that without the password or the recovery key shown next, nobody can open this backup, not even Phone Backup.");
                 ui.label(muted("File names stay visible. Exports are ordinary files and are not protected. Changing a large backup takes a while; you can stop and finish later."));
             })
         }
@@ -1362,6 +1416,20 @@ fn password_dialog(
                     if quiet(ui, t, words, pending.is_none()).clicked() {
                         next = Some(PwStep::Scope(widen));
                     }
+                    let (words, hint) = if backup::has_recovery(path) {
+                        (
+                            "New recovery key…",
+                            "Makes a new recovery key. The old one stops working.",
+                        )
+                    } else {
+                        (
+                            "Make a recovery key…",
+                            "A key that opens the backup if the password is forgotten.",
+                        )
+                    };
+                    if quiet(ui, t, words, true).on_hover_text(hint).clicked() {
+                        next = Some(PwStep::NewRecovery);
+                    }
                     if quiet(ui, t, "Lock now", true)
                         .on_hover_text("Asks for the password again before the backup is read.")
                         .clicked()
@@ -1386,5 +1454,72 @@ fn password_dialog(
                 None => answer,
             }
         }
+    }
+}
+
+/// Shows a new recovery key once, with Copy and a printable page.
+fn recovery_dialog(
+    ctx: &egui::Context,
+    t: &Tokens,
+    name: &str,
+    key: &str,
+    kept: &mut bool,
+) -> Option<bool> {
+    let muted = |s: &str| RichText::new(s).color(t.muted);
+    confirm(
+        ctx,
+        "Keep your recovery key",
+        "Done",
+        "Close",
+        *kept,
+        |ui| {
+            ui.label("If the password is ever forgotten, this key opens the backup instead. It is shown only now.");
+            ui.add_space(8.0);
+            ui.label(RichText::new(key).monospace().size(18.0).color(t.ink));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if quiet(ui, t, "Copy", true).clicked() {
+                    ui.ctx().copy_text(key.to_string());
+                }
+                if quiet(ui, t, "Save printable page…", true).clicked()
+                    && let Some(file) = rfd::FileDialog::new()
+                        .set_file_name(format!("Phone Backup recovery key - {name}.html"))
+                        .add_filter("Web page", &["html"])
+                        .save_file()
+                    && fs::write(&file, recovery_page(name, key)).is_ok()
+                {
+                    let _ = backup::explorer().arg(&file).spawn();
+                }
+            });
+            ui.label(muted("Keep it away from this computer: printed, or in a password manager. Anyone with this key can open the backup."));
+            ui.add_space(6.0);
+            ui.checkbox(kept, "I have kept the recovery key somewhere safe.");
+        },
+    )
+}
+
+/// A page to print with the backup's name and its recovery key.
+fn recovery_page(name: &str, key: &str) -> String {
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Recovery key</title>\n<style>body{{font:16px/1.5 system-ui,sans-serif;max-width:40em;margin:3em auto;padding:0 1em;color:#111}}code{{display:block;font:24px/1.4 monospace;letter-spacing:.05em;margin:1em 0;padding:.6em;border:2px solid #111;text-align:center}}</style></head>\n<body><h1>Phone Backup recovery key</h1>\n<p>Backup: <strong>{}</strong></p>\n<code>{}</code>\n<p>If the password of this backup is forgotten, choose <em>Use the recovery key</em> when Phone Backup asks for it, and type this key. Then choose a new password.</p>\n<p>Anyone with this key can open the backup. Keep this page somewhere safe, away from the computer that holds the backup, and delete the file once it is printed.</p>\n</body></html>\n",
+        esc(name),
+        esc(key)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn recovery_page_holds_the_key_and_escapes_the_name() {
+        let page = super::recovery_page("Mum's <phone>", "ABCD-EFGH");
+        assert!(page.contains("<code>ABCD-EFGH</code>"));
+        assert!(page.contains("Mum's &lt;phone&gt;"));
+        assert!(page.starts_with("<!doctype html>\n"));
     }
 }

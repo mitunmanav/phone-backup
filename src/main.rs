@@ -130,6 +130,7 @@ enum PwStep {
     Finish,
     Scope(backup::Scope),
     Lock,
+    NewRecovery,
 }
 
 impl PwStep {
@@ -166,14 +167,18 @@ enum Ask {
     Rename(PathBuf, String, Option<String>),
     /// The backup to copy from, and the one chosen to copy into.
     Copy(PathBuf, Option<PathBuf>),
-    /// A backup's password is needed: the backup, the password being typed, why the last try
-    /// failed, and the job to run again once it is unlocked.
+    /// A backup's password is needed: the backup, the password (or recovery key) being typed,
+    /// why the last try failed, the job to run again once it is unlocked, and whether the
+    /// recovery key is typed instead of the password.
     Unlock(
         PathBuf,
         zeroize::Zeroizing<String>,
         Option<String>,
         Option<Job>,
+        bool,
     ),
+    /// A new recovery key, shown once, and whether the user ticked that they kept it.
+    Recovery(PathBuf, zeroize::Zeroizing<String>, bool),
     /// The password dialog of a backup.
     Password(PathBuf, PwStep),
 }
@@ -609,7 +614,7 @@ impl App {
             shot: None,
         };
         // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [history] [settings] [sound] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy|password|password-menu|unlock] [light|dark] [wifi] [busy [paused]] [stopask] [stoptool] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // [delete|rename|copy|password|password-menu|unlock|recovery] [light|dark] [wifi] [busy [paused]] [stopask] [stoptool] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; paused shows it paused; stopask asks whether to stop it; stoptool asks whether to stop a running duplicate search; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
@@ -661,7 +666,8 @@ impl App {
                         let pick = Some(runs[1].name.clone());
                         app.ask = Some(Ask::History(b.unwrap_or_default(), runs, pick));
                     }
-                    "delete" | "rename" | "copy" | "password" | "password-menu" | "unlock" => {
+                    "delete" | "rename" | "copy" | "password" | "password-menu" | "unlock"
+                    | "recovery" => {
                         app.tab = Tab::Restore;
                         let b = app
                             .backups
@@ -683,6 +689,12 @@ impl App {
                                 Default::default(),
                                 Some("That password does not open this backup.".into()),
                                 None,
+                                false,
+                            ),
+                            "recovery" => Ask::Recovery(
+                                b,
+                                "K7QF-M2XA-PL4D-RRTE-WB3N-C6HJ-ZS5V-GU2Y".to_string().into(),
+                                false,
                             ),
                             _ => Ask::Copy(b, into),
                         });
@@ -937,7 +949,8 @@ impl eframe::App for App {
                     self.scan(&dir);
                 }
                 Msg::Locked(root) => {
-                    self.ask = Some(Ask::Unlock(root, Default::default(), None, Some(self.job)));
+                    let job = Some(self.job);
+                    self.ask = Some(Ask::Unlock(root, Default::default(), None, job, false));
                 }
                 Msg::FolderSizes(sizes) => {
                     for (path, n) in sizes {

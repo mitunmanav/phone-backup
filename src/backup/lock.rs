@@ -206,6 +206,89 @@ pub fn unlock(root: &Path, password: &str) -> Result<(), String> {
     Ok(())
 }
 
+const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const RECOVERY_INFO: &[u8] = b"phone-backup recovery key v1";
+
+/// The key a recovery key's 20 bytes give. They are random, so no slow Argon2id is needed.
+fn recovery_key(bytes: &[u8]) -> Key {
+    let mut k = [0; 32];
+    hkdf::Hkdf::<sha2::Sha256>::new(None, bytes)
+        .expand(RECOVERY_INFO, &mut k)
+        .expect("32 bytes is a valid HKDF length");
+    Key::from_bytes(k)
+}
+
+/// 20 bytes as 32 letters and digits in groups of four: "ABCD-EFGH-…".
+fn recovery_text(bytes: &[u8; 20]) -> String {
+    let mut bits = 0u64;
+    let (mut n, mut out) = (0, String::new());
+    for &b in bytes {
+        bits = (bits << 8) | u64::from(b);
+        n += 8;
+        while n >= 5 {
+            n -= 5;
+            if out.len() % 5 == 4 {
+                out.push('-');
+            }
+            out.push(BASE32[((bits >> n) & 31) as usize] as char);
+        }
+    }
+    out
+}
+
+/// Reads a typed recovery key. Spaces, dashes and letter case do not matter, and 0, 1 and 8
+/// are read as the letters O, I and B they look like.
+fn recovery_bytes(text: &str) -> Option<[u8; 20]> {
+    let mut bits = 0u64;
+    let (mut n, mut out) = (0, Vec::new());
+    for c in text.chars().filter(|c| !c.is_whitespace() && *c != '-') {
+        let c = match c.to_ascii_uppercase() {
+            '0' => 'O',
+            '1' => 'I',
+            '8' => 'B',
+            c => c,
+        };
+        let v = BASE32.iter().position(|&b| b as char == c)? as u64;
+        bits = (bits << 5) | v;
+        n += 5;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+        }
+    }
+    out.try_into().ok()
+}
+
+/// Makes a new recovery key for an unlocked backup and returns it to show once. A key made
+/// before stops working.
+pub fn make_recovery(root: &Path) -> Result<String, String> {
+    let mut lock = lock_of(root)?.ok_or("This backup has no password.")?;
+    let data = key_of(&lock).ok_or("Unlock the backup first.")?;
+    let bytes: [u8; 20] = crypt::random();
+    lock.recovery = Some(crypt::wrap(&recovery_key(&bytes), &data));
+    save(root, &lock)?;
+    Ok(recovery_text(&bytes))
+}
+
+/// True when the backup has a recovery key.
+pub fn has_recovery(root: &Path) -> bool {
+    lock_of(root).is_ok_and(|l| l.is_some_and(|l| l.recovery.is_some()))
+}
+
+/// Unlocks the backup for this session with its recovery key instead of the password.
+pub fn unlock_with_recovery(root: &Path, text: &str) -> Result<(), String> {
+    let lock = lock_of(root)?.ok_or("This backup has no password.")?;
+    let wrapped = lock
+        .recovery
+        .as_ref()
+        .ok_or("This backup has no recovery key.")?;
+    let bytes = recovery_bytes(text).ok_or("A recovery key has 32 letters and digits.")?;
+    let data = crypt::unwrap(&recovery_key(&bytes), wrapped)
+        .ok_or("That recovery key does not open this backup.")?;
+    keys().insert(lock.id, data);
+    Ok(())
+}
+
 /// Replaces the password of an unlocked backup. Only the small wrapped key changes.
 pub fn change_password(root: &Path, password: &str) -> Result<(), String> {
     let mut lock = lock_of(root)?.ok_or("This backup has no password.")?;
@@ -573,6 +656,52 @@ mod tests {
         assert_eq!(key(&root).unwrap().bytes(), data.bytes());
         assert_eq!(lock_of(&root).unwrap().unwrap().scope, Scope::All);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_key_opens_the_backup_and_survives_a_password_change() {
+        let root = dir("recovery");
+        set_password(&root, "pw", Scope::Data).unwrap();
+        assert!(!has_recovery(&root));
+        let data = key(&root).unwrap();
+        let text = make_recovery(&root).unwrap();
+        assert!(has_recovery(&root));
+        assert_eq!(text.len(), 39);
+        assert_eq!(text.matches('-').count(), 7);
+        assert!(!fs::read_to_string(root.join(LOCK)).unwrap().contains(&text));
+        change_password(&root, "new password").unwrap();
+
+        forget(&root);
+        let typed = text.replace('O', "0").to_lowercase().replace('-', " ");
+        unlock_with_recovery(&root, &typed).unwrap();
+        assert_eq!(key(&root).unwrap().bytes(), data.bytes());
+        forget(&root);
+        let mut wrong = text.clone();
+        wrong.replace_range(0..1, if text.starts_with('A') { "B" } else { "A" });
+        assert_eq!(
+            unlock_with_recovery(&root, &wrong),
+            Err("That recovery key does not open this backup.".into())
+        );
+        assert!(unlock_with_recovery(&root, "ABCD").is_err());
+        // A new key replaces the old one.
+        unlock(&root, "new password").unwrap();
+        let newer = make_recovery(&root).unwrap();
+        forget(&root);
+        assert!(unlock_with_recovery(&root, &text).is_err());
+        unlock_with_recovery(&root, &newer).unwrap();
+        forget(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_text_round_trips() {
+        for bytes in [[0u8; 20], [255; 20], crypt::random()] {
+            assert_eq!(recovery_bytes(&recovery_text(&bytes)), Some(bytes));
+        }
+        assert_eq!(
+            recovery_text(&[0; 20]),
+            "AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA"
+        );
     }
 
     #[test]
