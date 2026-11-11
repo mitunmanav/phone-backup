@@ -1064,7 +1064,7 @@ impl App {
                         }
                         if !s.errors.is_empty() {
                             ui.label(
-                                RichText::new(format!("{} could not be copied. Press Start again to retry. The list is in report.txt.", files(s.errors.len())))
+                                RichText::new(format!("{} could not be copied. Back up again to retry them. The list is in report.txt.", files(s.errors.len())))
                                     .color(t.error),
                             );
                         }
@@ -1095,8 +1095,15 @@ impl App {
                             if quiet(ui, t, "Open report", true).clicked() {
                                 let _ = backup::explorer().arg(s.root.join(backup::REPORT)).spawn();
                             }
-                            if !s.errors.is_empty() && quiet(ui, t, "Copy problem list", true).clicked() {
+                            // Copying shows nothing by itself, so the button says it worked for 2 s.
+                            let id = egui::Id::unique("copied").with(&s.root);
+                            let now = ui.input(|i| i.time);
+                            let copied = ui.ctx().data(|d| d.get_temp::<f64>(id)).is_some_and(|at| now - at < 2.0);
+                            let label = if copied { "Copied" } else { "Copy problem list" };
+                            if !s.errors.is_empty() && quiet(ui, t, label, true).clicked() {
                                 ui.ctx().copy_text(s.errors.join("\n"));
+                                ui.ctx().data_mut(|d| d.insert_temp(id, now));
+                                ui.ctx().request_repaint_after(Duration::from_secs(2));
                             }
                         });
                     });
