@@ -62,7 +62,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-CI runs the same checks and a release build on Windows for every pull request. When a new version in `Cargo.toml` reaches `main`, the Release workflow tags it and publishes the executable with a SHA-256 checksum.
+CI runs the same checks and a release build on Windows for every pull request. Every merge to `main` that changes the app makes the Release workflow publish the next version (1.0.1, 1.0.2, ...) with SHA-256 checksums, so **Check for updates** finds it.
 
 ## Contributing
 
