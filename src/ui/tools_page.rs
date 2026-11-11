@@ -15,7 +15,7 @@ struct Tool {
 
 const ICON_PHONE: &str = "\u{E8EA}";
 
-const TOOLS: [Tool; 6] = [
+const TOOLS: [Tool; 7] = [
     Tool {
         id: "read",
         short: "Read",
@@ -65,6 +65,16 @@ const TOOLS: [Tool; 6] = [
         safe: "This changes the phone. Nothing goes until you confirm.",
         input: (ICON_PHONE, "Files on the phone"),
         output: ("\u{E74D}", "Space back"),
+    },
+    Tool {
+        id: "zip",
+        short: "One file",
+        name: "Save as one file",
+        note: "Puts the whole backup in one .zip file, to move it to another drive or give it to someone. Open such a file here to make it a backup again.",
+        glyph: "\u{E7B8}",
+        safe: "The backup itself is not changed.",
+        input: ("\u{E8B7}", "Your backup"),
+        output: ("\u{E7B8}", "One .zip file"),
     },
     Tool {
         id: "scrcpy",
@@ -149,7 +159,12 @@ impl App {
     pub(crate) fn tools_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let width = ui.available_width();
         let locked = self.tool_busy.is_some();
-        let cols = if width >= 672.0 { 6.0 } else { 3.0 };
+        // One row when it fits, else rows of four and three; very narrow windows get three.
+        let cols: f32 = match width {
+            w if w >= 760.0 => TOOLS.len() as f32,
+            w if w >= 440.0 => 4.0,
+            _ => 3.0,
+        };
         let each = (width - 8.0 * (cols - 1.0)) / cols - 0.5;
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
@@ -440,7 +455,9 @@ impl App {
                 let stopping = tools::STOP.load(Ordering::Relaxed);
                 let label = if stopping { "Stopping…" } else { "Stop" };
                 // Only these two look at tools::STOP; the others end on their own, so get no button.
-                if matches!(k.id, "dupes" | "heic") && quiet(ui, t, label, !stopping).clicked() {
+                if matches!(k.id, "dupes" | "heic" | "zip")
+                    && quiet(ui, t, label, !stopping).clicked()
+                {
                     self.stop_tool = true;
                 }
                 return;
@@ -449,6 +466,7 @@ impl App {
                 "read" => {
                     if primary(ui, t, "Open", can)
                         && let Some(f) = folder.clone()
+                        && !self.ask_password(&f, false)
                     {
                         let version = self.version_of(&f);
                         self.run_tool(ui.ctx(), "read", move |say| {
@@ -458,6 +476,28 @@ impl App {
                     }
                 }
                 "dupes" => self.dupes_buttons(ui, t, folder.clone(), can),
+                "zip" => {
+                    if primary(ui, t, "Save as .zip…", can)
+                        && let Some(f) = folder.clone()
+                        && !self.ask_password(&f, false)
+                    {
+                        let (pw, again) = (Default::default(), Default::default());
+                        self.ask = Some(Ask::Archive(f, pw, again, None));
+                    }
+                    if quiet(ui, t, "Open a .zip…", !running).clicked()
+                        && let Some(zip) = rfd::FileDialog::new()
+                            .add_filter("Zip archive", &["zip"])
+                            .pick_file()
+                    {
+                        match backup::archive_has_password(&zip) {
+                            Ok(true) => {
+                                self.ask = Some(Ask::OpenArchive(zip, Default::default(), None))
+                            }
+                            Ok(false) => self.open_zip(ui.ctx(), zip, None),
+                            Err(e) => self.tool_msg = Some(("zip", Err(e))),
+                        }
+                    }
+                }
                 "heic" => {
                     let done = matches!(self.tool_result("heic"), Some(Ok(_)));
                     if done
@@ -471,7 +511,10 @@ impl App {
                     } else {
                         primary(ui, t, "Convert to JPG", can)
                     };
-                    if start && let Some(f) = folder.clone() {
+                    if start
+                        && let Some(f) = folder.clone()
+                        && !self.ask_password(&f, true)
+                    {
                         self.run_tool(ui.ctx(), "heic", move |say| {
                             tools::Done::Text(tools::heic_to_jpg(&f, say))
                         });
@@ -486,22 +529,14 @@ impl App {
                     if merged && let Some(f) = &folder {
                         let data = f.join("data");
                         if primary(ui, t, "Undo", true) {
-                            self.tool_msg = Some((
-                                "contacts",
-                                match fs::remove_file(data.join(tools::MERGED)) {
-                                    Ok(()) => Ok(format!(
-                                        "Removed {}. contacts.vcf was never changed.",
-                                        tools::MERGED
-                                    )),
-                                    Err(e) => Err(format!("Cannot remove {}: {e}", tools::MERGED)),
-                                },
-                            ));
+                            self.tool_msg = Some(("contacts", tools::unmerge_contacts(f)));
                         }
                         if quiet(ui, t, "Open folder", true).clicked() {
                             let _ = backup::explorer().arg(&data).spawn();
                         }
                     } else if primary(ui, t, "Merge duplicates", can)
                         && let Some(f) = folder.clone()
+                        && !self.ask_password(&f, false)
                     {
                         self.run_tool(ui.ctx(), "contacts", move |_| {
                             tools::Done::Text(tools::merge_contacts(&f))
@@ -512,6 +547,7 @@ impl App {
                     let ready = can && serial.is_some() && !many && !chosen.is_empty();
                     if primary(ui, t, "Delete from phone…", ready)
                         && let (Some(f), Some(serial)) = (folder.clone(), serial.clone())
+                        && !self.ask_password(&f, true)
                     {
                         self.run_tool(ui.ctx(), "phone", move |say| {
                             say("Checking the files on the phone…".into());
@@ -689,12 +725,70 @@ impl App {
         } else {
             primary(ui, t, "Find duplicates", can)
         };
-        if start && let Some(f) = folder {
+        if start
+            && let Some(f) = folder
+            && !self.ask_password(&f, true)
+        {
             self.dupes = None;
             self.run_tool(ui.ctx(), "dupes", move |say| {
                 tools::Done::Dupes(tools::duplicates(&f, say))
             });
         }
+    }
+
+    /// Saves backup `folder` as a zip the user names, encrypted when `password` is given.
+    pub(crate) fn save_zip(
+        &mut self,
+        ctx: &egui::Context,
+        folder: PathBuf,
+        password: Option<String>,
+    ) {
+        let name = folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Phone backup".into());
+        let Some(to) = rfd::FileDialog::new()
+            .set_file_name(format!("{name}.zip"))
+            .add_filter("Zip archive", &["zip"])
+            .save_file()
+        else {
+            return;
+        };
+        if to.starts_with(&folder) {
+            self.tool_msg = Some((
+                "zip",
+                Err("Save the archive outside the backup's own folder.".into()),
+            ));
+            return;
+        }
+        let password = password.map(zeroize::Zeroizing::new);
+        self.run_tool(ctx, "zip", move |say| {
+            let stop = || tools::STOP.load(Ordering::Relaxed);
+            tools::Done::Text(backup::save_archive(
+                &folder,
+                &to,
+                password.as_deref().map(|p| p.as_str()),
+                say,
+                &stop,
+            ))
+        });
+    }
+
+    /// Unpacks a zip into the backup folder as a new backup.
+    pub(crate) fn open_zip(&mut self, ctx: &egui::Context, zip: PathBuf, password: Option<String>) {
+        let dest = self.dest.clone();
+        let password = password.map(zeroize::Zeroizing::new);
+        self.run_tool(ctx, "zip", move |say| {
+            let stop = || tools::STOP.load(Ordering::Relaxed);
+            let _ = fs::create_dir_all(&dest);
+            tools::Done::Opened(backup::open_archive(
+                &zip,
+                &dest,
+                password.as_deref().map(|p| p.as_str()),
+                say,
+                &stop,
+            ))
+        });
     }
 
     /// Asks before a tool deletes anything; Esc or a click outside keeps the files.
@@ -709,6 +803,10 @@ impl App {
             Some("heic") => (
                 "Stop making JPG copies?",
                 "Copies made so far are kept. The HEIC photos are not changed.",
+            ),
+            Some("zip") => (
+                "Stop?",
+                "Nothing is kept from the part done so far. The backup is not changed.",
             ),
             // The tool ended while this was being asked: nothing is left to stop.
             _ => {

@@ -97,6 +97,11 @@ pub(crate) fn update_sums(
     if sums == old {
         return Ok(());
     }
+    write_sums(root, &sums)
+}
+
+/// Saves the backup's checksums whole: a failed write leaves the old file as it was.
+pub(super) fn write_sums(root: &Path, sums: &BTreeMap<String, String>) -> std::io::Result<()> {
     let part = root.join(format!("{CHECKSUMS}.part"));
     let text: String = sums
         .iter()

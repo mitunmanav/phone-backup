@@ -122,7 +122,7 @@ impl App {
                     (
                         "\u{E8B7}",
                         "Where your backups go",
-                        "Into the backup folder you choose, as ordinary files. They are not encrypted, so anyone who can open that folder can read them. Keep it on a drive only you use.",
+                        "Into the backup folder you choose, as ordinary files that anyone who can open that folder can read. To protect a backup, choose Lock on it in Restore: contacts, calls, messages and calendar, or everything, are then encrypted with your password (AES-256). The password is never saved, and a lost password cannot be recovered. File names stay visible.",
                     ),
                     (
                         "\u{E774}",
@@ -307,7 +307,7 @@ impl App {
                     "A first backup is about as big as what is on the phone.",
                     |ui| self.folder_row(ui, t),
                 );
-                ui.add(egui::Label::new(muted("Backups are ordinary files and are not encrypted. Privacy and the license are in Settings.")).wrap());
+                ui.add(egui::Label::new(muted("Backups are ordinary files unless you give one a password with Lock in Restore. Privacy and the license are in Settings.")).wrap());
             }
         }
         ui.add_space(24.0);

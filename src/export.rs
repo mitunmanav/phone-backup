@@ -16,7 +16,7 @@ pub const EXPORTS: &str = "exports";
 pub fn export(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
     let out = root.join(EXPORTS);
     fs::create_dir_all(&out).map_err(|e| format!("Cannot create {}: {e}", out.display()))?;
-    let read = |name: &str| fs::read_to_string(root.join("data").join(name)).ok();
+    let read = |name: &str| backup::read_text(&root.join("data").join(name));
     let write = |name: &str, text: String| {
         fs::write(out.join(name), text).map_err(|e| format!("Cannot write {name}: {e}"))
     };
@@ -90,11 +90,13 @@ pub fn export(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
         0 => Err(
             "This backup has no contacts, calls, messages, calendar or photos to export.".into(),
         ),
-        _ => Ok(format!(
-            "Exported {} to {}.",
-            made.join(", "),
-            out.display()
-        )),
+        _ => {
+            let mut said = format!("Exported {} to {}.", made.join(", "), out.display());
+            if backup::has_password(root) {
+                said += " Exports are ordinary files: the backup's password does not protect them.";
+            }
+            Ok(said)
+        }
     }
 }
 
@@ -129,7 +131,7 @@ pub struct Book {
 pub fn book_as_of(root: &Path, version: Option<&str>) -> Result<Book, String> {
     let read = |name: &str| {
         backup::file_as_of(root, version, &format!("data/{name}"))
-            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|p| backup::read_text(&p))
             .unwrap_or_default()
     };
     let people = people(&read("contacts.txt"));
@@ -792,7 +794,9 @@ fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, St
         .iter()
         .map(|(p, ..)| p)
         .filter(|p| {
-            let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase());
+            let ext = backup::plain_path(p)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase());
             ext.is_some_and(|e| MEDIA.contains(&e.as_str()))
                 // Hidden folders hold thumbnails and app caches.
                 && !p.strip_prefix(root).unwrap_or(p).iter().any(|c| c.to_string_lossy().starts_with('.'))
@@ -821,9 +825,11 @@ fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, St
         };
         // shortcut: names are given in path order, so a same-named file added by a later backup
         // can shift which file gets " (2)"; fine while exports are rebuilt by hand when needed.
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-        let ext = path.extension().unwrap_or_default().to_string_lossy();
-        let mut target = dir.join(path.file_name().unwrap_or_default());
+        // A sealed photo is exported opened, under its own name.
+        let plain = backup::plain_path(path);
+        let stem = plain.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = plain.extension().unwrap_or_default().to_string_lossy();
+        let mut target = dir.join(plain.file_name().unwrap_or_default());
         let mut n = 1;
         while !taken.insert(target.to_string_lossy().to_lowercase()) {
             n += 1;
@@ -834,15 +840,26 @@ fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, St
         }
         fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
         // Drives without hard links (FAT, exFAT, network shares) get a copy instead.
-        if fs::hard_link(path, &target).is_err()
-            && let Err(e) = fs::copy(path, &target)
-        {
+        let copied = if backup::is_sealed(path) {
+            backup::copy_plain(path, &target, None).map(|_| ())
+        } else if fs::hard_link(path, &target).is_ok() {
+            Ok(())
+        } else {
+            fs::copy(path, &target).map(|_| ())
+        };
+        if let Err(e) = copied {
             // A half copy would be skipped as done by the next export.
             let _ = fs::remove_file(&target);
             return Err(format!("Cannot copy {}: {e}", path.display()));
         }
     }
     Ok(media.len())
+}
+
+/// `sort_photos` for tests in other modules.
+#[cfg(test)]
+pub(crate) fn sort_photos_for_test(root: &Path, to: &Path) {
+    sort_photos(root, to, &|_| {}).unwrap();
 }
 
 #[cfg(test)]
@@ -1027,6 +1044,50 @@ mod tests {
                 .unwrap()
                 .contains(",'+15550100,\"Ann \"\"A\"\" Lee\",Incoming,1:01")
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_and_exports_a_protected_backup() {
+        let root = std::env::temp_dir().join(format!("pb-book-sealed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("data");
+        fs::create_dir_all(data.join("mms")).unwrap();
+        backup::set_password(&root, "pw", backup::Scope::Data).unwrap();
+        let sms = "Row: 0 address=+15550100, date=1767225600000, type=1, body=Secret hello\n";
+        backup::write_file(&root, &data.join("sms.txt"), sms.as_bytes()).unwrap();
+        let mms = "Row: 0 _id=7, date=1767225600, msg_box=1, sub=NULL\n\nParts:\nRow: 0 _id=9, mid=7, ct=image/jpeg, cl=pic.jpg, text=NULL\n\nAddresses:\nRow: 0 msg_id=7, address=+15550100, type=137\n";
+        backup::write_file(&root, &data.join("mms.txt"), mms.as_bytes()).unwrap();
+        backup::write_file(&root, &data.join("mms").join("9_pic.jpg"), b"jpeg bytes").unwrap();
+        assert!(!data.join("sms.txt").exists());
+
+        let book = book_as_of(&root, None).unwrap();
+        let said: Vec<&str> = book.threads[0]
+            .messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect();
+        assert!(said.contains(&"Secret hello"), "{said:?}");
+        // The attachment is found sealed, and opens as a plain copy outside the backup.
+        let file = book.threads[0]
+            .messages
+            .iter()
+            .flat_map(|m| m.files.iter())
+            .find_map(|f| f.1.clone())
+            .unwrap();
+        assert!(backup::is_sealed(&file));
+        let copy = backup::open_copy(&file).unwrap();
+        assert!(!copy.starts_with(&root));
+        assert_eq!(fs::read(&copy).unwrap(), b"jpeg bytes");
+        assert_eq!(copy.file_name().unwrap(), "9_pic.jpg");
+
+        let said = export(&root, &|_| {}).unwrap();
+        assert!(said.contains("password does not protect them"), "{said}");
+        let txt = fs::read_to_string(root.join(EXPORTS).join("messages.txt")).unwrap();
+        assert!(txt.contains("Secret hello"));
+
+        backup::forget(&root);
+        assert!(book_as_of(&root, None).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 

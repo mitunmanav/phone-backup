@@ -125,6 +125,22 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
     if from == into {
         return Err("Choose two different backups.".into());
     }
+    for b in [from, into] {
+        if locked(b) {
+            report(Msg::Locked(b.to_path_buf()));
+            return Err(LOCKED.into());
+        }
+    }
+    // Protected files must stay protected: the target's password has to cover them too.
+    let scope = |b: &Path| lock_of(b).map(|l| l.map(|l| l.scope));
+    let (from_scope, into_scope) = (scope(from)?, scope(into)?);
+    let covered = matches!(
+        (from_scope, into_scope),
+        (None, _) | (_, Some(Scope::All)) | (Some(Scope::Data), Some(Scope::Data))
+    );
+    if !covered {
+        return Err("The backup you copy from has a password. Give the other backup a password that protects as much first, so the copied files stay protected.".into());
+    }
     let mut todo = Vec::new();
     let mut stack = vec![from.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -139,7 +155,7 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             if path.is_dir() {
                 stack.push(path);
             } else if !(dir == from
-                && [REPORT, RESTORE_REPORT, RENAMED, CHECKSUMS]
+                && [REPORT, RESTORE_REPORT, RENAMED, CHECKSUMS, LOCK]
                     .contains(&&*entry.file_name().to_string_lossy()))
             {
                 todo.push(path);
@@ -159,7 +175,9 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
                 files(copied + renamed_n)
             ));
         }
-        let rel = src.strip_prefix(from).unwrap_or(src);
+        // Sealed files are copied by their own name, sealed again or not as `into` needs.
+        let plain = plain_path(src);
+        let rel = plain.strip_prefix(from).unwrap_or(&plain);
         report(Msg::Progress {
             done: n,
             total: todo.len(),
@@ -169,10 +187,15 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
         let mut target = first.clone();
         let mut k = 1;
         let free = loop {
-            if !target.exists() {
+            let Some(there) = stored(&target) else {
                 break true;
-            }
-            if same_file(src, &target) {
+            };
+            let same = if is_sealed(src) || is_sealed(&there) {
+                matches!((plain_sha256(src), plain_sha256(&there)), (Ok(a), Ok(b)) if a == b)
+            } else {
+                same_file(src, &there)
+            };
+            if same {
                 break false;
             }
             k += 1;
@@ -190,13 +213,16 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             fs::create_dir_all(dir)
                 .map_err(|e| format!("Cannot write in {}: {e}", dir.display()))?;
         }
-        if let Err(e) = fs::copy(src, &target) {
-            // A half-written copy would later read as "already there".
-            let _ = fs::remove_file(&target);
-            let _ = sums(&targets);
-            return Err(format!("Could not copy {}: {e}", src.display()));
+        let copy = seal_in(into, &target).and_then(|seal| copy_plain(src, &target, seal.as_ref()));
+        match copy {
+            Ok(at) => targets.push(at),
+            Err(e) => {
+                // A half-written copy would later read as "already there".
+                let _ = fs::remove_file(&target);
+                let _ = sums(&targets);
+                return Err(format!("Could not copy {}: {e}", src.display()));
+            }
         }
-        targets.push(target);
         if k == 1 {
             copied += 1;
             kept_names.push(rel.to_string_lossy().replace('\\', "/"));

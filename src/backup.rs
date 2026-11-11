@@ -10,19 +10,26 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 mod adb;
+mod archive;
 mod checksums;
+pub mod crypt;
 mod helper;
 mod history;
+mod lock;
 mod merge;
 mod mtp;
+mod protect;
 mod report;
 mod restore;
 
 pub use adb::*;
+pub use archive::*;
 pub use checksums::*;
 pub use history::*;
+pub use lock::*;
 pub use merge::*;
 pub use mtp::*;
+pub use protect::*;
 pub use report::*;
 pub use restore::*;
 
@@ -46,6 +53,9 @@ fn hold() -> bool {
 
 const STOPPED: &str =
     "You stopped the backup. Files copied so far are kept; press Try again to continue.";
+
+/// The error of a job that stopped to ask for the backup's password (`Msg::Locked`).
+pub const LOCKED: &str = "This backup has a password. Enter it to continue.";
 
 /// What the backup reports back to the window while it runs.
 pub enum Msg {
@@ -84,6 +94,8 @@ pub enum Msg {
     Tidied(Result<String, String>),
     /// Sizes of backup folders, in bytes.
     FolderSizes(Vec<(PathBuf, u64)>),
+    /// The job needs this backup's password first.
+    Locked(PathBuf),
 }
 
 /// What kind of device an ADB device is: TVs and watches also have USB debugging.
@@ -940,6 +952,134 @@ mod tests {
     }
 
     #[test]
+    fn copies_between_protected_backups_keep_files_protected() {
+        let root = std::env::temp_dir().join(format!("pb-merge-sealed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (a, b, plain) = (root.join("A_1"), root.join("B_2"), root.join("C_3"));
+        for d in [&a, &b, &plain] {
+            fs::create_dir_all(d.join("files")).unwrap();
+            fs::create_dir_all(d.join("data")).unwrap();
+        }
+        set_password(&a, "a", Scope::Data).unwrap();
+        set_password(&b, "b", Scope::Data).unwrap();
+        write_file(&a, &a.join("data/sms.txt"), b"from a").unwrap();
+        write_file(&b, &b.join("data/sms.txt"), b"from b").unwrap();
+        write_file(&a, &a.join("data/same.txt"), b"same").unwrap();
+        write_file(&b, &b.join("data/same.txt"), b"same").unwrap();
+        fs::write(a.join("files/x.jpg"), "photo").unwrap();
+        fs::write(plain.join("data/calls.txt"), "plain calls").unwrap();
+
+        // A protected backup never copies into one that would hold its data plain.
+        let refused = merge_backups(&a, &plain, &|_| {}).unwrap_err();
+        assert!(refused.contains("has a password"), "{refused}");
+        assert!(!plain.join("data/sms.txt").exists());
+
+        let msg = merge_backups(&a, &b, &|_| {}).unwrap();
+        assert!(msg.starts_with("Copied 2 files. 1 file was"), "{msg}");
+        // Sealed again with B's key, and kept apart from B's own sms.txt.
+        assert_eq!(read_file(&b.join("data/sms (2).txt")).unwrap(), b"from a");
+        assert_eq!(read_file(&b.join("data/sms.txt")).unwrap(), b"from b");
+        assert!(b.join("data/sms (2).txt.pbenc").exists());
+        assert_eq!(fs::read(b.join("files/x.jpg")).unwrap(), b"photo");
+        // B's password file is its own.
+        assert_ne!(
+            fs::read(a.join(LOCK)).unwrap(),
+            fs::read(b.join(LOCK)).unwrap()
+        );
+        // A plain backup's data is sealed when copied into a protected one.
+        merge_backups(&plain, &b, &|_| {}).unwrap();
+        assert!(b.join("data/calls.txt.pbenc").exists());
+        assert!(!b.join("data/calls.txt").exists());
+        assert_eq!(
+            read_file(&b.join("data/calls.txt")).unwrap(),
+            b"plain calls"
+        );
+
+        // A backup whose password was not entered asks for it first.
+        forget(&a);
+        let asked = std::cell::Cell::new(false);
+        let err = merge_backups(&a, &b, &|m| {
+            asked.set(asked.get() | matches!(m, Msg::Locked(_)))
+        })
+        .unwrap_err();
+        assert_eq!(err, LOCKED);
+        assert!(asked.get());
+        forget(&b);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn protected_files_are_listed_and_compared_by_their_own_name_and_size() {
+        let root = std::env::temp_dir().join(format!("pb-all-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("files/DCIM")).unwrap();
+        fs::create_dir_all(root.join("apps/com.x")).unwrap();
+        set_password(&root, "pw", Scope::All).unwrap();
+        assert!(!needs_password(&root, true));
+        let k = key(&root).unwrap();
+
+        // A photo pulled to a temporary file, sealed in place with the phone's time.
+        let tmp = root.join("pulled.jpg");
+        fs::write(&tmp, "photo bytes").unwrap();
+        let photo = crypt::sealed_path(&root.join("files/DCIM/a.jpg"));
+        let part = seal_beside(&tmp, &photo, &k, Some(1_700_000_000)).unwrap();
+        assert!(!tmp.exists());
+        fs::rename(&part, &photo).unwrap();
+        let job = |size, mtime| Job {
+            remote: "/sdcard/DCIM/a.jpg".into(),
+            size,
+            mtime,
+            local: photo.clone(),
+        };
+        assert!(!needs_copy(&job(11, 1_700_000_000)));
+        assert!(needs_copy(&job(12, 1_700_000_000)));
+        assert!(needs_copy(&job(11, 1_700_000_100)));
+
+        write_file(&root, &root.join("apps/com.x/base.apk"), b"apk").unwrap();
+        let (jobs, _) = saved_files(&root, None).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].remote, "/sdcard/DCIM/a.jpg");
+        assert_eq!(jobs[0].size, 11);
+        assert_eq!(jobs[0].local, photo);
+        let apps = saved_apps(&root).unwrap();
+        assert_eq!(apps[0].1, [root.join("apps/com.x/base.apk.pbenc")]);
+
+        // Two identical sealed photos are found as copies, though their sealed bytes differ.
+        write_file(&root, &root.join("files/DCIM/b.jpg"), b"photo bytes").unwrap();
+        let dupes = crate::tools::duplicates(&root, &|_| {}).unwrap();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0].len(), 2);
+
+        // Photos export opened, under their own names.
+        let out = root.join("exports/photos");
+        crate::export::sort_photos_for_test(&root, &out);
+        let mut exported = Vec::new();
+        let mut stack = vec![out.clone()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).unwrap().flatten() {
+                match e.path() {
+                    p if p.is_dir() => stack.push(p),
+                    p => exported.push(p.to_string_lossy().into_owned()),
+                }
+            }
+        }
+        assert!(
+            exported.iter().any(|p| p.ends_with("a.jpg")),
+            "{exported:?}"
+        );
+        assert!(exported.iter().all(|p| !p.ends_with(".pbenc")));
+
+        forget(&root);
+        assert!(needs_password(&root, true) && needs_password(&root, false));
+        let _ = fs::remove_dir_all(&root);
+        let data_only = std::env::temp_dir().join(format!("pb-data-only-{}", std::process::id()));
+        set_password(&data_only, "pw", Scope::Data).unwrap();
+        forget(&data_only);
+        assert!(!needs_password(&data_only, true) && needs_password(&data_only, false));
+        let _ = fs::remove_dir_all(&data_only);
+    }
+
+    #[test]
     fn renames_and_deletes_backups() {
         let root =
             std::env::temp_dir().join(format!("phone-backup-tidy-test-{}", std::process::id()));
@@ -1445,6 +1585,99 @@ mod tests {
             "first\n"
         );
         let _ = fs::remove_dir_all(&dest);
+    }
+
+    /// Needs a phone or emulator (PB_E2E_SERIAL). A backup protected with scope "all" keeps its
+    /// files and data sealed, skips unchanged files, passes Verify without the key, restores an
+    /// older sealed version to the phone, and comes back plain when the password goes.
+    #[test]
+    #[ignore]
+    fn e2e_password_protected_backup() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let dest = std::env::temp_dir().join(format!("pb-e2e-password-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let pick = Pick {
+            apps: false,
+            folders: ["E2E".to_string()].into(),
+            ..Pick::default()
+        };
+        let quiet = |_: Msg| {};
+        let put = |text: &str| {
+            shell(
+                &serial,
+                &format!("mkdir -p /sdcard/E2E/Docs; echo {text} > /sdcard/E2E/Docs/secret.txt"),
+            );
+            std::thread::sleep(Duration::from_secs(3));
+        };
+        put("first");
+        let one = adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
+        let root = one.root;
+        set_password(&root, "e2e password", Scope::All).unwrap();
+        protect(&root, &quiet).unwrap();
+        let sealed = root.join("files/E2E/Docs/secret.txt.pbenc");
+        assert!(sealed.exists() && !root.join("files/E2E/Docs/secret.txt").exists());
+
+        put("second");
+        let two = adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
+        // Only the changed file was copied again, though every file is sealed.
+        assert_eq!(two.copied, 1, "{:?}", two.errors);
+        assert_eq!(read_text(&sealed).unwrap(), "second\n");
+        if root.join("data").is_dir() {
+            let plain_data = walk_files(&root.join("data"));
+            assert!(plain_data.iter().all(|p| is_sealed(p)), "{plain_data:?}");
+        }
+        forget(&root);
+        assert!(verify(&root, &quiet).is_ok());
+        unlock(&root, "e2e password").unwrap();
+
+        let runs = runs(&root);
+        let first = runs.first().unwrap().name.clone();
+        shell(&serial, "rm /sdcard/E2E/Docs/secret.txt");
+        let only: HashSet<PathBuf> = backup_files(&root, Some(&first))
+            .unwrap()
+            .into_iter()
+            .map(|f| f.0)
+            .filter(|f| f.to_string_lossy().contains("secret.txt"))
+            .collect();
+        let files_only = Pick {
+            apps: false,
+            ..Pick::default()
+        };
+        let (said, failed) = restore_version(
+            &serial,
+            "E2E",
+            &root,
+            files_only,
+            Some(&only),
+            Some(&first),
+            false,
+            &quiet,
+        )
+        .unwrap();
+        assert_eq!(failed, 0, "{said}");
+        assert_eq!(shell(&serial, "cat /sdcard/E2E/Docs/secret.txt"), "first\n");
+
+        unprotect(&root, &quiet).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("files/E2E/Docs/secret.txt")).unwrap(),
+            "second\n"
+        );
+        assert!(verify(&root, &quiet).is_ok());
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    /// Every file under `dir`.
+    fn walk_files(dir: &Path) -> Vec<PathBuf> {
+        let (mut out, mut stack) = (Vec::new(), vec![dir.to_path_buf()]);
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).into_iter().flatten().flatten() {
+                match e.path() {
+                    p if p.is_dir() => stack.push(p),
+                    p => out.push(p),
+                }
+            }
+        }
+        out
     }
 
     /// Needs the emulator (PB_E2E_SERIAL). Stop during the contacts, calls and messages step ends

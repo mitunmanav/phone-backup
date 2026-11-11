@@ -646,6 +646,10 @@ pub(super) fn adb_backup_run(
     let status = |s: String| report(Msg::Status(s));
     let id = phone_id(serial);
     let root = dest.join(safe_name(&format!("{model}_{id}")));
+    if locked(&root) {
+        report(Msg::Locked(root.clone()));
+        return Err(LOCKED.into());
+    }
     // Copies this run replaces go to history/<run>; dropped on any early return, it still
     // saves what it moved.
     let rec = Recorder::start(&root, "USB or Wi-Fi");
@@ -737,6 +741,13 @@ pub(super) fn adb_backup_run(
             .and_then(|()| fs::write(root.join(RENAMED), text))
             .map_err(|e| format!("Cannot write in {}: {e}", root.display()))?;
     }
+    // With scope "all", files are kept sealed as X.pbenc; the names above stay the plain ones.
+    for j in &mut jobs {
+        if rec.seal_for(&j.local).is_some() {
+            j.local = crypt::sealed_path(&j.local);
+        }
+    }
+    let seal = rec.seal_for(&root.join("files").join("x")).cloned();
     let files = jobs.len();
     let mut listed: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
     let ran: HashSet<PathBuf> = listed.iter().cloned().collect();
@@ -787,7 +798,7 @@ pub(super) fn adb_backup_run(
         .map(|j| j.local.clone())
         .collect();
     let keep = |old: &Path| rec.keep_old(old).is_ok();
-    let errors = pull(serial, jobs, &root, report, &each, &keep);
+    let errors = pull(serial, jobs, &root, report, &each, &keep, seal.as_ref());
     for j in &tried {
         if !existed.contains(&j.local) && !needs_copy(j) {
             rec.added(&j.local, j.size);
@@ -850,7 +861,7 @@ pub(super) fn adb_backup_run(
         let (mut saved, mut parts_saved) = (ok, true);
         if ok {
             let mut save = |path: PathBuf, text: String| match keep_data(&rec, &path, &text) {
-                Ok(()) => written.push(path),
+                Ok(at) => written.push(at),
                 Err(_) => saved = false,
             };
             if file == "contacts.txt" {
@@ -860,7 +871,8 @@ pub(super) fn adb_backup_run(
                 save(data_dir.join(file).with_extension("json"), json);
             }
             if file == "mms.txt" {
-                parts_saved = mms_attachments(serial, &data_dir.join("mms"));
+                let dir = data_dir.join("mms");
+                parts_saved = mms_attachments(serial, &dir, rec.seal_for(&dir.join("x")));
                 cut = interrupted(serial);
             }
             save(data_dir.join(file), out);
@@ -908,46 +920,73 @@ pub(super) fn adb_backup_run(
     Ok((s, ran))
 }
 
-/// Saves one of the personal data files. Unchanged text is left as it is; changed text first
-/// moves the older copy into the run's history. Written to a side file first, so a full disk
-/// never leaves half a file in its place.
-pub(super) fn keep_data(rec: &Recorder, path: &Path, text: &str) -> std::io::Result<()> {
-    if fs::read(path).is_ok_and(|old| old == text.as_bytes()) {
-        return Ok(());
+/// Saves one of the personal data files, sealed when the backup's password protects it.
+/// Unchanged text is left as it is; changed text first moves the older copy into the run's
+/// history. Written to a side file first, so a full disk never leaves half a file in its place.
+/// Returns where the file is.
+pub(super) fn keep_data(rec: &Recorder, path: &Path, text: &str) -> std::io::Result<PathBuf> {
+    let key = rec.seal_for(path);
+    let target = match key {
+        Some(_) => crypt::sealed_path(path),
+        None => path.to_path_buf(),
+    };
+    let old = fs::read(&target).ok();
+    // A sealed copy differs on every write, so the text inside it is compared.
+    let same = match (key, &old) {
+        (_, None) => false,
+        (None, Some(old)) => old == text.as_bytes(),
+        (Some(k), Some(old)) => {
+            crypt::decrypt_bytes(k, old).is_ok_and(|o| o.as_slice() == text.as_bytes())
+        }
+    };
+    if same {
+        return Ok(target);
     }
-    let mut part = path.as_os_str().to_owned();
+    let bytes = match key {
+        Some(k) => crypt::encrypt_bytes(k, text.as_bytes()),
+        None => text.as_bytes().to_vec(),
+    };
+    let mut part = target.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
-    if let Err(e) = fs::write(&part, text) {
+    if let Err(e) = fs::write(&part, &bytes) {
         let _ = fs::remove_file(&part);
         return Err(e);
     }
-    let new = !path.exists();
-    if let Err(e) = rec.keep_old(path) {
-        let _ = fs::remove_file(&part);
-        return Err(e);
+    // A plain copy left from before the password moves aside too, so only one copy is latest.
+    let other = (key.is_some() && path.exists()).then_some(path);
+    for old in [Some(target.as_path()), other].into_iter().flatten() {
+        if let Err(e) = rec.keep_old(old) {
+            let _ = fs::remove_file(&part);
+            return Err(e);
+        }
     }
-    fs::rename(&part, path)?;
-    if new {
-        rec.added(path, text.len() as u64);
+    fs::rename(&part, &target)?;
+    if old.is_none() {
+        rec.added(&target, bytes.len() as u64);
     }
-    Ok(())
+    Ok(target)
 }
 
 /// Saves the pictures, videos and other files sent in picture messages as `<part id>_<name>`.
 /// False when one could not be written to this computer.
-pub(super) fn mms_attachments(serial: &str, dir: &Path) -> bool {
+pub(super) fn mms_attachments(serial: &str, dir: &Path, seal: Option<&crypt::Key>) -> bool {
     let mut all = true;
     let parts = shell(
         serial,
         "content query --uri content://mms/part --projection _id:ct:cl",
     );
     for (id, name) in parts.lines().filter_map(mms_part) {
-        let file = dir.join(safe_name(&format!("{id}_{name}")));
-        // A part never changes once saved, so only new ones are read.
-        if fs::metadata(&file).is_ok_and(|m| m.len() > 0) {
+        let plain = dir.join(safe_name(&format!("{id}_{name}")));
+        // A part never changes once saved, so only new ones are read, sealed or not.
+        let sealed = crypt::sealed_path(&plain);
+        if [&plain, &sealed]
+            .iter()
+            .any(|f| fs::metadata(f).is_ok_and(|m| m.len() > 0))
+        {
             continue;
         }
+        let file = if seal.is_some() { sealed } else { plain };
         let _ = fs::create_dir_all(dir);
         let mut c = adb();
         c.args([
@@ -962,6 +1001,10 @@ pub(super) fn mms_attachments(serial: &str, dir: &Path) -> bool {
             return all;
         }
         // A part cut short by a full disk would also be kept for good.
+        let bytes = match seal {
+            Some(k) if !bytes.is_empty() => crypt::encrypt_bytes(k, &bytes),
+            _ => bytes,
+        };
         if !bytes.is_empty() && fs::write(&file, bytes).is_err() {
             let _ = fs::remove_file(&file);
             all = false;
@@ -1061,18 +1104,20 @@ pub(crate) fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
     out
 }
 
-/// True when the local copy is missing or differs in size or time.
+/// True when the local copy is missing or differs in size or time. A sealed copy is
+/// compared by the size of the file inside it.
 pub(super) fn needs_copy(job: &Job) -> bool {
     let Ok(meta) = fs::metadata(&job.local) else {
         return true;
     };
+    let len = plain_size(&job.local, meta.len());
     let local_mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs() as i64);
     // 2 s slack: exFAT/FAT drives store times in 2-second steps.
-    meta.len() != job.size || (local_mtime - job.mtime).abs() > 2
+    len != Some(job.size) || (local_mtime - job.mtime).abs() > 2
 }
 
 /// Copies jobs with one `adb pull` per folder (one per file is far slower), then checks each
@@ -1085,13 +1130,30 @@ pub(super) fn pull(
     report: &dyn Fn(Msg),
     each: &dyn Fn(&[Job]),
     keep: &dyn Fn(&Path) -> bool,
+    seal: Option<&crypt::Key>,
 ) -> Vec<String> {
     let total = jobs.len();
     let mut done = 0;
     let mut errors = Vec::new();
     let mut by_dir: BTreeMap<PathBuf, Vec<Job>> = BTreeMap::new();
+    let mut sealed_by_dir: BTreeMap<PathBuf, Vec<Job>> = BTreeMap::new();
     let mut single = Vec::new();
+    let tmp = root.join(".pulling");
     for job in jobs {
+        // Sealed files are pulled into a temporary folder a folder at a time, then sealed.
+        if is_sealed(&job.local) {
+            let plain = plain_path(&job.local);
+            let same_name =
+                plain.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
+            match (same_name && seal.is_some(), job.local.parent()) {
+                (true, Some(dir)) => sealed_by_dir
+                    .entry(dir.to_path_buf())
+                    .or_default()
+                    .push(job),
+                _ => single.push(job),
+            }
+            continue;
+        }
         // adb pull into a folder keeps the phone's file name, so renamed files go one by one.
         let same_name =
             job.local.file_name().and_then(|n| n.to_str()) == job.remote.rsplit('/').next();
@@ -1145,7 +1207,42 @@ pub(super) fn pull(
         done += jobs.len();
     }
 
-    let tmp = root.join(".pulling");
+    let batch_dir = tmp.join("batch");
+    for (dir, jobs) in sealed_by_dir {
+        let now = dir.strip_prefix(root).unwrap_or(&dir).display().to_string();
+        let Some(key) = seal else { continue };
+        for (n, batch) in jobs.chunks(100).enumerate() {
+            report(Msg::Progress {
+                done: done + n * 100,
+                total,
+                now: now.clone(),
+            });
+            if hold() {
+                let _ = fs::remove_dir_all(&tmp);
+                return errors;
+            }
+            let _ = fs::remove_dir_all(&batch_dir);
+            if fs::create_dir_all(&batch_dir)
+                .and_then(|()| fs::create_dir_all(&dir))
+                .is_err()
+            {
+                continue;
+            }
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a"])
+                .args(batch.iter().map(|j| &j.remote))
+                .arg(&batch_dir);
+            run(c);
+            for job in batch {
+                let name = job.remote.rsplit('/').next().unwrap_or_default();
+                seal_pulled(&batch_dir.join(name), job, key, keep);
+            }
+            each(batch);
+        }
+        record_failures(&jobs, &mut errors);
+        done += jobs.len();
+    }
+
     for job in &single {
         if hold() {
             break;
@@ -1158,7 +1255,16 @@ pub(super) fn pull(
         if let Some(dir) = job.local.parent() {
             let _ = fs::create_dir_all(dir);
         }
-        if too_long(&job.local) || job.local.exists() {
+        if let (true, Some(key)) = (is_sealed(&job.local), seal) {
+            let short = tmp.join("file");
+            let _ = fs::create_dir_all(&tmp);
+            let _ = fs::remove_file(&short);
+            let mut c = adb();
+            c.args(["-s", serial, "pull", "-a", &job.remote])
+                .arg(&short);
+            run(c);
+            seal_pulled(&short, job, key, keep);
+        } else if too_long(&job.local) || job.local.exists() {
             // adb.exe cannot write past 260 characters; Rust's fs can, so pull short and move.
             let short = tmp.join("file");
             let _ = fs::create_dir_all(&tmp);
@@ -1188,6 +1294,22 @@ pub(super) fn pull(
         now: String::new(),
     });
     errors
+}
+
+/// Seals a whole pulled file into the job's place, once the older copy is kept. A cut-short
+/// file is dropped and counts as not copied.
+fn seal_pulled(pulled: &Path, job: &Job, key: &crypt::Key, keep: &dyn Fn(&Path) -> bool) {
+    if !fs::metadata(pulled).is_ok_and(|m| m.len() == job.size) {
+        let _ = fs::remove_file(pulled);
+        return;
+    }
+    if let Ok(part) = seal_beside(pulled, &job.local, key, Some(job.mtime)) {
+        if keep(&job.local) {
+            let _ = fs::rename(&part, &job.local);
+        } else {
+            let _ = fs::remove_file(&part);
+        }
+    }
 }
 
 /// Paths near Windows' 260-character limit, which adb.exe cannot write to.

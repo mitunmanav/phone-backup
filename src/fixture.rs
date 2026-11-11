@@ -25,6 +25,7 @@ impl App {
             age_days: age,
             // A size not added up yet, on the backup of unknown date.
             bytes: age.map(|a| 2_147_483_648 + a * 937_000_123),
+            password: false,
         };
         let adb = |model: &str, wifi: bool, battery: Option<u8>| Phone::Adb {
             serial: format!("{model}-serial"),

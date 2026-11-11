@@ -68,6 +68,20 @@ impl App {
         });
     }
 
+    /// Seals or opens a backup's files to match its password; `remove` opens them all and
+    /// then removes the password.
+    pub(crate) fn protect(&mut self, ctx: &egui::Context, folder: PathBuf, remove: bool) {
+        self.begin(Job::Protect);
+        let fail = |e| Msg::Tidied(Err(e));
+        self.spawn_job(ctx, fail, move |report| {
+            Msg::Tidied(if remove {
+                backup::unprotect(&folder, report)
+            } else {
+                backup::protect(&folder, report)
+            })
+        });
+    }
+
     /// Marks a job as running, before its worker starts.
     pub(crate) fn begin(&mut self, job: Job) {
         self.busy.store(true, Ordering::Relaxed);
@@ -193,6 +207,9 @@ impl App {
     /// Exports the backup's contacts, calls, messages, calendar and photos to its exports folder,
     /// then opens that folder.
     pub(crate) fn export(&mut self, ctx: &egui::Context, folder: PathBuf) {
+        if self.ask_password(&folder, true) {
+            return;
+        }
         self.begin(Job::Export);
         self.export_msg = None;
         let out = folder.join(export::EXPORTS);

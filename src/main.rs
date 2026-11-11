@@ -102,6 +102,47 @@ enum Job {
     Verify,
     /// Exporting a backup to files other apps open.
     Export,
+    /// Sealing or opening a backup's files after its password changed.
+    Protect,
+}
+
+/// A page of the password dialog.
+enum PwStep {
+    /// Giving a backup a password: typed twice, whether it protects everything, and the
+    /// "I understand" tick.
+    New {
+        pw: zeroize::Zeroizing<String>,
+        again: zeroize::Zeroizing<String>,
+        all: bool,
+        sure: bool,
+        err: Option<String>,
+    },
+    /// What to do with a backup that has a password.
+    Menu,
+    Change {
+        pw: zeroize::Zeroizing<String>,
+        again: zeroize::Zeroizing<String>,
+        err: Option<String>,
+    },
+    /// Asks before the password is removed.
+    Remove,
+    /// Chosen in the menu: finish a change that was stopped, protect this much, lock now.
+    Finish,
+    Scope(backup::Scope),
+    Lock,
+    NewRecovery,
+}
+
+impl PwStep {
+    fn new() -> PwStep {
+        PwStep::New {
+            pw: Default::default(),
+            again: Default::default(),
+            all: false,
+            sure: false,
+            err: None,
+        }
+    }
 }
 
 /// A dialog about the chosen backup.
@@ -126,6 +167,30 @@ enum Ask {
     Rename(PathBuf, String, Option<String>),
     /// The backup to copy from, and the one chosen to copy into.
     Copy(PathBuf, Option<PathBuf>),
+    /// A backup's password is needed: the backup, the password (or recovery key) being typed,
+    /// why the last try failed, the job to run again once it is unlocked, and whether the
+    /// recovery key is typed instead of the password.
+    Unlock(
+        PathBuf,
+        zeroize::Zeroizing<String>,
+        Option<String>,
+        Option<Job>,
+        bool,
+    ),
+    /// A new recovery key, shown once, and whether the user ticked that they kept it.
+    Recovery(PathBuf, zeroize::Zeroizing<String>, bool),
+    /// Saving a backup as one zip: the backup, the password typed twice (none for a plain
+    /// archive), and why the last try was refused.
+    Archive(
+        PathBuf,
+        zeroize::Zeroizing<String>,
+        zeroize::Zeroizing<String>,
+        Option<String>,
+    ),
+    /// Opening a zip that has a password: the file, the password, why the last try failed.
+    OpenArchive(PathBuf, zeroize::Zeroizing<String>, Option<String>),
+    /// The password dialog of a backup.
+    Password(PathBuf, PwStep),
 }
 
 struct App {
@@ -558,8 +623,8 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [history] [settings] [sound] [privacy] [license] [intro[=<step>]]
-        // [delete|rename|copy] [light|dark] [wifi] [busy [paused]] [stopask] [stoptool] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-6>] [history] [settings] [sound] [privacy] [license] [intro[=<step>]]
+        // [delete|rename|copy|password|password-menu|unlock|recovery] [light|dark] [wifi] [busy [paused]] [stopask] [stoptool] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; paused shows it paused; stopask asks whether to stop it; stoptool asks whether to stop a running duplicate search; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
         // picture of the window and closes.
@@ -611,7 +676,8 @@ impl App {
                         let pick = Some(runs[1].name.clone());
                         app.ask = Some(Ask::History(b.unwrap_or_default(), runs, pick));
                     }
-                    "delete" | "rename" | "copy" => {
+                    "delete" | "rename" | "copy" | "password" | "password-menu" | "unlock"
+                    | "recovery" => {
                         app.tab = Tab::Restore;
                         let b = app
                             .backups
@@ -625,6 +691,20 @@ impl App {
                                 b,
                                 "Mum's old phone: before the reset".into(),
                                 Some("Windows does not allow that name.".into()),
+                            ),
+                            "password" => Ask::Password(b, PwStep::new()),
+                            "password-menu" => Ask::Password(b, PwStep::Menu),
+                            "unlock" => Ask::Unlock(
+                                b,
+                                Default::default(),
+                                Some("That password does not open this backup.".into()),
+                                None,
+                                false,
+                            ),
+                            "recovery" => Ask::Recovery(
+                                b,
+                                "K7QF-M2XA-PL4D-RRTE-WB3N-C6HJ-ZS5V-GU2Y".to_string().into(),
+                                false,
                             ),
                             _ => Ask::Copy(b, into),
                         });
@@ -826,10 +906,10 @@ impl eframe::App for App {
                 Msg::Progress { done, total, now } => {
                     self.now = now;
                     if total > 0 {
-                        let verb = if self.job == Job::Verify {
-                            "Checking"
-                        } else {
-                            "Copying"
+                        let verb = match self.job {
+                            Job::Verify => "Checking",
+                            Job::Protect => "Changing",
+                            _ => "Copying",
                         };
                         self.status = format!("{verb} {} of {}…", count(done), files(total));
                         if self.fraction.is_none() {
@@ -877,6 +957,10 @@ impl eframe::App for App {
                     self.tidy_msg = Some(r);
                     let dir = self.scanned.clone();
                     self.scan(&dir);
+                }
+                Msg::Locked(root) => {
+                    let job = Some(self.job);
+                    self.ask = Some(Ask::Unlock(root, Default::default(), None, job, false));
                 }
                 Msg::FolderSizes(sizes) => {
                     for (path, n) in sizes {
@@ -950,6 +1034,17 @@ impl eframe::App for App {
                     self.confirm = Some(Confirm::Phone(serial, list, left));
                 }
                 tools::Done::Text(r) => self.tool_msg = Some((which, r)),
+                tools::Done::Opened(r) => {
+                    let said = r.as_ref().map(|o| o.said.clone()).map_err(Clone::clone);
+                    self.tool_msg = Some((which, said));
+                    if let Ok(o) = r {
+                        let dir = self.scanned.clone();
+                        self.scan(&dir);
+                        if let Some(key) = o.recovery {
+                            self.ask = Some(Ask::Recovery(o.folder, key.into(), false));
+                        }
+                    }
+                }
             }
         }
 
@@ -989,6 +1084,10 @@ impl eframe::App for App {
                     "Stop exporting?",
                     "Files exported so far are kept. The backup itself is not changed.",
                 ),
+                Job::Protect => (
+                    "Stop changing the backup?",
+                    "Files changed so far are kept. Choose Lock on the backup again to finish.",
+                ),
                 Job::Delete => (
                     "Close when the delete ends?",
                     "Windows is moving the backup to the Recycle Bin. The window closes when it has finished.",
@@ -1002,6 +1101,7 @@ impl eframe::App for App {
                 Job::Delete => ("Close when done", "Keep open"),
                 Job::Verify => ("Stop and close", "Keep checking"),
                 Job::Export => ("Stop and close", "Keep exporting"),
+                Job::Protect => ("Stop and close", "Keep going"),
             };
             let go = if self.stop_only { "Stop" } else { go };
             // Esc or a click outside means keep going, the safe answer.
@@ -1061,6 +1161,12 @@ impl eframe::App for App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
             self.page(ui, &t, pad);
         });
+    }
+
+    fn on_exit(&mut self) {
+        // Unlocked backup keys are wiped from memory, and opened copies of sealed files deleted.
+        backup::forget_keys();
+        backup::remove_open_copies();
     }
 
     fn persist_egui_memory(&self) -> bool {

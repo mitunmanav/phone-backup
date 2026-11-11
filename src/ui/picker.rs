@@ -26,13 +26,28 @@ pub(crate) struct Picker {
 
 /// An 80 px square preview of a picture, turned the way the camera held it.
 pub(crate) fn thumbnail(path: &Path) -> Option<egui::ColorImage> {
+    if !backup::is_sealed(path) {
+        return small(image::ImageReader::open(path).ok()?);
+    }
+    // Only pictures are opened: a sealed video would be read whole for nothing.
+    let picture = backup::plain_path(path).extension().is_some_and(|e| {
+        ["jpg", "jpeg", "png", "webp", "gif"]
+            .iter()
+            .any(|p| e.eq_ignore_ascii_case(p))
+    });
+    if !picture || !fs::metadata(path).is_ok_and(|m| m.len() < 64 << 20) {
+        return None;
+    }
+    let bytes = backup::read_file(path).ok()?;
+    small(image::ImageReader::new(std::io::Cursor::new(bytes)))
+}
+
+/// An 80 by 80 preview of the picture `reader` holds, turned upright.
+fn small<R: std::io::BufRead + std::io::Seek>(
+    reader: image::ImageReader<R>,
+) -> Option<egui::ColorImage> {
     use image::ImageDecoder;
-    let mut decoder = image::ImageReader::open(path)
-        .ok()?
-        .with_guessed_format()
-        .ok()?
-        .into_decoder()
-        .ok()?;
+    let mut decoder = reader.with_guessed_format().ok()?.into_decoder().ok()?;
     let turn = decoder.orientation().ok()?;
     let mut img = image::DynamicImage::from_decoder(decoder)
         .ok()?
@@ -266,7 +281,7 @@ impl App {
                                         ui.vertical(|ui| {
                                             ui.spacing_mut().interact_size.y = 20.0;
                                             ui.spacing_mut().item_spacing.y = 0.0;
-                                            let name = path
+                                            let name = backup::plain_path(path)
                                                 .file_name()
                                                 .map(|n| n.to_string_lossy().into_owned())
                                                 .unwrap_or_default();

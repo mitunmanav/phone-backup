@@ -26,6 +26,9 @@ cargo build --locked --release
 | Restore and phone to phone | `src/backup/restore.rs` |
 | Checksums, reports, tidying backups | `src/backup/checksums.rs`, `report.rs`, `merge.rs` |
 | Older versions (`history/`, `run.json`), pruning | `src/backup/history.rs` |
+| Passwords: file sealing, `encryption.json`, unlocked keys, recovery key | `src/backup/crypt.rs`, `src/backup/lock.rs` |
+| Turning a password on or off for files already saved | `src/backup/protect.rs` |
+| Saving and opening a backup as one zip | `src/backup/archive.rs` |
 | Exports, Tools page work | `src/export.rs`, `src/tools.rs` |
 | Android helper app | `companion/`; build with `companion\gradlew.bat -p companion assembleRelease`, design in `docs/android-design.md`. The next `cargo build` embeds that APK; without it the app still builds, only the helper is missing |
 | Starting, reading through and removing the helper | `src/backup/helper.rs`; the backup's data step in `src/backup/adb.rs` calls it |

@@ -141,7 +141,19 @@
         </div>
         <div>
           <h3>Is my backup encrypted?</h3>
-          <p>No. Backups are ordinary files, so anyone who can open the folder can read them. Keep it on a drive only you use.</p>
+          <p>Only if you give it a password. Without one, backups are ordinary files, so anyone who can open the folder can read them. On Restore, <strong>Lock</strong> on a backup encrypts either its contacts, calls, messages and calendar, or everything copied from the phone. Each file is encrypted with AES-256-GCM under a key made from your password with Argon2id. Later backups into it are encrypted too.</p>
+        </div>
+        <div>
+          <h3>What does the password not hide?</h3>
+          <p>File and folder names, sizes and dates stay visible, and so do the backup's checksums and its list of versions. Exports and opened attachments are ordinary files. With only personal data protected, photos and files stay ordinary files that open in Explorer.</p>
+        </div>
+        <div>
+          <h3>What if I forget the password?</h3>
+          <p>Use the recovery key shown when you set the password: the password prompt offers it, and you then choose a new password. Without the password or the recovery key, nobody can open the backup, not even Phone Backup. The password is never saved anywhere.</p>
+        </div>
+        <div>
+          <h3>Can I check a protected backup without the password?</h3>
+          <p>Yes. Verify checks the encrypted files against their checksums, so it needs no password. Reading, exporting and restoring ask for it once; it stays unlocked until you close the app.</p>
         </div>
         <div>
           <h3>How do I remove everything?</h3>

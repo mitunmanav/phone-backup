@@ -15,7 +15,11 @@ pub(super) fn saved_apps(folder: &Path) -> Result<Vec<(String, Vec<PathBuf>)>, S
                 .ok()?
                 .flatten()
                 .map(|f| f.path())
-                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("apk")))
+                .filter(|p| {
+                    plain_path(p)
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("apk"))
+                })
                 .collect();
             (!apks.is_empty()).then(|| (d.file_name().to_string_lossy().into_owned(), apks))
         })
@@ -54,6 +58,13 @@ pub fn restore_apps(
     if let Some(o) = only {
         packages = only_in(packages, o);
     }
+    if let Some(sealed) = packages.iter().flat_map(|p| &p.1).find(|a| is_sealed(a))
+        && let Some(root) = root_of(sealed)
+        && locked(&root)
+    {
+        report(Msg::Locked(root));
+        return Err(LOCKED.into());
+    }
     if !connected(serial) {
         return Err(DISCONNECTED_APPS.into());
     }
@@ -87,9 +98,29 @@ pub fn restore_apps(
             n + 1,
             packages.len()
         )));
+        // Sealed installers are opened into a temporary folder first, and deleted after.
+        let tmp = std::env::temp_dir().join(format!("phone-backup-apks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let opened: Vec<PathBuf> = apks
+            .iter()
+            .map(|a| match is_sealed(a) {
+                false => Ok(a.clone()),
+                true => fs::create_dir_all(&tmp).and_then(|()| {
+                    copy_plain(
+                        a,
+                        &tmp.join(plain_path(a).file_name().unwrap_or_default()),
+                        None,
+                    )
+                }),
+            })
+            .collect::<Result<_, _>>()
+            .unwrap_or_default();
         let mut c = adb();
-        c.args(["-s", serial, "install-multiple", "-r"]).args(apks);
-        if String::from_utf8_lossy(&run(c)).contains("Success") {
+        c.args(["-s", serial, "install-multiple", "-r"])
+            .args(&opened);
+        let installed = !opened.is_empty() && String::from_utf8_lossy(&run(c)).contains("Success");
+        let _ = fs::remove_dir_all(&tmp);
+        if installed {
             done += 1;
         } else if !connected(serial) {
             return Err(DISCONNECTED_APPS.into());
@@ -125,6 +156,8 @@ pub struct Saved {
     pub age_days: Option<u64>,
     /// None until a worker has added it up.
     pub bytes: Option<u64>,
+    /// It has a password.
+    pub password: bool,
 }
 
 /// The folder itself when it is a backup, else the backups inside it, newest first.
@@ -175,6 +208,7 @@ pub(super) fn saved(path: &Path) -> Option<Saved> {
             .and_then(|s| s.elapsed().ok())
             .map(|d| d.as_secs() / 86_400),
         bytes: None,
+        password: has_password(path),
     })
 }
 
@@ -232,7 +266,17 @@ pub(crate) fn saved_files(
                 if meta.is_dir() {
                     stack.push(path);
                 } else {
-                    let key = path
+                    // A sealed file goes back under its own name and size.
+                    let plain = plain_path(&path);
+                    let Some(len) = plain_size(&path, meta.len()) else {
+                        continue;
+                    };
+                    let rel = plain
+                        .strip_prefix(&local_root)
+                        .unwrap_or(&plain)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let key = plain
                         .strip_prefix(folder)
                         .unwrap_or(&path)
                         .to_string_lossy()
@@ -248,7 +292,7 @@ pub(crate) fn saved_files(
                         .map_or(0, |d| d.as_secs() as i64);
                     jobs.push(Job {
                         remote,
-                        size: meta.len(),
+                        size: len,
                         mtime,
                         local: path,
                     });
@@ -281,7 +325,7 @@ pub(crate) fn saved_files_as_of(
                 let local = v.file(root, &rel(root, &j.local))?;
                 if local != j.local {
                     let meta = fs::metadata(&local).ok()?;
-                    j.size = meta.len();
+                    j.size = plain_size(&local, meta.len())?;
                     j.mtime = meta
                         .modified()
                         .ok()
@@ -361,6 +405,13 @@ pub fn restore_files(
     let volumes = shell(serial, "ls /storage");
     let (mut jobs, missing) = saved_files_as_of(folder, Some(&volumes), version)?;
     jobs.retain(|j| only.is_none_or(|o| o.contains(&j.local)));
+    if let Some(sealed) = jobs.iter().find(|j| is_sealed(&j.local))
+        && let Some(root) = root_of(&sealed.local)
+        && locked(&root)
+    {
+        report(Msg::Locked(root));
+        return Err(LOCKED.into());
+    }
     let total = jobs.len();
 
     report(Msg::Status("Checking what is already on the phone…".into()));
@@ -478,7 +529,17 @@ pub fn restore_files(
             c.args(["-s", serial, "push"]);
             if alone(batch[0]) {
                 let mut src = batch[0].local.clone();
-                if too_long(&src) {
+                if is_sealed(&src) {
+                    // Opened into a temporary file first; it is deleted with the folder below.
+                    let short = tmp.join("file");
+                    let opened =
+                        fs::create_dir_all(&tmp).and_then(|()| copy_plain(&src, &short, None));
+                    if opened.is_err() {
+                        tried.extend(batch);
+                        continue;
+                    }
+                    src = short;
+                } else if too_long(&src) {
                     // adb.exe cannot read past 260 characters; Rust's fs can, so copy short and push.
                     let short = tmp.join("file");
                     let _ = fs::create_dir_all(&tmp);

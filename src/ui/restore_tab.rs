@@ -23,7 +23,7 @@ fn backup_card(
     many: bool,
     motion: bool,
 ) -> (bool, Option<usize>, f32) {
-    const ACTIONS: [(&str, &str, &str); 6] = [
+    const ACTIONS: [(&str, &str, &str); 7] = [
         ("\u{E838}", "Open", "Opens the backup's folder."),
         (
             "\u{E8AC}",
@@ -44,6 +44,11 @@ fn backup_card(
             "\u{E8C8}",
             "Copy",
             "Copies this backup's files into another backup.",
+        ),
+        (
+            "\u{E72E}",
+            "Lock",
+            "Protects the backup with a password, or changes or removes its password.",
         ),
         ("\u{E74D}", "Delete", "Moves the backup to the Recycle Bin."),
     ];
@@ -105,7 +110,8 @@ fn backup_card(
         (true, false) => "Photos and files",
         _ => "Apps",
     };
-    let line = format!("{}: {holds}", saved_when(b.age_days));
+    let lock = if b.password { " · Password" } else { "" };
+    let line = format!("{}: {holds}{lock}", saved_when(b.age_days));
     let line_at = egui::pos2(tx, top.top() + 30.0);
     put(
         ui,
@@ -138,11 +144,13 @@ fn backup_card(
             ring(ui, &a, cell, 6, t);
             let ink = if live { t.ink } else { t.muted }.gamma_multiply(fade);
             icon(ui, cell.center_top() + vec2(0.0, 15.0), glyph, 14.0, ink);
+            // Narrow windows get smaller words, so none is cut short.
+            let words = if cell_w < 50.0 { 11.0 } else { 12.0 };
             put(
                 ui,
                 cell.center_top() + vec2(0.0, 25.0),
                 Align2::CENTER_TOP,
-                txt(name, 12.0, 400.0, ink),
+                txt(name, words, 400.0, ink),
                 cell_w - 2.0,
             );
             if a.clicked() {
@@ -727,6 +735,13 @@ impl App {
             Some((2, path)) => self.verify(ui.ctx(), path),
             Some((3, path)) => self.export(ui.ctx(), path),
             Some((4, path)) => self.ask = Some(Ask::Copy(path, None)),
+            Some((5, path)) => {
+                if !backup::has_password(&path) {
+                    self.ask = Some(Ask::Password(path, PwStep::new()));
+                } else if !self.ask_password(&path, false) {
+                    self.ask = Some(Ask::Password(path, PwStep::Menu));
+                }
+            }
             Some((_, path)) => {
                 let older = backup::runs(&path).len();
                 self.ask = Some(Ask::Delete(path, older));
@@ -759,6 +774,7 @@ impl App {
                     Job::Copy => format!("Copying between backups…{percent}"),
                     Job::Delete => "Deleting the backup…".into(),
                     Job::Export => format!("Exporting…{percent}"),
+                    Job::Protect => format!("Changing the backup's protection…{percent}"),
                     _ => "Checking…".into(),
                 },
                 self.status.clone(),
@@ -847,6 +863,8 @@ impl App {
             result_box(t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let (title, color, text) = match (r, self.job) {
+                    (Ok(m), Job::Protect) => ("Password changed", t.ink, m),
+                    (Err(e), Job::Protect) => ("Not finished", t.error, e),
                     (Ok(m), Job::Delete) => ("Backup deleted", t.ink, m),
                     (Ok(m), _) => ("Copy finished", t.ink, m),
                     (Err(e), Job::Delete) => ("Backup not deleted", t.error, e),
@@ -997,6 +1015,104 @@ impl App {
                     ));
                 })
             }
+            Ask::Unlock(path, password, err, _, recovery) => {
+                let (name, _) = label_of(path);
+                let ready = !password.is_empty();
+                let title = if *recovery {
+                    format!("Recovery key for {name}")
+                } else {
+                    format!("Password for {name}")
+                };
+                let can_recover = backup::has_recovery(path);
+                confirm(ctx, &title, "Unlock", "Cancel", ready, |ui| {
+                    ui.label(if *recovery {
+                        "Type the recovery key you kept when the password was set."
+                    } else {
+                        "This backup is protected with a password."
+                    });
+                    let edit = egui::TextEdit::singleline(&mut **password)
+                        .password(!*recovery)
+                        .desired_width(f32::INFINITY);
+                    ui.add(edit).request_focus();
+                    if let Some(e) = err {
+                        ui.label(RichText::new(e.as_str()).color(t.error));
+                    }
+                    let other = match (*recovery, can_recover) {
+                        (true, _) => Some("Use the password instead"),
+                        (false, true) => Some("Forgot the password? Use the recovery key"),
+                        (false, false) => None,
+                    };
+                    if let Some(other) = other
+                        && ui.link(other).clicked()
+                    {
+                        *recovery = !*recovery;
+                        password.clear();
+                        *err = None;
+                    }
+                    ui.label(muted("It stays unlocked until you close Phone Backup."));
+                })
+            }
+            Ask::Password(path, step) => {
+                let (name, _) = label_of(path);
+                password_dialog(ctx, t, path, &name, step)
+            }
+            Ask::Recovery(path, key, kept) => {
+                let (name, _) = label_of(path);
+                recovery_dialog(ctx, t, &name, key, kept)
+            }
+            Ask::Archive(path, pw, again, err) => {
+                let (name, _) = label_of(path);
+                let must = backup::has_password(path);
+                let ready = !must || (!pw.is_empty() && !again.is_empty());
+                confirm(
+                    ctx,
+                    &format!("Save {name} as one file"),
+                    "Choose where…",
+                    "Cancel",
+                    ready,
+                    |ui| {
+                        ui.label(if must {
+                        "This backup has a password, so the archive gets one too. It can be the same password or another."
+                    } else {
+                        "A password is optional. Without one, anyone with the file can open it."
+                    });
+                        for (label, text) in
+                            [("Password", &mut *pw), ("Type it again", &mut *again)]
+                        {
+                            ui.label(label);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut **text)
+                                    .password(true)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        }
+                        if let Some(e) = err {
+                            ui.label(RichText::new(e.as_str()).color(t.error));
+                        }
+                        ui.label(muted("With a password, 7-Zip opens the archive and asks for it; Windows' own zip folders cannot. Photos and videos are stored as they are, so the file is about as big as the backup."));
+                    },
+                )
+            }
+            Ask::OpenArchive(_, pw, err) => {
+                let ready = !pw.is_empty();
+                confirm(
+                    ctx,
+                    "Password for this archive",
+                    "Open",
+                    "Cancel",
+                    ready,
+                    |ui| {
+                        let edit = egui::TextEdit::singleline(&mut **pw)
+                            .password(true)
+                            .desired_width(f32::INFINITY);
+                        ui.add(edit).request_focus();
+                        if let Some(e) = err {
+                            ui.label(RichText::new(e.as_str()).color(t.error));
+                        }
+                        ui.label(muted("It is unpacked into your backup folder as a new backup. If it came from a backup with a password, it gets this password."));
+                    },
+                )
+            }
             Ask::History(path, runs, pick) => {
                 let (name, _) = label_of(path);
                 confirm(
@@ -1050,6 +1166,48 @@ impl App {
                 Some(Ask::Delete(path, _)) => self.tidy(ctx, Job::Delete, path, None),
                 Some(Ask::History(path, _, pick)) => self.use_version(path, pick),
                 Some(Ask::Copy(from, into)) => self.tidy(ctx, Job::Copy, from, into),
+                Some(Ask::Password(path, step)) => self.password_step(ctx, path, step),
+                Some(Ask::Unlock(path, password, _, job, recovery)) => {
+                    let opened = if recovery {
+                        backup::unlock_with_recovery(&path, &password)
+                    } else {
+                        backup::unlock(&path, &password)
+                    };
+                    match opened {
+                        Ok(()) => {
+                            self.unlocked(ctx, job);
+                            // The password was forgotten, so a new one is asked for.
+                            if recovery {
+                                let step = PwStep::Change {
+                                    pw: Default::default(),
+                                    again: Default::default(),
+                                    err: None,
+                                };
+                                self.ask = Some(Ask::Password(path, step));
+                            }
+                        }
+                        Err(e) => {
+                            let ask = Ask::Unlock(path, password, Some(e), job, recovery);
+                            self.ask = Some(ask);
+                        }
+                    }
+                }
+                Some(Ask::Recovery(..)) => {}
+                Some(Ask::Archive(path, pw, again, _)) => {
+                    if pw.is_empty() && again.is_empty() {
+                        self.save_zip(ctx, path, None);
+                    } else if pw.chars().count() < 8 || *pw != *again {
+                        let why = if *pw != *again {
+                            "The two passwords are not the same."
+                        } else {
+                            "Use at least 8 characters."
+                        };
+                        self.ask = Some(Ask::Archive(path, pw, again, Some(why.into())));
+                    } else {
+                        self.save_zip(ctx, path, Some(pw.to_string()));
+                    }
+                }
+                Some(Ask::OpenArchive(zip, pw, _)) => self.open_zip(ctx, zip, Some(pw.to_string())),
                 Some(Ask::Rename(path, name, _)) => match backup::rename_backup(&path, &name) {
                     Ok(new) => {
                         self.choose(Some(new.clone()));
@@ -1069,6 +1227,125 @@ impl App {
         }
     }
 
+    /// Acts on the password dialog's main button.
+    fn password_step(&mut self, ctx: &egui::Context, path: PathBuf, step: PwStep) {
+        let check = |pw: &str, again: &str| {
+            if pw.chars().count() < 8 {
+                Err("Use at least 8 characters.".to_string())
+            } else if pw != again {
+                Err("The two passwords are not the same.".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        match step {
+            PwStep::New {
+                pw,
+                again,
+                all,
+                sure,
+                ..
+            } => {
+                let scope = if all {
+                    backup::Scope::All
+                } else {
+                    backup::Scope::Data
+                };
+                match check(&pw, &again).and_then(|()| backup::set_password(&path, &pw, scope)) {
+                    Ok(()) => {
+                        let key = backup::make_recovery(&path);
+                        self.protect(ctx, path.clone(), false);
+                        if let Ok(key) = key {
+                            self.ask = Some(Ask::Recovery(path, key.into(), false));
+                        }
+                    }
+                    Err(e) => {
+                        let err = Some(e);
+                        let step = PwStep::New {
+                            pw,
+                            again,
+                            all,
+                            sure,
+                            err,
+                        };
+                        self.ask = Some(Ask::Password(path, step));
+                    }
+                }
+            }
+            PwStep::Change { pw, again, .. } => {
+                match check(&pw, &again).and_then(|()| backup::change_password(&path, &pw)) {
+                    Ok(()) => {
+                        self.job = Job::Protect;
+                        self.tidy_msg = Some(Ok(
+                            "The password is changed. Use the new one from now on.".into(),
+                        ));
+                    }
+                    Err(e) => {
+                        let step = PwStep::Change {
+                            pw,
+                            again,
+                            err: Some(e),
+                        };
+                        self.ask = Some(Ask::Password(path, step));
+                    }
+                }
+            }
+            PwStep::Remove => self.protect(ctx, path, true),
+            PwStep::Menu => {
+                let step = PwStep::Change {
+                    pw: Default::default(),
+                    again: Default::default(),
+                    err: None,
+                };
+                self.ask = Some(Ask::Password(path, step));
+            }
+            PwStep::Finish => {
+                let remove = backup::lock_of(&path)
+                    .is_ok_and(|l| l.is_some_and(|l| l.pending == Some(backup::Pending::Remove)));
+                self.protect(ctx, path, remove);
+            }
+            PwStep::Scope(scope) => match backup::set_scope(&path, scope) {
+                Ok(()) => self.protect(ctx, path, false),
+                Err(e) => {
+                    self.job = Job::Protect;
+                    self.tidy_msg = Some(Err(e));
+                }
+            },
+            PwStep::Lock => backup::forget(&path),
+            PwStep::NewRecovery => match backup::make_recovery(&path) {
+                Ok(key) => self.ask = Some(Ask::Recovery(path, key.into(), false)),
+                Err(e) => {
+                    self.job = Job::Protect;
+                    self.tidy_msg = Some(Err(e));
+                }
+            },
+        }
+    }
+
+    /// Runs the job that stopped to ask for a password again.
+    fn unlocked(&mut self, ctx: &egui::Context, job: Option<Job>) {
+        if job == Some(Job::Backup) {
+            self.start(ctx);
+        }
+    }
+
+    /// Asks for the backup's password when reading what the job needs takes one not yet
+    /// entered: personal data, or with `files` files and apps too. True when it asked: the
+    /// caller then waits for the next click.
+    pub(crate) fn ask_password(&mut self, folder: &Path, files: bool) -> bool {
+        let ask = backup::needs_password(folder, files);
+        if ask {
+            self.ask = Some(Ask::Unlock(
+                folder.to_path_buf(),
+                Default::default(),
+                None,
+                None,
+                false,
+            ));
+        }
+        ask
+    }
+
     pub(crate) fn open_restore_report(&self, ui: &mut egui::Ui) {
         if let Some(path) = &self.restore_report {
             ui.add_space(4.0);
@@ -1076,5 +1353,241 @@ impl App {
                 let _ = backup::explorer().arg(path).spawn();
             }
         }
+    }
+}
+
+/// The password dialog: give the backup a password, or change, widen, narrow, lock or remove
+/// it. Some(true) runs the step it ends on (`password_step`).
+fn password_dialog(
+    ctx: &egui::Context,
+    t: &Tokens,
+    path: &Path,
+    name: &str,
+    step: &mut PwStep,
+) -> Option<bool> {
+    let muted = |s: &str| RichText::new(s).color(t.muted);
+    let typed = |ui: &mut egui::Ui, label: &str, text: &mut String, focus: bool| {
+        ui.label(label);
+        let r = ui.add(
+            egui::TextEdit::singleline(text)
+                .password(true)
+                .desired_width(f32::INFINITY),
+        );
+        // The first field starts with the cursor in it; a click elsewhere is left alone.
+        if focus && ui.memory(|m| m.focused().is_none()) {
+            r.request_focus();
+        }
+    };
+    let error = |ui: &mut egui::Ui, err: &Option<String>| {
+        if let Some(e) = err {
+            ui.label(RichText::new(e.as_str()).color(t.error));
+        }
+    };
+    match step {
+        PwStep::New {
+            pw,
+            again,
+            all,
+            sure,
+            err,
+        } => {
+            let ready = *sure && !pw.is_empty() && !again.is_empty();
+            let title = format!("Protect {name} with a password");
+            confirm(ctx, &title, "Protect", "Cancel", ready, |ui| {
+                typed(ui, "Password", pw, true);
+                typed(ui, "Type it again", again, false);
+                error(ui, err);
+                ui.add_space(6.0);
+                ui.label("What it protects:");
+                ui.radio_value(all, false, "Contacts, calls, messages and calendar");
+                ui.label(muted(
+                    "Photos, videos and files stay ordinary files that open in Explorer.",
+                ));
+                ui.radio_value(all, true, "Everything copied from the phone");
+                ui.label(muted("Photos, videos and files then open only through Phone Backup, not with a double-click in Explorer."));
+                ui.add_space(6.0);
+                ui.checkbox(sure, "I understand that without the password or the recovery key shown next, nobody can open this backup, not even Phone Backup.");
+                ui.label(muted("File names stay visible. Exports are ordinary files and are not protected. Changing a large backup takes a while; you can stop and finish later."));
+            })
+        }
+        PwStep::Change { pw, again, err } => {
+            let ready = !pw.is_empty() && !again.is_empty();
+            confirm(
+                ctx,
+                "New password",
+                "Change password",
+                "Cancel",
+                ready,
+                |ui| {
+                    typed(ui, "New password", pw, true);
+                    typed(ui, "Type it again", again, false);
+                    error(ui, err);
+                    ui.label(muted(
+                        "Only the password changes; the files stay as they are, so this is quick.",
+                    ));
+                },
+            )
+        }
+        PwStep::Remove => confirm(
+            ctx,
+            &format!("Remove the password of {name}?"),
+            "Remove password",
+            "Cancel",
+            true,
+            |ui| {
+                ui.label("Every protected file is opened and saved as an ordinary file again.");
+                ui.label(muted(
+                    "Anyone who can open the backup folder can then read it.",
+                ));
+            },
+        ),
+        _ => {
+            let lock = backup::lock_of(path).ok().flatten();
+            let all = lock.as_ref().is_some_and(|l| l.scope == backup::Scope::All);
+            let pending = lock.as_ref().and_then(|l| l.pending);
+            let mut next = None;
+            let answer = confirm(
+                ctx,
+                &format!("Password of {name}"),
+                "Change password…",
+                "Close",
+                true,
+                |ui| {
+                    ui.label(if all {
+                        "The password protects everything copied from the phone."
+                    } else {
+                        "The password protects contacts, calls, messages and calendar."
+                    });
+                    if let Some(p) = pending {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(match p {
+                                backup::Pending::Protect => {
+                                    "Protecting the files was stopped part way."
+                                }
+                                backup::Pending::Remove => {
+                                    "Removing the password was stopped part way."
+                                }
+                            })
+                            .color(t.error),
+                        );
+                        if primary(ui, t, "Finish now", true) {
+                            next = Some(PwStep::Finish);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    let (widen, words) = if all {
+                        (backup::Scope::Data, "Protect only personal data")
+                    } else {
+                        (backup::Scope::All, "Protect everything")
+                    };
+                    if quiet(ui, t, words, pending.is_none()).clicked() {
+                        next = Some(PwStep::Scope(widen));
+                    }
+                    let (words, hint) = if backup::has_recovery(path) {
+                        (
+                            "New recovery key…",
+                            "Makes a new recovery key. The old one stops working.",
+                        )
+                    } else {
+                        (
+                            "Make a recovery key…",
+                            "A key that opens the backup if the password is forgotten.",
+                        )
+                    };
+                    if quiet(ui, t, words, true).on_hover_text(hint).clicked() {
+                        next = Some(PwStep::NewRecovery);
+                    }
+                    if quiet(ui, t, "Lock now", true)
+                        .on_hover_text("Asks for the password again before the backup is read.")
+                        .clicked()
+                    {
+                        next = Some(PwStep::Lock);
+                    }
+                    if quiet(ui, t, "Remove password…", true).clicked() {
+                        next = Some(PwStep::Remove);
+                    }
+                },
+            );
+            match next {
+                // Removing asks first, on the next page.
+                Some(PwStep::Remove) => {
+                    *step = PwStep::Remove;
+                    None
+                }
+                Some(go) => {
+                    *step = go;
+                    Some(true)
+                }
+                None => answer,
+            }
+        }
+    }
+}
+
+/// Shows a new recovery key once, with Copy and a printable page.
+fn recovery_dialog(
+    ctx: &egui::Context,
+    t: &Tokens,
+    name: &str,
+    key: &str,
+    kept: &mut bool,
+) -> Option<bool> {
+    let muted = |s: &str| RichText::new(s).color(t.muted);
+    confirm(
+        ctx,
+        "Keep your recovery key",
+        "Done",
+        "Close",
+        *kept,
+        |ui| {
+            ui.label("If the password is ever forgotten, this key opens the backup instead. It is shown only now.");
+            ui.add_space(8.0);
+            ui.label(RichText::new(key).monospace().size(18.0).color(t.ink));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if quiet(ui, t, "Copy", true).clicked() {
+                    ui.ctx().copy_text(key.to_string());
+                }
+                if quiet(ui, t, "Save printable page…", true).clicked()
+                    && let Some(file) = rfd::FileDialog::new()
+                        .set_file_name(format!("Phone Backup recovery key - {name}.html"))
+                        .add_filter("Web page", &["html"])
+                        .save_file()
+                    && fs::write(&file, recovery_page(name, key)).is_ok()
+                {
+                    let _ = backup::explorer().arg(&file).spawn();
+                }
+            });
+            ui.label(muted("Keep it away from this computer: printed, or in a password manager. Anyone with this key can open the backup."));
+            ui.add_space(6.0);
+            ui.checkbox(kept, "I have kept the recovery key somewhere safe.");
+        },
+    )
+}
+
+/// A page to print with the backup's name and its recovery key.
+fn recovery_page(name: &str, key: &str) -> String {
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Recovery key</title>\n<style>body{{font:16px/1.5 system-ui,sans-serif;max-width:40em;margin:3em auto;padding:0 1em;color:#111}}code{{display:block;font:24px/1.4 monospace;letter-spacing:.05em;margin:1em 0;padding:.6em;border:2px solid #111;text-align:center}}</style></head>\n<body><h1>Phone Backup recovery key</h1>\n<p>Backup: <strong>{}</strong></p>\n<code>{}</code>\n<p>If the password of this backup is forgotten, choose <em>Use the recovery key</em> when Phone Backup asks for it, and type this key. Then choose a new password.</p>\n<p>Anyone with this key can open the backup. Keep this page somewhere safe, away from the computer that holds the backup, and delete the file once it is printed.</p>\n</body></html>\n",
+        esc(name),
+        esc(key)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn recovery_page_holds_the_key_and_escapes_the_name() {
+        let page = super::recovery_page("Mum's <phone>", "ABCD-EFGH");
+        assert!(page.contains("<code>ABCD-EFGH</code>"));
+        assert!(page.contains("Mum's &lt;phone&gt;"));
+        assert!(page.starts_with("<!doctype html>\n"));
     }
 }
