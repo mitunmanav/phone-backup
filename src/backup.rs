@@ -51,6 +51,9 @@ fn hold() -> bool {
 const STOPPED: &str =
     "You stopped the backup. Files copied so far are kept; press Try again to continue.";
 
+/// The error of a job that stopped to ask for the backup's password (`Msg::Locked`).
+pub const LOCKED: &str = "This backup has a password. Enter it to continue.";
+
 /// What the backup reports back to the window while it runs.
 pub enum Msg {
     Status(String),
@@ -88,6 +91,8 @@ pub enum Msg {
     Tidied(Result<String, String>),
     /// Sizes of backup folders, in bytes.
     FolderSizes(Vec<(PathBuf, u64)>),
+    /// The job needs this backup's password first.
+    Locked(PathBuf),
 }
 
 /// What kind of device an ADB device is: TVs and watches also have USB debugging.

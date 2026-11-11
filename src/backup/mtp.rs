@@ -15,6 +15,10 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
     let (mut files, mut copied, mut errors) = (0, Vec::new(), Vec::new());
     let mut kept = Vec::new();
+    if locked(&root) {
+        report(Msg::Locked(root.clone()));
+        return Err(LOCKED.into());
+    }
     let rec = Recorder::start(&root, "MTP");
     // Windows ignores letter case, so IMG.jpg and img.jpg would overwrite each other.
     let mut seen = HashSet::new();

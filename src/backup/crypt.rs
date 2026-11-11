@@ -57,6 +57,14 @@ impl std::fmt::Debug for Key {
     }
 }
 
+/// Where the protected copy of `path` is kept: `path` with `.pbenc` added.
+pub fn sealed_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(".");
+    p.push(EXT);
+    p.into()
+}
+
 /// Random bytes from the operating system.
 pub fn random<const N: usize>() -> [u8; N] {
     let mut b = [0; N];

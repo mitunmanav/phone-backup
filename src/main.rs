@@ -126,6 +126,9 @@ enum Ask {
     Rename(PathBuf, String, Option<String>),
     /// The backup to copy from, and the one chosen to copy into.
     Copy(PathBuf, Option<PathBuf>),
+    /// A backup's password is needed: the backup, the password being typed, why the last try
+    /// failed, and the job to run again once it is unlocked.
+    Unlock(PathBuf, zeroize::Zeroizing<String>, Option<String>, Job),
 }
 
 struct App {
@@ -877,6 +880,9 @@ impl eframe::App for App {
                     self.tidy_msg = Some(r);
                     let dir = self.scanned.clone();
                     self.scan(&dir);
+                }
+                Msg::Locked(root) => {
+                    self.ask = Some(Ask::Unlock(root, Default::default(), None, self.job));
                 }
                 Msg::FolderSizes(sizes) => {
                     for (path, n) in sizes {

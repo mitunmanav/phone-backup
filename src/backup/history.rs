@@ -248,6 +248,8 @@ pub(super) struct Recorder {
     /// The backup's checksums from before the run, for the sums of replaced copies.
     sums: BTreeMap<String, String>,
     run: RefCell<Run>,
+    /// The backup's key and what it protects, when it has a password.
+    seal: Option<(crypt::Key, Scope)>,
 }
 
 impl Recorder {
@@ -267,6 +269,10 @@ impl Recorder {
             root: root.to_path_buf(),
             dir: history.join(&name),
             sums: read_sums(root),
+            seal: lock_of(root)
+                .ok()
+                .flatten()
+                .and_then(|l| Some((key(root)?, l.scope))),
             run: RefCell::new(Run {
                 name,
                 when,
@@ -299,6 +305,12 @@ impl Recorder {
             sum,
         });
         Ok(())
+    }
+
+    /// The key to seal the file at `path` with, when the backup's password protects it.
+    pub(super) fn seal_for(&self, path: &Path) -> Option<&crypt::Key> {
+        let (key, scope) = self.seal.as_ref()?;
+        protects(*scope, &rel(&self.root, path)).then_some(key)
     }
 
     /// Notes a file that is new in the backup.
@@ -505,6 +517,58 @@ mod tests {
         }
         update_sums(root, &written, &written, &|_| {}).unwrap();
         rec.finish();
+    }
+
+    #[test]
+    fn protected_data_is_sealed_and_kept_like_plain_data() {
+        let root = temp("sealed");
+        set_password(&root, "pw", Scope::Data).unwrap();
+        let k = key(&root).unwrap();
+        let sms = root.join("data/sms.txt");
+        fs::create_dir_all(sms.parent().unwrap()).unwrap();
+        // A plain copy from before the password.
+        fs::write(&sms, "old plain").unwrap();
+        let open = |p: &Path| {
+            String::from_utf8(
+                crypt::decrypt_bytes(&k, &fs::read(p).unwrap())
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap()
+        };
+
+        let rec = Recorder::start(&root, "test");
+        let at = keep_data(&rec, &sms, "one").unwrap();
+        assert_eq!(at, crypt::sealed_path(&sms));
+        assert!(!sms.exists());
+        assert_eq!(open(&at), "one");
+        let before = fs::read(&at).unwrap();
+        keep_data(&rec, &sms, "one").unwrap();
+        assert_eq!(
+            fs::read(&at).unwrap(),
+            before,
+            "unchanged text is not rewritten"
+        );
+        let dir = rec.dir.clone();
+        rec.finish();
+        assert_eq!(
+            fs::read_to_string(dir.join("data/sms.txt")).unwrap(),
+            "old plain"
+        );
+
+        let rec = Recorder::start(&root, "test");
+        let dir2 = rec.dir.clone();
+        keep_data(&rec, &sms, "two").unwrap();
+        // Files outside the scope stay plain.
+        let calls = keep_data(&rec, &root.join("report-like.txt"), "plain").unwrap();
+        assert_eq!(fs::read_to_string(calls).unwrap(), "plain");
+        rec.finish();
+        assert_eq!(open(&crypt::sealed_path(&sms)), "two");
+        assert_eq!(open(&dir2.join("data/sms.txt.pbenc")), "one");
+        let runs = runs(&root);
+        assert_eq!(runs.last().unwrap().replaced[0].path, "data/sms.txt.pbenc");
+        forget(&root);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

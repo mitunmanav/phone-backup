@@ -997,6 +997,28 @@ impl App {
                     ));
                 })
             }
+            Ask::Unlock(path, password, err, _) => {
+                let (name, _) = label_of(path);
+                let ready = !password.is_empty();
+                confirm(
+                    ctx,
+                    &format!("Password for {name}"),
+                    "Unlock",
+                    "Cancel",
+                    ready,
+                    |ui| {
+                        ui.label("This backup is protected with a password.");
+                        let edit = egui::TextEdit::singleline(&mut **password)
+                            .password(true)
+                            .desired_width(f32::INFINITY);
+                        ui.add(edit).request_focus();
+                        if let Some(e) = err {
+                            ui.label(RichText::new(e.as_str()).color(t.error));
+                        }
+                        ui.label(muted("It stays unlocked until you close Phone Backup."));
+                    },
+                )
+            }
             Ask::History(path, runs, pick) => {
                 let (name, _) = label_of(path);
                 confirm(
@@ -1050,6 +1072,11 @@ impl App {
                 Some(Ask::Delete(path, _)) => self.tidy(ctx, Job::Delete, path, None),
                 Some(Ask::History(path, _, pick)) => self.use_version(path, pick),
                 Some(Ask::Copy(from, into)) => self.tidy(ctx, Job::Copy, from, into),
+                Some(Ask::Unlock(path, password, _, job)) => match backup::unlock(&path, &password)
+                {
+                    Ok(()) => self.unlocked(ctx, job),
+                    Err(e) => self.ask = Some(Ask::Unlock(path, password, Some(e), job)),
+                },
                 Some(Ask::Rename(path, name, _)) => match backup::rename_backup(&path, &name) {
                     Ok(new) => {
                         self.choose(Some(new.clone()));
@@ -1066,6 +1093,13 @@ impl App {
                 None => {}
             },
             None => {}
+        }
+    }
+
+    /// Runs the job that stopped to ask for a password again.
+    fn unlocked(&mut self, ctx: &egui::Context, job: Job) {
+        if job == Job::Backup {
+            self.start(ctx);
         }
     }
 

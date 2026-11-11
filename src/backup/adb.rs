@@ -646,6 +646,10 @@ pub(super) fn adb_backup_run(
     let status = |s: String| report(Msg::Status(s));
     let id = phone_id(serial);
     let root = dest.join(safe_name(&format!("{model}_{id}")));
+    if locked(&root) {
+        report(Msg::Locked(root.clone()));
+        return Err(LOCKED.into());
+    }
     // Copies this run replaces go to history/<run>; dropped on any early return, it still
     // saves what it moved.
     let rec = Recorder::start(&root, "USB or Wi-Fi");
@@ -850,7 +854,7 @@ pub(super) fn adb_backup_run(
         let (mut saved, mut parts_saved) = (ok, true);
         if ok {
             let mut save = |path: PathBuf, text: String| match keep_data(&rec, &path, &text) {
-                Ok(()) => written.push(path),
+                Ok(at) => written.push(at),
                 Err(_) => saved = false,
             };
             if file == "contacts.txt" {
@@ -860,7 +864,8 @@ pub(super) fn adb_backup_run(
                 save(data_dir.join(file).with_extension("json"), json);
             }
             if file == "mms.txt" {
-                parts_saved = mms_attachments(serial, &data_dir.join("mms"));
+                let dir = data_dir.join("mms");
+                parts_saved = mms_attachments(serial, &dir, rec.seal_for(&dir.join("x")));
                 cut = interrupted(serial);
             }
             save(data_dir.join(file), out);
@@ -908,46 +913,73 @@ pub(super) fn adb_backup_run(
     Ok((s, ran))
 }
 
-/// Saves one of the personal data files. Unchanged text is left as it is; changed text first
-/// moves the older copy into the run's history. Written to a side file first, so a full disk
-/// never leaves half a file in its place.
-pub(super) fn keep_data(rec: &Recorder, path: &Path, text: &str) -> std::io::Result<()> {
-    if fs::read(path).is_ok_and(|old| old == text.as_bytes()) {
-        return Ok(());
+/// Saves one of the personal data files, sealed when the backup's password protects it.
+/// Unchanged text is left as it is; changed text first moves the older copy into the run's
+/// history. Written to a side file first, so a full disk never leaves half a file in its place.
+/// Returns where the file is.
+pub(super) fn keep_data(rec: &Recorder, path: &Path, text: &str) -> std::io::Result<PathBuf> {
+    let key = rec.seal_for(path);
+    let target = match key {
+        Some(_) => crypt::sealed_path(path),
+        None => path.to_path_buf(),
+    };
+    let old = fs::read(&target).ok();
+    // A sealed copy differs on every write, so the text inside it is compared.
+    let same = match (key, &old) {
+        (_, None) => false,
+        (None, Some(old)) => old == text.as_bytes(),
+        (Some(k), Some(old)) => {
+            crypt::decrypt_bytes(k, old).is_ok_and(|o| o.as_slice() == text.as_bytes())
+        }
+    };
+    if same {
+        return Ok(target);
     }
-    let mut part = path.as_os_str().to_owned();
+    let bytes = match key {
+        Some(k) => crypt::encrypt_bytes(k, text.as_bytes()),
+        None => text.as_bytes().to_vec(),
+    };
+    let mut part = target.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
-    if let Err(e) = fs::write(&part, text) {
+    if let Err(e) = fs::write(&part, &bytes) {
         let _ = fs::remove_file(&part);
         return Err(e);
     }
-    let new = !path.exists();
-    if let Err(e) = rec.keep_old(path) {
-        let _ = fs::remove_file(&part);
-        return Err(e);
+    // A plain copy left from before the password moves aside too, so only one copy is latest.
+    let other = (key.is_some() && path.exists()).then_some(path);
+    for old in [Some(target.as_path()), other].into_iter().flatten() {
+        if let Err(e) = rec.keep_old(old) {
+            let _ = fs::remove_file(&part);
+            return Err(e);
+        }
     }
-    fs::rename(&part, path)?;
-    if new {
-        rec.added(path, text.len() as u64);
+    fs::rename(&part, &target)?;
+    if old.is_none() {
+        rec.added(&target, bytes.len() as u64);
     }
-    Ok(())
+    Ok(target)
 }
 
 /// Saves the pictures, videos and other files sent in picture messages as `<part id>_<name>`.
 /// False when one could not be written to this computer.
-pub(super) fn mms_attachments(serial: &str, dir: &Path) -> bool {
+pub(super) fn mms_attachments(serial: &str, dir: &Path, seal: Option<&crypt::Key>) -> bool {
     let mut all = true;
     let parts = shell(
         serial,
         "content query --uri content://mms/part --projection _id:ct:cl",
     );
     for (id, name) in parts.lines().filter_map(mms_part) {
-        let file = dir.join(safe_name(&format!("{id}_{name}")));
-        // A part never changes once saved, so only new ones are read.
-        if fs::metadata(&file).is_ok_and(|m| m.len() > 0) {
+        let plain = dir.join(safe_name(&format!("{id}_{name}")));
+        // A part never changes once saved, so only new ones are read, sealed or not.
+        let sealed = crypt::sealed_path(&plain);
+        if [&plain, &sealed]
+            .iter()
+            .any(|f| fs::metadata(f).is_ok_and(|m| m.len() > 0))
+        {
             continue;
         }
+        let file = if seal.is_some() { sealed } else { plain };
         let _ = fs::create_dir_all(dir);
         let mut c = adb();
         c.args([
@@ -962,6 +994,10 @@ pub(super) fn mms_attachments(serial: &str, dir: &Path) -> bool {
             return all;
         }
         // A part cut short by a full disk would also be kept for good.
+        let bytes = match seal {
+            Some(k) if !bytes.is_empty() => crypt::encrypt_bytes(k, &bytes),
+            _ => bytes,
+        };
         if !bytes.is_empty() && fs::write(&file, bytes).is_err() {
             let _ = fs::remove_file(&file);
             all = false;
