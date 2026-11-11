@@ -64,9 +64,37 @@ cargo test --locked
 
 CI runs the same checks and a release build on Windows for every pull request. Every merge to `main` that changes the app makes the Release workflow publish the next version (1.0.1, 1.0.2, ...) with SHA-256 checksums, so **Check for updates** finds it.
 
+## Roadmap
+
+Work after 1.0 is split into small groups, and each one ships as its own release. The order, the dependencies and the plan for every group are in [docs/plans](docs/plans/README.md).
+
+**In progress**
+
+- Put contacts, call history, calendar and messages back on a phone ([#90](https://github.com/mitunmanav/phone-backup/pull/90)), and move them in **Phone to phone** too ([#91](https://github.com/mitunmanav/phone-backup/pull/91)).
+
+**Next**
+
+- Backup history: keep older copies of changed files and restore from any earlier backup.
+- Password-protected backups, and saving a backup as a single archive.
+- WhatsApp: save its local backup and move it to a new Android phone.
+
+**Later**
+
+- More of the phone: settings, wallpapers, ringtones and blocked numbers, where Android allows it.
+- Pick single conversations and apps, filter by file type, and see the time left.
+- Browse and copy files both ways, and install, save or remove apps.
+- Edit contacts and send texts from the PC.
+- A photo gallery, search across backups, and imports from Google Takeout and SMS Backup & Restore.
+- Erase a phone safely before selling it, and see what fills it up.
+- iPhone to Android, read from an ordinary iPhone backup on the PC.
+- Keyboard and screen-reader support, and more languages.
+- A signed installer, then Mac and Linux builds.
+
+Not planned: scheduled or cloud backups, app private data (Android blocks it without root), and anything that needs an account. [docs/feature-map.md](docs/feature-map.md) compares Phone Backup with other backup apps, feature by feature.
+
 ## Contributing
 
-Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described in [SECURITY.md](SECURITY.md). Plans are in the [roadmap](docs/PLAN.md) and the [Android helper design](docs/android-design.md).
+Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described in [SECURITY.md](SECURITY.md). Before starting on a bigger change, check the [roadmap](#roadmap) and its plan, so the work lines up; the [Android helper design](docs/android-design.md) covers the phone side.
 
 ## License
 

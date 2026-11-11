@@ -1,10 +1,10 @@
 # Work plan: feature groups
 
-[competitors.md](../competitors.md) lists about 290 features found in other phone backup
-apps. This page splits what is worth building into groups. Each group has its own plan file
-and its own branch and pull request. The pull request starts as a draft holding only the
-plan; the code for that group lands in the same pull request, step by step, and it is
-merged into `main` only when the group is done and CI passes.
+[feature-map.md](../feature-map.md) lists about 290 features found in other phone backup
+apps. This page splits what is worth building into groups, each with a plan file here.
+A group's code is built on the branch its plan names and opened as one pull request. It is
+merged into `main` when the group is done and CI passes, and the merge publishes it as the
+next release. A feature group bumps the minor version (1.1.0, 1.2.0, ...).
 
 ## How the groups were cut
 
