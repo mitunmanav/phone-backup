@@ -40,7 +40,7 @@ pub(crate) struct Cord<'a> {
 }
 
 /// Files that could not be copied, and what the phone refused to give.
-fn problems(done: &[Summary]) -> usize {
+pub(crate) fn problems(done: &[Summary]) -> usize {
     done.iter()
         .map(|s| s.errors.len() + s.data.iter().filter(|d| !d.1).count())
         .sum()

@@ -154,7 +154,7 @@ impl App {
                             let i = row * cols + k;
                             if chip(ui, t, "\u{E768}", name, self.sound_pick == i, cell) {
                                 self.sound_pick = i;
-                                backup::play_sound(i);
+                                backup::play_sound(backup::SOUNDS[i].1);
                             }
                         }
                     });
