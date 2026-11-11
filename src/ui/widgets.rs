@@ -261,7 +261,8 @@ pub(crate) fn plate(
     };
     plate_frame(t).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        if ui.available_width() < 400.0 {
+        // Side by side down to the width where the words would get too squeezed to read.
+        if ui.available_width() < 300.0 {
             ui.horizontal_top(|ui| words(ui, true));
             ui.add_space(6.0);
             add(ui);
@@ -270,7 +271,7 @@ pub(crate) fn plate(
                 ui.set_min_height(44.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     add(ui);
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| words(ui, false));
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| words(ui, true));
                 });
             });
         }
