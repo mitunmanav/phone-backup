@@ -173,7 +173,14 @@ impl App {
                         let flagged: Vec<_> = FLAGS
                             .iter()
                             .map(|&(bit, word)| {
-                                let n = p.flags.iter().filter(|f| *f & bit != 0).count();
+                                // Only ticked ones: once unticked, the button goes away.
+                                let n = list
+                                    .iter()
+                                    .zip(&p.flags)
+                                    .filter(|((path, ..), f)| {
+                                        *f & bit != 0 && p.chosen.contains(path)
+                                    })
+                                    .count();
                                 (bit, word, n)
                             })
                             .filter(|f| f.2 > 0)

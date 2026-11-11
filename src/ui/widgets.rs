@@ -261,7 +261,8 @@ pub(crate) fn plate(
     };
     plate_frame(t).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        if ui.available_width() < 400.0 {
+        // Side by side down to the width where the words would get too squeezed to read.
+        if ui.available_width() < 300.0 {
             ui.horizontal_top(|ui| words(ui, true));
             ui.add_space(6.0);
             add(ui);
@@ -270,7 +271,7 @@ pub(crate) fn plate(
                 ui.set_min_height(44.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     add(ui);
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| words(ui, false));
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| words(ui, true));
                 });
             });
         }
@@ -845,16 +846,17 @@ pub(crate) fn dialog(
 }
 
 /// A dialog that asks before doing something: a title, a body that scrolls when the window is
-/// short, the button that does it (first, as on Windows) and Cancel. Some(true) for the button,
-/// Some(false) for Cancel, Esc or a click outside; None while it stays open.
+/// short, the button that does it (first, as on Windows) and the safe answer `no`. Some(true) for
+/// the button, Some(false) for `no`, Esc or a click outside; None while it stays open.
 pub(crate) fn confirm(
     ctx: &egui::Context,
     title: &str,
     yes: &str,
+    no: &str,
     can: bool,
     body: impl FnOnce(&mut egui::Ui),
 ) -> Option<bool> {
-    let modal = egui::Modal::new(egui::Id::unique("confirm"))
+    let modal = egui::Modal::new(egui::Id::unique("confirm").with(title))
         .frame(dialog_frame(ctx))
         .show(ctx, |ui| {
             let room = ctx.content_rect();
@@ -866,13 +868,12 @@ pub(crate) fn confirm(
                 .auto_shrink([false, true])
                 .show(ui, body);
             ui.add_space(12.0);
+            let t = tokens(ui.visuals().dark_mode);
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                if ui.button("Cancel").clicked() {
+                if quiet(ui, &t, no, true).clicked() {
                     return Some(false);
                 }
-                ui.add_enabled(can, egui::Button::new(yes))
-                    .clicked()
-                    .then_some(true)
+                primary(ui, &t, yes, can).then_some(true)
             })
             .inner
         });

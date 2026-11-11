@@ -234,7 +234,7 @@ impl App {
             let target = y.clamp(list.top() + 20.0, list.bottom() - 20.0);
             // The plug glides to the new folder, and the cable swings slack while it travels.
             let now = if self.motion {
-                spring(ui.ctx(), egui::Id::unique("restore-plug"), target, 0.55)
+                spring(ui.ctx(), egui::Id::unique("restore-plug"), target, 0.35)
             } else {
                 target
             };
@@ -460,7 +460,16 @@ impl App {
         self.onto_tiles(ui, t, room, &files_line, has, locked, phase);
         ui.add_space(6.0);
         let can = !locked && has_files && self.restore_files;
-        if quiet(ui, t, &label, can).clicked()
+        let why = if locked {
+            "Wait for the job to finish."
+        } else if !has_files {
+            "This backup has no files to choose from."
+        } else {
+            "Turn on Photos, files above first."
+        };
+        if quiet(ui, t, &label, can)
+            .on_disabled_hover_text(why)
+            .clicked()
             && let Some(path) = path
         {
             self.open_picker(ui.ctx(), path, false);
@@ -562,7 +571,9 @@ impl App {
         ui.allocate_ui_with_layout(vec2(w, HIT), Layout::left_to_right(Align::Center), |ui| {
             ui.label(txt("Your backups", 13.0, 600.0, t.ink));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                find = quiet(ui, t, "Find another…", !locked).clicked();
+                find = quiet(ui, t, "Find another…", !locked)
+                    .on_disabled_hover_text("Wait for the job to finish.")
+                    .clicked();
             });
         });
         if find
@@ -879,6 +890,7 @@ impl App {
                     ctx,
                     &format!("Delete the backup of {name}?"),
                     "Delete",
+                    "Cancel",
                     true,
                     |ui| {
                         ui.label("This moves the whole folder to the Recycle Bin:");
@@ -887,16 +899,18 @@ impl App {
                     },
                 )
             }
-            Ask::Rename(_, name, err) => confirm(ctx, "Rename backup", "Rename", true, |ui| {
-                let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
-                r.request_focus();
-                if let Some(e) = err {
-                    ui.label(RichText::new(e.as_str()).color(t.error));
-                }
-                ui.label(muted(
-                    "The next backup of this phone starts a new folder with its usual name.",
-                ));
-            }),
+            Ask::Rename(_, name, err) => {
+                confirm(ctx, "Rename backup", "Rename", "Cancel", true, |ui| {
+                    let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+                    r.request_focus();
+                    if let Some(e) = err {
+                        ui.label(RichText::new(e.as_str()).color(t.error));
+                    }
+                    ui.label(muted(
+                        "The next backup of this phone starts a new folder with its usual name.",
+                    ));
+                })
+            }
             Ask::Copy(from, into) => {
                 let (name, _) = label_of(from);
                 let others: Vec<_> = self
@@ -915,6 +929,7 @@ impl App {
                     ctx,
                     "Copy files into another backup",
                     "Copy files",
+                    "Cancel",
                     into.is_some(),
                     |ui| {
                         ui.label(format!(
