@@ -57,11 +57,11 @@ Rust client  <== JSON lines over TCP ==>      TCP server on 127.0.0.1:P
 ### 3.2 Session start (PC side)
 
 1. Pick the device (existing `detect()`).
-2. Remove any copy left by an interrupted job, then install with `adb install -g`, so the phone always runs the version embedded in this PC app. `-g` grants the runtime permissions at install time, so most phones need no permission taps. Some vendor builds ignore it, and the default-SMS role can never be granted this way; the `perms` reply shows what is still missing.
+2. Remove any copy left by an interrupted job, unless it is still the phone's messages app (`cmd role get-role-holders android.app.role.SMS`, or `settings get secure sms_default_application` on older phones), then install with `adb install -r -g`, so the phone always runs the version embedded in this PC app. `-g` grants the runtime permissions at install time, so most phones need no permission taps. Some vendor builds ignore it, and the default-SMS role can never be granted this way; the `perms` reply shows what is still missing.
 3. Start the service with `am start-foreground-service` (Android 8+) or `am startservice`, passing a random session token as an intent extra.
 4. `adb forward tcp:0 tcp:<P>`; adb prints the free PC port it chose. `P` is a fixed port constant of the companion app.
 5. Connect and send `hello` with the token. The service rejects any connection without it, so other apps on the phone cannot use the channel.
-6. When done: `adb forward --remove` and `adb uninstall`, which also stops the service. Nothing of ours stays on the phone.
+6. When done: `adb forward --remove` and `adb uninstall`, which also stops the service. Nothing of ours stays on the phone, unless the helper is still its messages app (see 3.4).
 
 ### 3.3 Protocol
 
@@ -85,8 +85,8 @@ PH <- {"id":5,"ok":false,"error":"permission_denied","need":"sms"}
 ```
 
 - Operations: `hello`, `list`, `insert`, `sms_role`, `bye`.
-- Kinds: `contacts`, `sms`, `mms`, `calllog`, `calendar`. `list` of `mms` gives only `date`, `msg_box` and `sub`, enough to tell what is already on the phone.
-- Restore never adds anything twice: the PC lists what the phone has, gives each item a key (contacts by name, numbers and emails; calls by number, date and duration; events by title, start and repeat rule; SMS by number, date and text; MMS by date and box) and sends only the rest. So a restore that broke off carries on where it stopped when run again. Keys live in `src/backup/personal.rs`.
+- Kinds: `contacts`, `sms`, `mms`, `calllog`, `calendar`. `list` of `mms` gives each picture message in the shape `insert` takes, with its `addresses` and its `parts` (`ct`, `cl`, `text`) but no attachment bytes, enough to tell what is already on the phone. `list` of `calendar` also gives `deleted`, `eventStatus`, `original_id` and `original_sync_id`: the PC leaves out deleted and cancelled events and the single changed or cancelled occurrences of a repeating one, so the series comes back whole and a moved occurrence is back at its usual time.
+- Restore never adds anything twice: the PC lists what the phone has, gives each item a key (contacts by name, numbers and emails; calls by number, date and duration; events by title, start and repeat rule; SMS by number, date and text; MMS by date, box, people and text) and sends only the rest. So a restore that broke off carries on where it stopped when run again. Keys live in `src/backup/personal.rs`.
 - `insert` items: contacts as `{"name","rows":[{"mimetype","data1"…}]}`, one raw contact each in the phone's local account; events into a local calendar "Restored by Phone Backup"; MMS as `{"date","msg_box","sub","addresses":[…],"parts":[{"ct","cl","text","file"}]}`. Contact photos, contact groups and event reminders are not in backups, so they do not come back.
 - Binary data (MMS attachments, contact photos) does not travel in JSON. The phone writes it under its app-specific folder (`Android/data/<package>/files/out/`) and returns a relative path; the PC fetches it with `adb pull`. Restore mirrors this with `adb push` into `files/in/`.
 - File bytes never go through this channel. `adb pull` / `adb push` already stream large files well, so the companion needs no file server of its own.
@@ -97,8 +97,8 @@ Android lets only the default SMS app write messages.
 
 1. `sms_role` reports whether the companion is the default, and names the app that is (`Telephony.Sms.getDefaultSmsPackage`), which the PC remembers.
 2. If it is not, the PC opens `MainActivity` with `--ez sms_role true`, which asks: `RoleManager.createRequestRoleIntent(ROLE_SMS)` on Android 10+, `Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT` on 6 to 9. The PC tells the user to confirm on the phone and polls `sms_role` for up to three minutes.
-3. Insert in batches, keeping `date`, `date_sent`, `read` and `type`. Skip messages that already exist (same address, date and body hash), so restoring twice does not duplicate anything.
-4. Ask the user to switch back by opening the system default-apps screen and naming their previous app. Android does not let an app give the role back by itself. If they have not within three minutes, the helper stays installed: removing the messages app leaves some phones with none.
+3. Insert in batches (200 items, 20 picture messages; each batch may take up to ten minutes), keeping `date`, `date_sent`, `read` and `type`. Skip messages that already exist (same address, date and body hash), so restoring twice does not duplicate anything.
+4. Ask the user to switch back by opening the system default-apps screen and naming their previous app. Android does not let an app give the role back by itself. This also happens after a Stop, and after the user said yes too late for step 2. If they have not switched back within three minutes, the helper stays installed: removing the messages app leaves some phones with none. Every uninstall, at the end of a job or before the next one, first checks the helper is not the messages app.
 5. While the companion is the default, its receiver stores any incoming SMS in the provider so nothing is lost. An incoming MMS in those minutes is not kept.
 
 Known risk: some vendor builds (for example MIUI/HyperOS) block installs over USB unless a developer option is on, and may restrict SMS writes. Handle these when a test phone shows them.

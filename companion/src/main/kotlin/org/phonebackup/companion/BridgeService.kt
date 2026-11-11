@@ -178,11 +178,13 @@ class BridgeService : Service() {
                             "duration", "eventTimezone", "eventEndTimezone", "rdate", "exrule", "exdate",
                             "availability", "accessLevel", "hasAlarm", "calendar_id", "calendar_displayName",
                             "account_name", "account_type",
+                            // So the PC can leave out deleted and cancelled events, and the single
+                            // changed or cancelled occurrences of a repeating one.
+                            "deleted", "eventStatus", "original_id", "original_sync_id",
                         ),
                         writer,
                     )
-                    // Only what tells a restored picture message from one already on the phone.
-                    "mms" -> list(id, Telephony.Mms.CONTENT_URI, arrayOf("date", "msg_box", "sub"), writer)
+                    "mms" -> listMms(id, writer)
                     else -> writer.send(error(id, "unknown_kind"))
                 }
                 "insert" -> insert(id, request.optString("kind"), request.optJSONArray("items") ?: JSONArray(), writer)
@@ -220,6 +222,42 @@ class BridgeService : Service() {
             }
         }
         writer.send(JSONObject().put("id", id).put("end", true).put("count", count))
+    }
+
+    /**
+     * Picture messages in the shape the PC restores them, without attachment bytes: what tells a
+     * restored one from one already on the phone. {"date", "msg_box", "sub", "addresses":
+     * [{"address", "type"}], "parts": [{"ct", "cl", "text"}]}.
+     */
+    private fun listMms(id: Any?, writer: BufferedWriter) {
+        var count = 0
+        contentResolver.query(Telephony.Mms.CONTENT_URI, arrayOf("_id", "date", "msg_box", "sub"), null, null, null)?.use { rows ->
+            while (rows.moveToNext()) {
+                val mid = rows.getString(0)
+                val item = JSONObject()
+                    .put("date", rows.getString(1) ?: "")
+                    .put("msg_box", rows.getString(2) ?: "")
+                    .put("sub", rows.getString(3) ?: "")
+                    .put("addresses", table(Uri.parse("content://mms/$mid/addr"), arrayOf("address", "type")))
+                    .put("parts", table(Uri.parse("content://mms/$mid/part"), arrayOf("ct", "cl", "text")))
+                writer.send(JSONObject().put("id", id).put("item", item))
+                count++
+            }
+        }
+        writer.send(JSONObject().put("id", id).put("end", true).put("count", count))
+    }
+
+    /** The text `columns` of every row at `uri`, as a list of objects. */
+    private fun table(uri: Uri, columns: Array<String>) = JSONArray().apply {
+        contentResolver.query(uri, columns, null, null, null)?.use { rows ->
+            while (rows.moveToNext()) {
+                val row = JSONObject()
+                for (column in columns.indices) {
+                    if (rows.getType(column) != Cursor.FIELD_TYPE_BLOB) row.put(columns[column], rows.getString(column) ?: "")
+                }
+                put(row)
+            }
+        }
     }
 
     /** Adds each item on its own, so one bad item fails alone. The PC sends only what the phone lacks. */
