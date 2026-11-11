@@ -301,11 +301,15 @@ impl App {
                                                     ui.label(RichText::new(why).size(12.0));
                                                 }
                                                 ui.label(
-                                                    RichText::new(format!(
-                                                        "{} in {}",
-                                                        size(*bytes),
-                                                        dir.display()
-                                                    ))
+                                                    RichText::new(if dir.as_os_str().is_empty() {
+                                                        size(*bytes)
+                                                    } else {
+                                                        format!(
+                                                            "{} in {}",
+                                                            size(*bytes),
+                                                            dir.display()
+                                                        )
+                                                    })
                                                     .color(t.muted)
                                                     .size(12.0),
                                                 );

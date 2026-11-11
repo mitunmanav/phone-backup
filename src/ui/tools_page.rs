@@ -461,6 +461,7 @@ impl App {
                     let done = matches!(self.tool_result("heic"), Some(Ok(_)));
                     if done
                         && let Some(f) = &folder
+                        && f.join("jpg").is_dir()
                         && primary(ui, t, "Open jpg folder", true)
                     {
                         let _ = backup::explorer().arg(f.join("jpg")).spawn();
