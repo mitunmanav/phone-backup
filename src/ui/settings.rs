@@ -74,7 +74,9 @@ impl App {
         };
         let mut change = false;
         plate(ui, t, "\u{E8B7}", &title, &free, |ui| {
-            change = quiet(ui, t, "Change…", !busy).clicked();
+            change = quiet(ui, t, "Change…", !busy)
+                .on_disabled_hover_text("Wait for the job to finish.")
+                .clicked();
         });
         if change {
             self.change_folder();
@@ -154,7 +156,7 @@ impl App {
                             let i = row * cols + k;
                             if chip(ui, t, "\u{E768}", name, self.sound_pick == i, cell) {
                                 self.sound_pick = i;
-                                backup::play_sound(i);
+                                backup::play_sound(backup::SOUNDS[i].1);
                             }
                         }
                     });

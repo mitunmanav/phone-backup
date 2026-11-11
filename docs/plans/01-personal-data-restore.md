@@ -4,7 +4,7 @@
 
 ## Why
 
-Every paid suite in [competitors.md](../competitors.md) (MobileTrans, Dr.Fone, Coolmuster,
+Every paid suite in [feature-map.md](../feature-map.md) (MobileTrans, Dr.Fone, Coolmuster,
 MobiKin, AnyDroid, Syncios, Apeaksoft) and every phone maker's tool (Smart Switch, HiSuite,
 Clone Phone) puts contacts, messages, call history and calendar back on a phone. Phone
 Backup saves all four but can only hand the user `contacts.vcf` to import by hand. The app

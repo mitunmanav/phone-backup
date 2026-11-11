@@ -13,6 +13,7 @@ mod transfer_tab;
 mod widgets;
 mod wifi;
 
+pub(crate) use backup_tab::problems;
 pub(crate) use picker::*;
 pub(crate) use read_page::*;
 pub(crate) use theme::*;
