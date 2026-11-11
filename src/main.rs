@@ -1063,6 +1063,11 @@ impl eframe::App for App {
         });
     }
 
+    fn on_exit(&mut self) {
+        // Unlocked backup keys are wiped from memory.
+        backup::forget_keys();
+    }
+
     fn persist_egui_memory(&self) -> bool {
         !test_run()
     }

@@ -27,3 +27,12 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32
 
 [build-dependencies]
 winresource = "0.1.34"
+
+# Password keys take a moment even when optimised; unoptimised they take many seconds.
+[profile.dev.package]
+argon2 = { opt-level = 3 }
+blake2 = { opt-level = 3 }
+aes = { opt-level = 3 }
+aes-gcm = { opt-level = 3 }
+ghash = { opt-level = 3 }
+polyval = { opt-level = 3 }
