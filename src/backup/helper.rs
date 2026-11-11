@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::hash::BuildHasher;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 /// Empty in a build made without the Android tools; see build.rs.
@@ -38,7 +39,8 @@ impl Drop for Installed {
             let forward = format!("tcp:{}", self.port);
             let _ = logged(adb().args(["-s", serial, "forward", "--remove", &forward]));
         }
-        if !self.keep {
+        // Also when the user made it the messages app after this job stopped waiting for that.
+        if !self.keep && !is_sms_app(serial) {
             let _ = logged(adb().args(["-s", serial, "uninstall", PACKAGE]));
         }
     }
@@ -58,11 +60,17 @@ fn start_with(serial: &str, token: &str) -> Result<Helper, String> {
         port: 0,
         keep: false,
     };
-    let _ = logged(adb().args(["-s", serial, "uninstall", PACKAGE]));
+    // A copy left by an earlier job because it is still the messages app stays; the install
+    // below replaces it in place.
+    if !is_sms_app(serial) {
+        let _ = logged(adb().args(["-s", serial, "uninstall", PACKAGE]));
+    }
     let file = std::env::temp_dir().join(format!("phone-backup-helper-{token}.apk"));
     fs::write(&file, APK).map_err(|e| format!("Cannot prepare the phone helper: {e}."))?;
     let mut install = adb();
-    install.args(["-s", serial, "install", "-g"]).arg(&file);
+    install
+        .args(["-s", serial, "install", "-r", "-g"])
+        .arg(&file);
     let out = run(install);
     let _ = fs::remove_file(&file);
     if let Some(e) = interrupted(serial) {
@@ -95,7 +103,7 @@ fn start_with(serial: &str, token: &str) -> Result<Helper, String> {
 
 /// 128 bits for the helper to tell this app from other apps on the phone. RandomState's keys come
 /// from the operating system's random source.
-fn token() -> String {
+pub(super) fn token() -> String {
     let word = || std::collections::hash_map::RandomState::new().hash_one(0u8);
     format!("{:016x}{:016x}", word(), word())
 }
@@ -115,6 +123,38 @@ fn hello(port: u16, token: &str) -> Result<TcpStream, String> {
         std::thread::sleep(Duration::from_millis(200));
     }
     Err("The helper app on the phone did not answer. Unlock the phone, then try again.".into())
+}
+
+/// Whether the helper is the phone's messages app. Removing it then leaves some phones with none.
+/// Not killed by Stop, since it decides whether the helper may be removed.
+fn is_sms_app(serial: &str) -> bool {
+    let cmd = "cmd role get-role-holders android.app.role.SMS; settings get secure sms_default_application";
+    logged(adb().args(["-s", serial, "shell", cmd]))
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(PACKAGE))
+}
+
+/// Sends `request` and returns the answer whose id is `id`. Answers to earlier requests that
+/// came too late are skipped. None when the connection ends or the wait runs out.
+fn reply(mut socket: &TcpStream, request: &str, id: &str) -> Option<Value> {
+    writeln!(socket, "{request}").ok()?;
+    let mut lines = BufReader::new(socket);
+    loop {
+        let mut line = String::new();
+        if lines.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if let Ok(answer) = serde_json::from_str::<Value>(&line)
+            && answer["id"] == id
+        {
+            return Some(answer);
+        }
+    }
+}
+
+/// A new id for each request whose answer can come late.
+fn next_id(op: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("{op}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Sends one line and returns the one line that answers it; empty when the connection ends.
@@ -170,10 +210,10 @@ impl Helper {
     /// Adds one batch of items of `kind` (see `batches`) to the phone. Returns how many were
     /// added and how many failed, or None when the phone did not answer.
     pub fn insert(&self, kind: &str, items: &[&Value]) -> Option<(usize, usize)> {
-        // Adding a batch of contacts can take the phone a while.
-        let _ = self.socket.set_read_timeout(Some(Duration::from_secs(120)));
-        let request = insert_request(kind, items);
-        let reply: Value = serde_json::from_str(&ask(&self.socket, &request)).ok()?;
+        // Adding a batch of contacts, or picture messages with videos, can take the phone a while.
+        let _ = self.socket.set_read_timeout(Some(Duration::from_secs(600)));
+        let id = next_id("insert");
+        let reply = reply(&self.socket, &insert_request(&id, kind, items), &id)?;
         let n = |key: &str| reply[key].as_u64().map(|n| n as usize);
         Some((n("inserted")?, n("failed")?))
     }
@@ -182,9 +222,9 @@ impl Helper {
     /// that is. None when the phone did not answer.
     pub fn sms_role(&self) -> Option<(bool, String, String)> {
         let _ = self.socket.set_read_timeout(Some(Duration::from_secs(5)));
-        let reply: Value =
-            serde_json::from_str(&ask(&self.socket, r#"{"id":"sms_role","op":"sms_role"}"#))
-                .ok()?;
+        let id = next_id("sms_role");
+        let request = format!(r#"{{"id":"{id}","op":"sms_role"}}"#);
+        let reply = reply(&self.socket, &request, &id)?;
         let s = |key: &str| reply[key].as_str().unwrap_or("").to_string();
         Some((reply["default"].as_bool()?, s("package"), s("name")))
     }
@@ -196,9 +236,10 @@ impl Helper {
     }
 
     /// Opens the phone's default apps screen, where the user picks the messages app.
+    /// Not killed by Stop: after a Stop the user still has to switch back.
     pub fn open_default_apps(&self) {
         let start = "am start -a android.settings.MANAGE_DEFAULT_APPS_SETTINGS";
-        shell(&self._installed.serial, start);
+        let _ = logged(adb().args(["-s", &self._installed.serial, "shell", start]));
     }
 
     /// Where on the phone pushed files wait for the helper to read them.
@@ -215,18 +256,20 @@ impl Helper {
 /// Requests longer than this many bytes are not sent: the helper drops a line over 64K characters.
 const MAX_REQUEST: usize = 60_000;
 
-fn insert_request(kind: &str, items: &[&Value]) -> String {
+fn insert_request(id: &str, kind: &str, items: &[&Value]) -> String {
     let items: Vec<String> = items.iter().map(|i| i.to_string()).collect();
     format!(
-        r#"{{"id":"insert","op":"insert","kind":"{kind}","items":[{}]}}"#,
+        r#"{{"id":"{id}","op":"insert","kind":"{kind}","items":[{}]}}"#,
         items.join(",")
     )
 }
 
-/// `items` in batches of at most 200 that each fit one request. An item too big for any request
-/// is left out and returned on its own.
+/// `items` in batches of at most 200 (20 picture messages, whose files take long to copy) that
+/// each fit one request. An item too big for any request is left out and returned on its own.
 pub fn batches<'a>(kind: &str, items: &[&'a Value]) -> (Vec<Vec<&'a Value>>, usize) {
-    let empty = insert_request(kind, &[]).len();
+    let most = if kind == "mms" { 20 } else { 200 };
+    // Room for the longest id `next_id` makes.
+    let empty = insert_request(&format!("insert-{}", u64::MAX), kind, &[]).len();
     let (mut out, mut too_big) = (vec![Vec::new()], 0);
     let mut size = empty;
     for item in items {
@@ -236,7 +279,7 @@ pub fn batches<'a>(kind: &str, items: &[&'a Value]) -> (Vec<Vec<&'a Value>>, usi
             continue;
         }
         let last = out.last_mut().unwrap();
-        if last.len() == 200 || size + len > MAX_REQUEST {
+        if last.len() == most || size + len > MAX_REQUEST {
             out.push(Vec::new());
             size = empty;
         }
@@ -634,8 +677,32 @@ mod tests {
         assert_eq!(too_big, 1);
         assert_eq!(out.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2]);
         for batch in out {
-            assert!(insert_request("sms", &batch).len() <= MAX_REQUEST);
+            assert!(insert_request(&next_id("insert"), "sms", &batch).len() <= MAX_REQUEST);
         }
+        let mms: Vec<&Value> = std::iter::repeat_n(&small, 45).collect();
+        let (out, _) = batches("mms", &mms);
+        assert_eq!(out.iter().map(Vec::len).collect::<Vec<_>>(), [20, 20, 5]);
+    }
+
+    /// An answer that came too late for its request must not be read as the next one's.
+    #[test]
+    fn late_answers_are_skipped() {
+        let server = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = TcpStream::connect(server.local_addr().unwrap()).unwrap();
+        std::thread::spawn(move || {
+            let (mut phone, _) = server.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(&phone).read_line(&mut request).unwrap();
+            let id: Value = serde_json::from_str(&request).unwrap();
+            let id = id["id"].as_str().unwrap().to_string();
+            let late = r#"{"id":"insert-0","ok":true,"inserted":200,"failed":0}"#;
+            let answer = format!(r#"{{"id":"{id}","ok":true,"default":false}}"#);
+            writeln!(phone, "{late}\n{answer}").unwrap();
+        });
+        let id = next_id("sms_role");
+        let request = format!(r#"{{"id":"{id}","op":"sms_role"}}"#);
+        let answer = reply(&client, &request, &id).unwrap();
+        assert_eq!(answer["default"], false);
     }
 
     #[test]

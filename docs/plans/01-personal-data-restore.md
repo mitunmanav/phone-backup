@@ -81,6 +81,8 @@ largest gap in the core job and the base for groups 02, 10 and 13.
    android.settings.MANAGE_DEFAULT_APPS_SETTINGS`) and say "Choose <previous app> again".
 4. Do not uninstall the helper until the role is back with another app; uninstalling the
    default SMS app leaves some phones with none.
+   This holds after a Stop and after a late yes on the phone too: every uninstall first
+   checks the helper is not the messages app.
 
 ### UI
 

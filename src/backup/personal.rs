@@ -66,10 +66,31 @@ pub(super) fn saved_items(folder: &Path, kind: &str) -> Vec<Value> {
             &["contact_id", "mimetype", "display_name", "data1"],
         )),
         "calllog" => items("call_log", &["number", "name", "date", "duration", "type"]),
-        "calendar" => items("calendar", &EVENT_KEYS),
+        "calendar" => live_events(items("calendar", &EVENT_KEYS)),
         "sms" => items("sms", &["address", "date", "type", "body"]),
         "mms" => read("mms.txt").map_or_else(Vec::new, |t| mms_items(folder, &t)),
         _ => Vec::new(),
+    }
+}
+
+/// Leaves out events the phone deleted or cancelled, and the single changed or cancelled
+/// occurrences of a repeating event: on their own they would come back as extra events. The
+/// series comes back whole, so a moved occurrence is back at its usual time.
+fn live_events(events: Vec<Value>) -> Vec<Value> {
+    let set = |e: &Value, k| !matches!(str_of(e, k), "" | "0" | "NULL");
+    events
+        .into_iter()
+        .filter(|e| !set(e, "deleted") && str_of(e, "eventStatus") != "2")
+        .filter(|e| !set(e, "original_id") && !set(e, "original_sync_id"))
+        .collect()
+}
+
+/// The phone's own items in the shape `saved_items` gives, so their keys can match.
+fn as_saved(kind: &str, on_phone: Vec<Value>) -> Vec<Value> {
+    match kind {
+        "contacts" => contacts(&on_phone),
+        "calendar" => live_events(on_phone),
+        _ => on_phone,
     }
 }
 
@@ -233,39 +254,96 @@ pub(super) fn key(kind: &str, item: &Value) -> String {
         ),
         "calendar" => format!("{}|{}|{}", s("title"), s("dtstart"), s("rrule")),
         "sms" => format!("{}|{}|{}", number_key(s("address")), s("date"), s("body")),
-        "mms" => format!("{}|{}", s("date"), s("msg_box")),
+        // Attachments are not compared: one that was not saved is not put back either.
+        "mms" => {
+            let list = |k: &str| item[k].as_array().map_or(&[][..], Vec::as_slice);
+            let mut people: Vec<String> = list("addresses")
+                .iter()
+                .map(|a| str_of(a, "address"))
+                .filter(|a| !a.is_empty() && *a != "insert-address-token")
+                .map(number_key)
+                .collect();
+            people.sort();
+            people.dedup();
+            let text: Vec<&str> = list("parts")
+                .iter()
+                .filter(|p| p["ct"] == "text/plain")
+                .map(|p| match str_of(p, "text") {
+                    "NULL" => "",
+                    t => t,
+                })
+                .collect();
+            format!(
+                "{}|{}|{}|{}",
+                s("date"),
+                s("msg_box"),
+                people.join(","),
+                text.join("\n")
+            )
+        }
         _ => String::new(),
     }
 }
 
-/// The saved items the phone does not have yet: not on it, and each once.
-pub(super) fn missing<'a>(kind: &str, saved: &'a [Value], on_phone: &[Value]) -> Vec<&'a Value> {
-    let mut seen: HashSet<String> = on_phone.iter().map(|i| key(kind, i)).collect();
-    saved.iter().filter(|i| seen.insert(key(kind, i))).collect()
+/// How many different items `saved` holds (the same item saved twice counts once), and those the
+/// phone does not have yet, each once.
+pub(super) fn missing<'a>(
+    kind: &str,
+    saved: &'a [Value],
+    on_phone: &[Value],
+) -> (usize, Vec<&'a Value>) {
+    let on_phone: HashSet<String> = on_phone.iter().map(|i| key(kind, i)).collect();
+    let mut seen = HashSet::new();
+    let mut new = Vec::new();
+    for item in saved {
+        let key = key(kind, item);
+        if !on_phone.contains(&key) && !seen.contains(&key) {
+            new.push(item);
+        }
+        seen.insert(key);
+    }
+    (seen.len(), new)
 }
 
-/// One kind's line in the check or the report.
-pub(super) fn line(name: &str, saved: usize, added: usize, failed: usize, check: bool) -> String {
-    let already = saved.saturating_sub(added + failed);
-    let mut said = match (check, added + failed) {
-        (true, 0) => format!("{name}: all {} are already on the phone.", count(saved)),
-        (true, n) => format!(
-            "{name}: will add {} of {}. The other {} {} already on the phone.",
-            count(n),
-            count(saved),
-            count(already),
-            if already == 1 { "is" } else { "are" }
-        ),
-        (false, _) => format!(
-            "{name}: added {} of {}. {} {} already on the phone.",
-            count(added),
-            count(saved),
+/// One kind's line in the check or the report: of `saved` different items, `new` were not on the
+/// phone; of those, `added` were added and `failed` could not be. The rest of `new` was not
+/// reached, after a Stop or a lost connection.
+pub(super) fn line(
+    name: &str,
+    saved: usize,
+    new: usize,
+    added: usize,
+    failed: usize,
+    check: bool,
+) -> String {
+    let already = saved.saturating_sub(new);
+    let are = if already == 1 { "is" } else { "are" };
+    if check {
+        return match new {
+            0 => format!("{name}: all {} are already on the phone.", count(saved)),
+            n if n == saved => format!("{name}: will add all {}.", count(n)),
+            n => format!(
+                "{name}: will add {} of {}. The other {} {are} already on the phone.",
+                count(n),
+                count(saved),
+                count(already),
+            ),
+        };
+    }
+    let mut said = format!("{name}: added {} of {}.", count(added), count(saved));
+    if already > 0 {
+        said += &format!(
+            " {} {} already on the phone.",
             count(already),
             were(already)
-        ),
-    };
-    if !check && failed > 0 {
+        );
+    }
+    if failed > 0 {
         said += &format!(" {} could not be added.", count(failed));
+    }
+    let left = new.saturating_sub(added + failed);
+    if left > 0 {
+        said += &format!(" {} {} not added yet.", count(left), were(left));
     }
     said
 }
@@ -316,22 +394,26 @@ pub fn restore_personal(
             "Checking {} on the phone…",
             name.to_lowercase()
         )));
-        let on_phone = helper.items(kind).ok_or_else(|| {
-            if connected(serial) {
-                format!(
-                    "The phone did not show its {}. Unlock the phone, then try again.",
-                    name.to_lowercase()
-                )
-            } else {
-                DISCONNECTED_DATA.to_string()
-            }
-        })?;
-        todo.push((*kind, *name, items.len(), missing(kind, items, &on_phone)));
+        let on_phone = helper
+            .items(kind)
+            .map(|i| as_saved(kind, i))
+            .ok_or_else(|| {
+                if connected(serial) {
+                    format!(
+                        "The phone did not show its {}. Unlock the phone, then try again.",
+                        name.to_lowercase()
+                    )
+                } else {
+                    DISCONNECTED_DATA.to_string()
+                }
+            })?;
+        let (saved, new) = missing(kind, items, &on_phone);
+        todo.push((*kind, *name, saved, new));
     }
     if check {
         let mut said: Vec<String> = todo
             .iter()
-            .map(|(_, name, saved, new)| line(name, *saved, new.len(), 0, true))
+            .map(|(_, name, saved, new)| line(name, *saved, new.len(), 0, 0, true))
             .collect();
         let adds = |kinds: &[&str]| {
             todo.iter()
@@ -352,21 +434,19 @@ pub fn restore_personal(
     let mut done = 0;
     let mut said = Vec::new();
     let mut failed_all = 0;
-    // The messages app before the helper took over, once it has.
-    let mut switched: Option<String> = None;
+    // The messages app before the helper was asked to take over, once it was asked.
+    let mut previous: Option<String> = None;
     let mut result = Ok(());
     for (kind, name, saved, new) in &todo {
         if new.is_empty() {
-            said.push(line(name, *saved, 0, 0, false));
+            said.push(line(name, *saved, 0, 0, 0, false));
             continue;
         }
-        if matches!(*kind, "sms" | "mms") && switched.is_none() {
-            match take_sms_role(&helper, report) {
-                Ok(previous) => switched = Some(previous),
-                Err(e) => {
-                    result = Err(e);
-                    break;
-                }
+        if matches!(*kind, "sms" | "mms") && previous.is_none() {
+            let taken = take_sms_role(&helper, report, &mut previous);
+            if let Err(e) = taken {
+                result = Err(e);
+                break;
             }
         }
         if *kind == "mms" {
@@ -392,14 +472,21 @@ pub fn restore_personal(
                     failed += f;
                 }
                 None => {
-                    result = Err(DISCONNECTED_DATA.to_string());
+                    result = Err(if connected(serial) {
+                        format!(
+                            "The phone took too long to add {}. What was added so far stays on the phone; restore again to add the rest.",
+                            name.to_lowercase()
+                        )
+                    } else {
+                        DISCONNECTED_DATA.to_string()
+                    });
                     break;
                 }
             }
             done += batch.len();
         }
         failed_all += failed;
-        said.push(line(name, *saved, added, failed, false));
+        said.push(line(name, *saved, new.len(), added, failed, false));
         if result.is_err() {
             break;
         }
@@ -409,7 +496,8 @@ pub fn restore_personal(
         total,
         now: String::new(),
     });
-    if let Some(previous) = switched
+    // Also after a Stop or a failed switch: the user may have said yes on the phone anyway.
+    if let Some(previous) = previous
         && let Some(note) = give_back_sms_role(&mut helper, &previous, report)
     {
         said.push(note);
@@ -420,14 +508,20 @@ pub fn restore_personal(
     }
 }
 
-/// Makes the helper the phone's messages app, which Android requires to add messages. Returns
-/// the name of the app that was, to switch back to.
-fn take_sms_role(helper: &helper::Helper, report: &dyn Fn(Msg)) -> Result<String, String> {
+/// Makes the helper the phone's messages app, which Android requires to add messages. Sets
+/// `previous` to the name of the app that was, to switch back to, before asking the user.
+fn take_sms_role(
+    helper: &helper::Helper,
+    report: &dyn Fn(Msg),
+    previous: &mut Option<String>,
+) -> Result<(), String> {
     let lost = "The phone stopped answering. Messages were not restored; plug it back in and restore again.";
-    let (default, _, previous) = helper.sms_role().ok_or(lost)?;
+    let (default, _, name) = helper.sms_role().ok_or(lost)?;
     if default {
-        return Ok(String::new());
+        *previous = Some(String::new());
+        return Ok(());
     }
+    *previous = Some(name);
     report(Msg::Status(
         "On the phone, choose Phone Backup Helper as the messages app for now. You switch back at the end.".into(),
     ));
@@ -439,21 +533,22 @@ fn take_sms_role(helper: &helper::Helper, report: &dyn Fn(Msg)) -> Result<String
         }
         std::thread::sleep(Duration::from_secs(1));
         if helper.sms_role().ok_or(lost)?.0 {
-            return Ok(previous);
+            return Ok(());
         }
     }
     Err("Messages were not restored: the phone did not make Phone Backup Helper its messages app. Restore again and choose it when the phone asks.".into())
 }
 
-/// Opens the phone's default apps screen and waits for the user to choose `previous` (the
-/// earlier messages app's name) again. If they do not, the helper stays on the phone, since
-/// removing the messages app leaves some phones with none, and the returned note says so.
+/// If the helper is the phone's messages app, opens the phone's default apps screen and waits for
+/// the user to choose `previous` (the earlier messages app's name) again, even after a Stop. If
+/// they do not, the helper stays on the phone, since removing the messages app leaves some phones
+/// with none, and the returned note says so.
 fn give_back_sms_role(
     helper: &mut helper::Helper,
     previous: &str,
     report: &dyn Fn(Msg),
 ) -> Option<String> {
-    if previous.is_empty() {
+    if previous.is_empty() || matches!(helper.sms_role(), Some((false, ..))) {
         return None;
     }
     report(Msg::Status(format!(
@@ -461,7 +556,7 @@ fn give_back_sms_role(
     )));
     helper.open_default_apps();
     let end = std::time::Instant::now() + Duration::from_secs(180);
-    while std::time::Instant::now() < end && !stopped() {
+    while std::time::Instant::now() < end {
         std::thread::sleep(Duration::from_secs(1));
         match helper.sms_role() {
             Some((false, ..)) => return None,
@@ -507,18 +602,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pb-personal-{}-{}",
             std::process::id(),
-            helper_token()
+            helper::token()
         ));
         fs::create_dir_all(dir.join("data").join("mms")).unwrap();
         for (name, text) in files {
             fs::write(dir.join("data").join(name), text).unwrap();
         }
         dir
-    }
-
-    fn helper_token() -> u64 {
-        use std::hash::BuildHasher;
-        std::collections::hash_map::RandomState::new().hash_one(0u8)
     }
 
     #[test]
@@ -549,13 +639,14 @@ mod tests {
             {"contact_id":"1","mimetype":EMAIL,"display_name":"Ann  Lee","data1":"A@B.c"},
             {"contact_id":"2","mimetype":PHONE,"display_name":"Bo","data1":"1"},
         ]).as_array().unwrap());
-        // The phone formats the number its own way and has its own ids.
-        let phone = contacts(json!([
+        // The phone formats the number its own way and has its own ids. It lists data rows, as
+        // the helper sends them.
+        let phone = as_saved("contacts", json!([
             {"contact_id":"40","mimetype":NAME,"display_name":"Ann Lee","data1":"Ann Lee"},
             {"contact_id":"40","mimetype":EMAIL,"display_name":"Ann Lee","data1":"a@b.c"},
             {"contact_id":"40","mimetype":PHONE,"display_name":"Ann Lee","data1":"+91 98765-43210"},
-        ]).as_array().unwrap());
-        let new = missing("contacts", &saved, &phone);
+        ]).as_array().unwrap().clone());
+        let (_, new) = missing("contacts", &saved, &phone);
         assert_eq!(new.len(), 1);
         assert_eq!(new[0]["name"], "Bo");
         // A contact with no name comes back as it was, and the phone then shows its number.
@@ -567,14 +658,16 @@ mod tests {
             1,
             "no name row made"
         );
-        let phone = contacts(
+        let phone = as_saved(
+            "contacts",
             json!([
                 {"contact_id":"41","mimetype":PHONE,"display_name":"+1 555-0100","data1":"+1 555-0100"},
             ])
             .as_array()
-            .unwrap(),
+            .unwrap()
+            .clone(),
         );
-        assert!(missing("contacts", &no_name, &phone).is_empty());
+        assert!(missing("contacts", &no_name, &phone).1.is_empty());
 
         let sms = json!([
             {"address":"+91 1234567890","date":"5","body":"hi"},
@@ -582,8 +675,9 @@ mod tests {
             {"address":"1234567890","date":"6","body":"hi"},
         ]);
         let on_phone = json!([{"address":"01234567890","date":"5","body":"hi","read":"1"}]);
-        let new = missing("sms", sms.as_array().unwrap(), on_phone.as_array().unwrap());
+        let (saved, new) = missing("sms", sms.as_array().unwrap(), on_phone.as_array().unwrap());
         assert_eq!(new, [&sms[2]], "on the phone, and twice in the backup");
+        assert_eq!(saved, 2, "the same message saved twice counts once");
 
         let calls = json!([{"number":"1","date":"9","duration":"3"},{"number":"1","date":"9","duration":"4"}]);
         let on_phone = json!([{"number":"1","date":"9","duration":"3","type":"1"}]);
@@ -593,6 +687,7 @@ mod tests {
                 calls.as_array().unwrap(),
                 on_phone.as_array().unwrap()
             )
+            .1
             .len(),
             1
         );
@@ -606,8 +701,39 @@ mod tests {
                 events.as_array().unwrap(),
                 on_phone.as_array().unwrap()
             )
+            .1
             .is_empty()
         );
+    }
+
+    #[test]
+    fn deleted_cancelled_and_single_occurrence_events_stay_out() {
+        let events = json!([
+            {"title":"Gym","dtstart":"100","rrule":"FREQ=WEEKLY","deleted":"0","eventStatus":"1"},
+            {"title":"Gym","dtstart":"700","original_id":"5","eventStatus":"2"},
+            {"title":"Gym","dtstart":"1400","original_sync_id":"abc"},
+            {"title":"Old","dtstart":"9","deleted":"1"},
+            {"title":"Called off","dtstart":"9","eventStatus":"2"},
+            {"title":"Dentist","dtstart":"1"},
+        ]);
+        let kept = live_events(events.as_array().unwrap().clone());
+        let titles: Vec<&str> = kept.iter().map(|e| str_of(e, "title")).collect();
+        assert_eq!(titles, ["Gym", "Dentist"]);
+    }
+
+    #[test]
+    fn picture_messages_from_the_same_second_stay_apart() {
+        let m = |from: &str, text: &str| {
+            json!({"date":"100","msg_box":"1","addresses":[{"address":from,"type":"137"},{"address":"insert-address-token","type":"151"}],
+                "parts":[{"ct":"application/smil","cl":"smil.xml","text":"<smil/>"},{"ct":"text/plain","cl":"t.txt","text":text},{"ct":"image/jpeg","cl":"a.jpg","file":"12_a.jpg"}]})
+        };
+        let saved = [m("+91 1", "Look"), m("+91 2", "Look"), m("+91 1", "Again")];
+        assert_eq!(missing("mms", &saved, &[]).1.len(), 3);
+        // The phone lists the same message without the file names the backup gave its parts.
+        let on_phone = json!([{"date":"100","msg_box":"1","sub":"","addresses":[{"address":"+911","type":"137"}],
+            "parts":[{"ct":"text/plain","cl":"t.txt","text":"Look"},{"ct":"image/jpeg","cl":"a.jpg","text":""}]}]);
+        let (_, new) = missing("mms", &saved, on_phone.as_array().unwrap());
+        assert_eq!(new, [&saved[1], &saved[2]]);
     }
 
     #[test]
@@ -673,7 +799,7 @@ mod tests {
         // b.jpg was not saved, so it cannot come back.
         assert_eq!(parts.len(), 3, "{parts:?}");
         assert_eq!(parts[2]["file"], "12_a.jpg");
-        assert_eq!(key("mms", m), "100|1");
+        assert_eq!(key("mms", m), "100|1|911|Look");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -714,7 +840,7 @@ mod tests {
         let which = [true, true, true, false];
         let quiet = |_| {};
         let (said, _) = restore_personal(&serial, &dir, which, true, &quiet).unwrap();
-        assert_eq!(said.matches("will add 1 of 1").count(), 3, "{said}");
+        assert_eq!(said.matches("will add all 1.").count(), 3, "{said}");
         let (said, failed) = restore_personal(&serial, &dir, which, false, &quiet).unwrap();
         assert_eq!(
             (said.matches("added 1 of 1").count(), failed),
@@ -729,16 +855,25 @@ mod tests {
     #[test]
     fn lines_say_what_was_added() {
         assert_eq!(
-            line("Contacts", 812, 0, 0, true),
+            line("Contacts", 812, 0, 0, 0, true),
             "Contacts: all 812 are already on the phone."
         );
         assert_eq!(
-            line("Messages", 10_240, 1_204, 0, true),
+            line("Messages", 10_240, 1_204, 0, 0, true),
             "Messages: will add 1,204 of 10,240. The other 9,036 are already on the phone."
         );
         assert_eq!(
-            line("Call history", 10, 6, 1, false),
+            line("Call history", 10, 7, 6, 1, false),
             "Call history: added 6 of 10. 3 were already on the phone. 1 could not be added."
+        );
+        // Stopped after the first batch: the rest was not tried, so it is not "on the phone".
+        assert_eq!(
+            line("Messages", 1_000, 1_000, 200, 0, false),
+            "Messages: added 200 of 1,000. 800 were not added yet."
+        );
+        assert_eq!(
+            line("Contacts", 5, 0, 0, 0, false),
+            "Contacts: added 0 of 5. 5 were already on the phone."
         );
     }
 }
