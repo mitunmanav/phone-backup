@@ -1,101 +1,179 @@
 <div align="center">
 
+<img src="assets/logo.png" width="96" alt="Phone Backup logo">
+
 # Phone Backup
 
-**Back up, restore and move your Android phone with a free Windows app.**<br>
-No account, no cloud. Your backup is an ordinary folder on your PC.
+### A calm, private way to protect your Android phone
 
-[![Latest release](https://img.shields.io/github/v/release/mitunmanav/phone-backup?label=release)](https://github.com/mitunmanav/phone-backup/releases/latest)
+Back up, restore, and move your Android phone from a Windows PC.
+Your data stays in an ordinary folder you can open, copy, and keep wherever you choose.
+
+[![Latest release](https://img.shields.io/github/v/release/mitunmanav/phone-backup?label=latest)](https://github.com/mitunmanav/phone-backup/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mitunmanav/phone-backup/total)](https://github.com/mitunmanav/phone-backup/releases)
-[![CI](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml)
-[![License: GPL-3.0](https://img.shields.io/github/license/mitunmanav/phone-backup)](LICENSE)
+[![Build](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/mitunmanav/phone-backup)](LICENSE)
 
-[**Download**](https://phonebackup.oddlybuilt.in/download) | [Website](https://phonebackup.oddlybuilt.in) | [Guide](https://phonebackup.oddlybuilt.in/guide) | [FAQ](https://phonebackup.oddlybuilt.in/faq)
+[**Download**](https://phonebackup.oddlybuilt.in/download) ·
+[Website](https://phonebackup.oddlybuilt.in) ·
+[Guide](https://phonebackup.oddlybuilt.in/guide) ·
+[FAQ](https://phonebackup.oddlybuilt.in/faq)
+
+<br>
 
 <picture>
   <source srcset="docs/app-dark.png" media="(prefers-color-scheme: dark)">
-  <img src="docs/app-light.png" width="1100" alt="Phone Backup copying a phone to the PC: a small pixel courier carries boxes along the cable from the phone to shelves in the PC, above tiles for each kind of file.">
+  <img src="docs/app-light.png" width="1000" alt="Phone Backup showing a guided Android phone backup">
 </picture>
 
 </div>
 
-## What it does
+## Why Phone Backup?
+
+Most backup tools make your phone's data dependent on an account, a subscription, or a
+proprietary archive. Phone Backup takes a simpler approach:
+
+- **Your backup is yours.** It is a normal folder on your PC, not a cloud-only copy.
+- **See what will happen.** Choose what to copy, review changes, and restore everything or
+  only selected items.
+- **Keep control of sensitive data.** There is no account, advertising, or telemetry.
+- **Start without a complicated setup.** The app explains the steps for your phone and
+  supports USB, USB debugging, and Wi-Fi connections.
+
+## What you can do
 
 | | |
 |---|---|
-| **Back up** | Photos, videos, files, SD cards and installed apps, plus contacts, call history, messages and the calendar. Pick whole types or single folders; later backups copy only what changed, and you can pause and carry on later. |
-| **Restore** | Put files and apps back on any Android phone, all of them or picked from a list with previews. Files the phone already has are never replaced. **Verify** on the Restore page checks every file against its SHA-256 checksum. |
-| **Phone to phone** | Copy one phone straight to another, after seeing what will change. |
-| **Read and export** | Read a backup's messages, contacts, calls and calendar in the app. Export them as spreadsheets, printable pages, `contacts.vcf` and `.ics`, and sort photos by month. |
-| **Tools** | Find duplicates, turn HEIC photos into JPG, merge duplicate contacts, free up phone space once files are safely backed up, and open the phone's screen with [scrcpy](https://github.com/Genymobile/scrcpy). |
-| **Connect your way** | USB file transfer, USB debugging, or Wi-Fi by scanning a QR code. The app shows the steps for your phone's brand and can fetch Google's adb for you. |
+| **Back up a phone** | Copy photos, videos, documents, downloads, SD cards, and other files. With USB debugging enabled, also save installed apps, contacts, call history, messages, and calendar events. |
+| **Keep backups current** | Run the same backup again to copy only files that changed. Pause a job and continue later. |
+| **Restore safely** | Restore all files and apps, or select individual items. Existing files are left untouched. The app can verify every restored file with SHA-256 checksums. |
+| **Move to another Android phone** | Back up one phone, review the proposed changes, and transfer the content to another connected phone. |
+| **Read and export personal data** | Open contacts, calls, messages, and calendar data from a backup. Export it to CSV, HTML, `contacts.vcf`, printable pages, or `.ics`. |
+| **Tidy up your phone** | Find duplicate files, convert HEIC photos to JPG, merge duplicate contacts, and remove phone files only after they have been verified in a backup. |
+| **Use your preferred connection** | Connect over USB file transfer, USB debugging, or Wi-Fi. Wi-Fi pairing can be started by scanning a QR code. |
+| **Control the phone from your PC** | Launch [scrcpy](https://github.com/Genymobile/scrcpy) when it is available next to the app or on your `PATH`. |
 
 ## Get started
 
-1. [Download](https://phonebackup.oddlybuilt.in/download) `PhoneBackup-<version>-windows-x64.exe` and double-click it. Nothing to install. If Windows warns that the app is not code-signed, choose **More info**, then **Run anyway**.
-2. Plug in your phone, unlock it, and choose **File transfer** in its USB notification. For apps, contacts and messages, turn on USB debugging; the app shows how.
-3. Press **Back up now**.
+1. **[Download the latest Windows release](https://phonebackup.oddlybuilt.in/download).**
+   The release is a portable `.exe`; there is no installer.
+2. **Connect and unlock your phone.**
+   For photos and files, choose **File transfer** in the phone's USB notification. For
+   apps and personal data, also enable **USB debugging** in Developer options.
+3. **Open Phone Backup and follow the connection guide.**
+4. **Choose what to save and select _Back up now_.**
 
-The [guide](https://phonebackup.oddlybuilt.in/guide) covers Wi-Fi, restoring and moving to a new phone. Some phones do not allow reading personal data over USB; the app says when that happens.
+The [step-by-step guide](https://phonebackup.oddlybuilt.in/guide) covers Wi-Fi pairing,
+restoring to a phone, and moving to a new phone. If a device does not allow a particular
+kind of data to be read, Phone Backup explains that limitation instead of pretending the
+backup is complete.
 
-## Privacy
+## Connection modes
 
-The app goes online only when you click **Get adb** (to download it from Google) or **Check for updates** (to ask GitHub). It never sends your data: no account, ads or tracking. To read contacts, calls, messages and the calendar, it puts a small open-source helper app on the phone and removes it afterwards. Backups are not encrypted, so keep them on a drive only you use. Details are in the [FAQ](https://phonebackup.oddlybuilt.in/faq#privacy).
+### USB file transfer
+
+Best for photos, videos, documents, downloads, and other files. This is the least
+intrusive option and does not require Developer options.
+
+### USB debugging
+
+Required for installed apps, contacts, call history, messages, calendar events, restore,
+and phone-to-phone transfer. Phone Backup can help download Google's `adb` when it is
+missing.
+
+### Wi-Fi
+
+Useful when a cable is inconvenient. Pair through Android's Wireless debugging screen or
+scan the QR code shown by the app. Both devices stay on your local network; the transfer
+does not go through Phone Backup's servers.
+
+## Privacy and safety
+
+Phone Backup is designed to be useful without collecting anything:
+
+- **No account, cloud storage, ads, or tracking.**
+- **No data uploads.** The app only goes online when you ask it to download `adb` from
+  Google or check GitHub for an update.
+- **The Android helper is temporary.** To read contacts, calls, messages, and calendar
+  events, the app installs a small open-source companion over USB debugging and removes it
+  when the job finishes.
+- **Backups are ordinary, unencrypted folders.** Store them on a drive or location you
+  trust. Password-protected backups and archives are planned, but are not available yet.
+- **Restores are conservative.** Existing files are not replaced, and checksums can verify
+  that a backup and a restored file match.
+
+Read the [privacy FAQ](https://phonebackup.oddlybuilt.in/faq#privacy) for the full
+connection and data-flow details.
+
+## What it does not do
+
+Phone Backup is intentionally focused. It does not currently provide scheduled or cloud
+backups, access to Android app-private data without root, or an account-based sync service.
+WhatsApp has its own supported transfer flow for moving between Android and iPhone.
+
+See the [feature map](docs/feature-map.md) and [roadmap](docs/plans/README.md) for the
+planned work and the decisions behind the scope.
 
 ## Build from source
 
-Install the stable Rust toolchain with [rustup](https://rustup.rs/), then run this from the repository root on Windows:
+Phone Backup is a Rust desktop application with an open-source Kotlin companion for Android.
+The current release target is Windows.
+
+Install the stable Rust toolchain with [rustup](https://rustup.rs/), then run these commands
+from the repository root on Windows:
 
 ```powershell
 cargo build --locked --release
 ```
 
-The executable is `target/release/phone-backup.exe`. The app is written in Rust with [egui](https://github.com/emilk/egui); the phone helper in `companion/` is Kotlin.
+The executable is written to `target/release/phone-backup.exe`.
 
-## Developer checks
+The Android companion is built automatically by CI before the Rust application. To build it
+locally first:
 
-Run these before opening a pull request:
+```powershell
+companion\gradlew.bat -p companion assembleRelease
+cargo build --locked --release
+```
+
+## Development
+
+Run the same checks used by CI before opening a pull request:
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+cargo build --locked --release
 ```
 
-CI runs the same checks and a release build on Windows for every pull request. Every merge to `main` that changes the app makes the Release workflow publish the next version (1.0.1, 1.0.2, ...) with SHA-256 checksums, so **Check for updates** finds it.
+Useful areas of the repository:
 
-## Roadmap
+| Area | Purpose |
+|---|---|
+| `src/` | Rust desktop application and user interface |
+| `src/backup/adb.rs` | Android Debug Bridge connections and data collection |
+| `src/backup/mtp.rs` | USB file-transfer connections |
+| `src/backup/restore.rs` | Restore and phone-to-phone transfer |
+| `src/export.rs` | Reading and exporting contacts, calls, messages, and calendar data |
+| `src/tools.rs` | Duplicate detection, HEIC conversion, contact merging, and cleanup |
+| `companion/` | Temporary Android helper application |
+| `docs/` | User documentation, design notes, and the feature roadmap |
 
-Work after 1.0 is split into small groups, and each one ships as its own release. The order, the dependencies and the plan for every group are in [docs/plans](docs/plans/README.md).
-
-**In progress**
-
-- Put contacts, call history, calendar and messages back on a phone ([#90](https://github.com/mitunmanav/phone-backup/pull/90)), and move them in **Phone to phone** too ([#91](https://github.com/mitunmanav/phone-backup/pull/91)).
-
-**Next**
-
-- Backup history: keep older copies of changed files and restore from any earlier backup.
-- Password-protected backups, and saving a backup as a single archive.
-- WhatsApp: save its local backup and move it to a new Android phone.
-
-**Later**
-
-- More of the phone: settings, wallpapers, ringtones and blocked numbers, where Android allows it.
-- Pick single conversations and apps, filter by file type, and see the time left.
-- Browse and copy files both ways, and install, save or remove apps.
-- Edit contacts and send texts from the PC.
-- A photo gallery, search across backups, and imports from Google Takeout and SMS Backup & Restore.
-- Erase a phone safely before selling it, and see what fills it up.
-- iPhone to Android, read from an ordinary iPhone backup on the PC.
-- Keyboard and screen-reader support, and more languages.
-- A signed installer, then Mac and Linux builds.
-
-Not planned: scheduled or cloud backups, app private data (Android blocks it without root), and anything that needs an account. [docs/feature-map.md](docs/feature-map.md) compares Phone Backup with other backup apps, feature by feature.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the code map, debugging options, and pull
+request expectations.
 
 ## Contributing
 
-Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described in [SECURITY.md](SECURITY.md). Before starting on a bigger change, check the [roadmap](#roadmap) and its plan, so the work lines up; the [Android helper design](docs/android-design.md) covers the phone side.
+Bug reports, documentation improvements, and focused pull requests are welcome. Before
+starting a larger change, check the [roadmap](docs/plans/README.md) and open an issue so
+the scope can be discussed.
+
+If you find a security issue, please follow the private reporting instructions in
+[SECURITY.md](SECURITY.md). Do not include real backups, contacts, messages, phone serial
+numbers, or unredacted debug logs in issues or pull requests.
 
 ## License
 
-[GPL-3.0-or-later](LICENSE). Use, share and change it freely; shared copies and changed versions must stay under the same license.
+Phone Backup is free and open source software under the
+[GNU General Public License v3.0 or later](LICENSE).
