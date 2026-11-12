@@ -9,7 +9,7 @@ repository = "https://github.com/mitunmanav/phone-backup"
 [dependencies]
 eframe = { version = "0.37.0", features = ["persistence"] }
 mtp-rs = "0.37"
-rfd = "0.17.2"
+rfd = "0.18.0"
 tokio = { version = "1", features = ["rt", "macros"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 sha2 = "0.11"
