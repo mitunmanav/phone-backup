@@ -646,6 +646,9 @@ pub(super) fn adb_backup_run(
     let status = |s: String| report(Msg::Status(s));
     let id = phone_id(serial);
     let root = dest.join(safe_name(&format!("{model}_{id}")));
+    // Copies this run replaces go to history/<run>; dropped on any early return, it still
+    // saves what it moved.
+    let rec = Recorder::start(&root, "USB or Wi-Fi");
 
     let mut jobs = Vec::new();
 
@@ -778,7 +781,18 @@ pub(super) fn adb_backup_run(
         copied.set(done);
         report(Msg::Tiles(done, total));
     };
-    let errors = pull(serial, jobs, &root, report, &each);
+    let existed: HashSet<PathBuf> = jobs
+        .iter()
+        .filter(|j| j.local.exists())
+        .map(|j| j.local.clone())
+        .collect();
+    let keep = |old: &Path| rec.keep_old(old).is_ok();
+    let errors = pull(serial, jobs, &root, report, &each, &keep);
+    for j in &tried {
+        if !existed.contains(&j.local) && !needs_copy(j) {
+            rec.added(&j.local, j.size);
+        }
+    }
     if stopped() {
         return Err(STOPPED.into());
     }
@@ -835,12 +849,9 @@ pub(super) fn adb_backup_run(
         // Read from the phone and every file of it saved.
         let (mut saved, mut parts_saved) = (ok, true);
         if ok {
-            let mut save = |path: PathBuf, text: String| {
-                if fs::write(&path, text).is_ok() {
-                    written.push(path);
-                } else {
-                    saved = false;
-                }
+            let mut save = |path: PathBuf, text: String| match keep_data(&rec, &path, &text) {
+                Ok(()) => written.push(path),
+                Err(_) => saved = false,
             };
             if file == "contacts.txt" {
                 save(data_dir.join("contacts.vcf"), vcard(&out));
@@ -866,6 +877,16 @@ pub(super) fn adb_backup_run(
     if let Err(e) = update_sums(&root, &written, &listed, report) {
         notes.push(sums_lost(&e));
     }
+    // Only a run that looked at everything can tell what the phone no longer has.
+    let mut tops: Vec<String> = Vec::new();
+    if pick.files && pick.limits().is_empty() {
+        tops.extend(storages.iter().map(|(_, l)| rel(&root, l)));
+    }
+    if pick.apps {
+        tops.push("apps".into());
+    }
+    rec.gone(gone_from(&root, &read_sums(&root), &tops, &ran));
+    rec.finish();
 
     let copied: Vec<PathBuf> = tried
         .into_iter()
@@ -885,6 +906,32 @@ pub(super) fn adb_backup_run(
     };
     write_report(&s, &copied);
     Ok((s, ran))
+}
+
+/// Saves one of the personal data files. Unchanged text is left as it is; changed text first
+/// moves the older copy into the run's history. Written to a side file first, so a full disk
+/// never leaves half a file in its place.
+pub(super) fn keep_data(rec: &Recorder, path: &Path, text: &str) -> std::io::Result<()> {
+    if fs::read(path).is_ok_and(|old| old == text.as_bytes()) {
+        return Ok(());
+    }
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    if let Err(e) = fs::write(&part, text) {
+        let _ = fs::remove_file(&part);
+        return Err(e);
+    }
+    let new = !path.exists();
+    if let Err(e) = rec.keep_old(path) {
+        let _ = fs::remove_file(&part);
+        return Err(e);
+    }
+    fs::rename(&part, path)?;
+    if new {
+        rec.added(path, text.len() as u64);
+    }
+    Ok(())
 }
 
 /// Saves the pictures, videos and other files sent in picture messages as `<part id>_<name>`.
@@ -1030,12 +1077,14 @@ pub(super) fn needs_copy(job: &Job) -> bool {
 
 /// Copies jobs with one `adb pull` per folder (one per file is far slower), then checks each
 /// file. Returns the files that did not arrive. `each` hears of every batch once it is pulled.
+/// `keep` moves an older copy aside before a new one replaces it; false leaves the old one.
 pub(super) fn pull(
     serial: &str,
     jobs: Vec<Job>,
     root: &Path,
     report: &dyn Fn(Msg),
     each: &dyn Fn(&[Job]),
+    keep: &dyn Fn(&Path) -> bool,
 ) -> Vec<String> {
     let total = jobs.len();
     let mut done = 0;
@@ -1118,8 +1167,8 @@ pub(super) fn pull(
             c.args(["-s", serial, "pull", "-a", &job.remote])
                 .arg(&short);
             run(c);
-            // Only a whole file replaces the one in the backup.
-            if fs::metadata(&short).is_ok_and(|m| m.len() == job.size) {
+            // Only a whole file replaces the one in the backup, and only once the old one is kept.
+            if fs::metadata(&short).is_ok_and(|m| m.len() == job.size) && keep(&job.local) {
                 let _ = fs::rename(&short, &job.local);
             }
         } else {

@@ -105,8 +105,23 @@ enum Job {
 }
 
 /// A dialog about the chosen backup.
+/// How many older versions a backup keeps: words, at most this many runs, runs newer than
+/// this many months. Pruning runs after a backup with no errors and never touches the latest.
+const KEEP: [(&str, Option<usize>, Option<u32>); 7] = [
+    ("Keep all", None, None),
+    ("The last 5", Some(5), None),
+    ("The last 10", Some(10), None),
+    ("The last 30", Some(30), None),
+    ("From the last 3 months", None, Some(3)),
+    ("From the last 6 months", None, Some(6)),
+    ("From the last year", None, Some(12)),
+];
+
 enum Ask {
-    Delete(PathBuf),
+    /// The backup, and how many older versions go with it.
+    Delete(PathBuf, usize),
+    /// A backup's older versions, newest first, and the one ticked (None: the latest).
+    History(PathBuf, Vec<backup::Run>, Option<String>),
     /// The folder, the name being typed, and why the last try was refused.
     Rename(PathBuf, String, Option<String>),
     /// The backup to copy from, and the one chosen to copy into.
@@ -207,6 +222,10 @@ struct App {
     restore_apps: bool,
     /// Files chosen in the picker for one backup folder: (folder, chosen, files it holds).
     only: Option<(PathBuf, Arc<HashSet<PathBuf>>, usize)>,
+    /// Which of `KEEP` says how many older versions each backup keeps.
+    keep: usize,
+    /// The older version chosen for one backup folder: (folder, run name). None: the latest.
+    version: Option<(PathBuf, String)>,
     picker: Option<Picker>,
     /// Phone to phone: the serials of the phone to copy from and the one to copy to.
     from: Option<String>,
@@ -502,6 +521,13 @@ impl App {
             restore_files: true,
             restore_apps: true,
             only: None,
+            version: None,
+            keep: cc
+                .storage
+                .and_then(|s| s.get_string("keep"))
+                .and_then(|s| s.parse().ok())
+                .filter(|&i| i < KEEP.len())
+                .unwrap_or(0),
             picker: None,
             from: None,
             to: None,
@@ -532,7 +558,7 @@ impl App {
             scroll: None,
             shot: None,
         };
-        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [settings] [sound] [privacy] [license] [intro[=<step>]]
+        // PB_FIXTURE="worst|empty|one|many|pixel [restore] [checked] [transfer] [tools] [tool=<0-5>] [history] [settings] [sound] [privacy] [license] [intro[=<step>]]
         // [delete|rename|copy] [light|dark] [wifi] [busy [paused]] [stopask] [stoptool] [choose] [done] [stopped] [noadb[=working|failed]] [badusb] [zoom=<factor>] [scroll=<px>] [pick=<backup folder>]
         // [read=<backup folder> [contacts|calls|calendar]] [size=<w>x<h>] [shot=<file.png>]" opens
         // straight on test data; delete, rename and copy open that dialog for the first backup; wifi opens its dialog; checked shows the chosen backup as checked; choose opens "Choose files to back up"; busy shows a job running; paused shows it paused; stopask asks whether to stop it; stoptool asks whether to stop a running duplicate search; done and stopped show a backup that finished cleanly or was stopped; noadb shows adb missing; badusb shows a USB device Windows could not use; pick= opens the file picker on a real folder; read= opens the Read page on a real folder; intro opens the first-run steps; shot= saves a
@@ -557,6 +583,34 @@ impl App {
                     "checked" => app.fixture_checked(),
                     "restore" => app.tab = Tab::Restore,
                     "transfer" => app.tab = Tab::Transfer,
+                    "history" => {
+                        app.tab = Tab::Restore;
+                        let b = app.backups.first().map(|b| b.path.clone());
+                        app.choose(b.clone());
+                        let run =
+                            |name: &str, how: &str, added: usize, replaced: usize| backup::Run {
+                                name: name.into(),
+                                how: how.into(),
+                                added: vec![(String::new(), 0); added],
+                                replaced: vec![
+                                    backup::Replaced {
+                                        path: String::new(),
+                                        size: 0,
+                                        sum: None,
+                                    };
+                                    replaced
+                                ],
+                                finished: true,
+                                ..Default::default()
+                            };
+                        let runs = vec![
+                            run("2026-09-02_191407", "USB or Wi-Fi", 4210, 0),
+                            run("2026-10-14_082233", "MTP", 312, 6),
+                            run("2026-11-10_143205", "USB or Wi-Fi", 57, 3),
+                        ];
+                        let pick = Some(runs[1].name.clone());
+                        app.ask = Some(Ask::History(b.unwrap_or_default(), runs, pick));
+                    }
                     "delete" | "rename" | "copy" => {
                         app.tab = Tab::Restore;
                         let b = app
@@ -566,7 +620,7 @@ impl App {
                             .unwrap_or_default();
                         let into = app.backups.get(1).map(|b| b.path.clone());
                         app.ask = Some(match word {
-                            "delete" => Ask::Delete(b),
+                            "delete" => Ask::Delete(b, 3),
                             "rename" => Ask::Rename(
                                 b,
                                 "Mum's old phone: before the reset".into(),
@@ -683,7 +737,7 @@ impl App {
                     }
                     _ if word.starts_with("pick=") => app.open_picker(ctx, word[5..].into(), false),
                     _ if word.starts_with("read=") => {
-                        if let Ok(book) = export::book(Path::new(&word[5..])) {
+                        if let Ok(book) = export::book_as_of(Path::new(&word[5..]), None) {
                             app.reading = Some(Reading::new("Test backup".into(), book));
                             app.tab = Tab::Read;
                         }
@@ -1023,6 +1077,7 @@ impl eframe::App for App {
         storage.set_string("connect_addr", self.connect_addr.clone());
         storage.set_string("sound", bit(self.sound).to_string());
         storage.set_string("sound_pick", self.sound_pick.to_string());
+        storage.set_string("keep", self.keep.to_string());
         storage.set_string("grey", GREY.load(Ordering::Relaxed).to_string());
         storage.set_string(
             "auto_zoom",

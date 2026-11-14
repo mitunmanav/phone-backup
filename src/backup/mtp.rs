@@ -15,6 +15,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
     let (mut files, mut copied, mut errors) = (0, Vec::new(), Vec::new());
     let mut kept = Vec::new();
+    let rec = Recorder::start(&root, "MTP");
     // Windows ignores letter case, so IMG.jpg and img.jpg would overwrite each other.
     let mut seen = HashSet::new();
 
@@ -88,6 +89,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                     let _ = update_sums(&root, &copied, &[], report);
                     return Err(STOPPED.into());
                 }
+                let existed = local.exists();
                 // The whole name plus a suffix, so it never matches another file's name.
                 let mut part = local.clone().into_os_string();
                 part.push(".part-download");
@@ -107,12 +109,18 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                             .map_err(|e| e.to_string())?;
                     }
                     drop(out);
-                    // Only a fully downloaded file gets its real name.
+                    // Only a fully downloaded file gets its real name, once the older copy is kept.
+                    rec.keep_old(&local).map_err(|e| e.to_string())?;
                     fs::rename(&part, &local).map_err(|e| e.to_string())
                 }
                 .await;
                 match result {
-                    Ok(()) => copied.push(local),
+                    Ok(()) => {
+                        if !existed {
+                            rec.added(&local, obj.size);
+                        }
+                        copied.push(local)
+                    }
                     Err(e) => {
                         let _ = fs::remove_file(&part);
                         errors.push(format!("{}: {e}", local.display()));
@@ -127,6 +135,24 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
         Ok(()) => Vec::new(),
         Err(e) => vec![super::adb::sums_lost(&e)],
     };
+    // Only a run that looked at everything can tell what the phone no longer has.
+    if pick.limits().is_empty() && errors.is_empty() {
+        let tops: BTreeSet<String> = kept
+            .iter()
+            .filter_map(|p| {
+                let r = rel(&root, p);
+                Some(r.split_once('/')?.0.to_string())
+            })
+            .collect();
+        let tops: Vec<String> = tops.into_iter().collect();
+        rec.gone(gone_from(
+            &root,
+            &read_sums(&root),
+            &tops,
+            &kept.iter().cloned().collect(),
+        ));
+    }
+    rec.finish();
     let s = Summary {
         name,
         root,

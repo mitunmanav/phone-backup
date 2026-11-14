@@ -131,11 +131,19 @@ pub fn verify(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
             Err(_) => missing.push(path.as_str()),
         }
     }
-    if changed.is_empty() && missing.is_empty() {
-        return Ok(format!(
+    let (older, history) = verify_history(root, report);
+    if stopped() {
+        return Err("You stopped the check. The backup was not changed.".into());
+    }
+    if changed.is_empty() && missing.is_empty() && history.is_empty() {
+        let mut said = format!(
             "All {} match. Nothing has changed since they were backed up.",
             files(sums.len())
-        ));
+        );
+        if older > 0 {
+            said += &format!(" The {} kept from older versions match too.", files(older));
+        }
+        return Ok(said);
     }
     let mut msg = String::new();
     for (list, what) in [(&changed, "changed"), (&missing, "missing")] {
@@ -148,5 +156,14 @@ pub fn verify(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
             );
         }
     }
-    Err(msg + "Back up again to copy them from the phone, if it still has them.")
+    if !(changed.is_empty() && missing.is_empty()) {
+        msg += "Back up again to copy them from the phone, if it still has them.\n";
+    }
+    for line in &history {
+        msg += &format!("{line}\n");
+    }
+    if !history.is_empty() {
+        msg += "Older versions cannot be copied again: the phone no longer has them.\n";
+    }
+    Err(msg.trim_end().to_string())
 }

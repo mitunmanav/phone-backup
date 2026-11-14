@@ -51,12 +51,13 @@ impl App {
         let (ask, asks) = mpsc::channel::<Vec<PathBuf>>();
         let (tx, rx) = mpsc::channel();
         let (ctx, dir) = (ctx.clone(), folder.clone());
+        let version = self.version_of(&folder);
         thread::spawn(move || {
             let send = |f: Found| {
                 ctx.request_repaint();
                 tx.send(f).is_ok()
             };
-            if !send(Found::List(backup::backup_files(&dir))) {
+            if !send(Found::List(backup::backup_files(&dir, version.as_deref()))) {
                 return;
             }
             let mut todo = Vec::new();
