@@ -22,6 +22,7 @@ impl App {
             name: name.into(),
             files,
             apps,
+            personal: [files; 4],
             age_days: age,
             // A size not added up yet, on the backup of unknown date.
             bytes: age.map(|a| 2_147_483_648 + a * 937_000_123),
@@ -199,7 +200,7 @@ impl App {
             _ => None,
         });
         self.preview = first_adb.zip(self.chosen.clone()).map(|(serial, path)| {
-            let plan = (serial, path, true, true, None);
+            let plan = (serial, path, true, true, None, [true; 4]);
             (plan, Ok("Files: will copy 128,456 files (214.7 GB) to the phone. 1,284 files already on the phone will be skipped; nothing is replaced. This phone has no SD card named 3A1F-0C2B or 9C33-6BD5, so those files cannot be restored.\nApps: will install 212 of 214, for example com.northwindindustries.holdings.expensereports.enterprise, com.whatsapp, org.mozilla.firefox. The rest are already on the phone.".into()))
         });
     }

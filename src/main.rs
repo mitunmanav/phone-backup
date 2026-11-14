@@ -205,6 +205,8 @@ struct App {
     chosen: Option<PathBuf>,
     restore_files: bool,
     restore_apps: bool,
+    /// Which of `backup::PERSONAL` to restore.
+    restore_personal: [bool; 4],
     /// Files chosen in the picker for one backup folder: (folder, chosen, files it holds).
     only: Option<(PathBuf, Arc<HashSet<PathBuf>>, usize)>,
     picker: Option<Picker>,
@@ -251,8 +253,16 @@ struct App {
     shot: Option<PathBuf>,
 }
 
-/// A restore's choices: phone serial, backup folder, files, apps, and the chosen files (None: all).
-type Plan = (String, PathBuf, bool, bool, Option<Arc<HashSet<PathBuf>>>);
+/// A restore's choices: phone serial, backup folder, files, apps, the chosen files (None: all),
+/// and which of `backup::PERSONAL` to put back.
+type Plan = (
+    String,
+    PathBuf,
+    bool,
+    bool,
+    Option<Arc<HashSet<PathBuf>>>,
+    [bool; 4],
+);
 
 /// Rows of the duplicate list: (group, file in it, or None for the group's heading).
 type Rows = Vec<(usize, Option<usize>)>;
@@ -425,6 +435,7 @@ impl App {
             folders: get("folders").lines().map(str::to_string).collect(),
             kinds: std::array::from_fn(|k| on(3 + k)),
             max_size: get("max_size").parse().ok(),
+            ..Pick::default()
         };
 
         let mut app = Self {
@@ -501,6 +512,7 @@ impl App {
             chosen: None,
             restore_files: true,
             restore_apps: true,
+            restore_personal: [true; 4],
             only: None,
             picker: None,
             from: None,

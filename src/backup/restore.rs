@@ -121,6 +121,8 @@ pub struct Saved {
     pub name: String,
     pub files: bool,
     pub apps: bool,
+    /// Which of `PERSONAL` it holds.
+    pub personal: [bool; 4],
     /// Days since the last backup into it (its report is rewritten by every backup).
     pub age_days: Option<u64>,
     /// None until a worker has added it up.
@@ -171,6 +173,7 @@ pub(super) fn saved(path: &Path) -> Option<Saved> {
             .to_string(),
         files,
         apps,
+        personal: has_personal(path),
         age_days: stamp
             .and_then(|s| s.elapsed().ok())
             .map(|d| d.as_secs() / 86_400),
@@ -538,7 +541,8 @@ pub fn restore_files(
 pub(super) const DISCONNECTED_RESTORE: &str = "The phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.";
 const DISCONNECTED_APPS: &str = "The phone was disconnected. Apps installed so far stay on the phone; plug it back in and restore again to continue.";
 
-/// Restores photos and files first, then apps, from one backup folder. With `check`, changes
+/// Restores photos and files first, then apps, then contacts, calls, calendar and messages, from
+/// one backup folder. With `check`, changes
 /// nothing on the phone and says what a restore would do; otherwise saves the restore report
 /// in the backup folder. `phone` names the phone in that report. Also returns how many files
 /// and apps failed.
@@ -577,8 +581,17 @@ pub(super) fn restore_in(
         let apps_only = only.filter(|_| apps_too);
         result = restore_apps(serial, folder, apps_only, check, report).map(&mut keep);
     }
+    if pick.data && result.is_ok() {
+        result = restore_personal(serial, folder, pick.personal, check, report).map(&mut keep);
+    }
     let result = match result {
-        Ok(()) => Ok((said.join("\n"), failed)),
+        Ok(()) => Ok((
+            said.into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            failed,
+        )),
         Err(e) => Err(said.into_iter().chain([e]).collect::<Vec<_>>().join("\n")),
     };
     if !check {
