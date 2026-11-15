@@ -12,6 +12,7 @@ use std::time::{Duration, UNIX_EPOCH};
 mod adb;
 mod checksums;
 mod helper;
+mod history;
 mod merge;
 mod mtp;
 mod report;
@@ -19,6 +20,7 @@ mod restore;
 
 pub use adb::*;
 pub use checksums::*;
+pub use history::*;
 pub use merge::*;
 pub use mtp::*;
 pub use report::*;
@@ -858,7 +860,7 @@ mod tests {
         // Picking the files folder itself works too.
         let (again, _) = saved_files(&root.join("files"), Some("")).unwrap();
         // Listing for the picker keeps every card, even one this phone lacks.
-        let all = backup_files(&root).unwrap();
+        let all = backup_files(&root, None).unwrap();
         fs::remove_dir_all(&root).unwrap();
         let remotes: Vec<_> = jobs.iter().map(|j| j.remote.as_str()).collect();
         assert_eq!(
@@ -1155,7 +1157,7 @@ mod tests {
             .expect("the picture of the picture message");
         assert_eq!(fs::read_to_string(pic.path()).unwrap(), "JPEGDATA\n");
         // The Read page finds the message and its saved attachment.
-        let book = crate::export::book(&first.root).unwrap();
+        let book = crate::export::book_as_of(&first.root, None).unwrap();
         let said = book
             .threads
             .iter()
@@ -1191,7 +1193,7 @@ mod tests {
         };
         let dest2 = dest.join("some");
         let part = adb_backup(&serial, "E2E", &dest2, some, &quiet).unwrap();
-        let held = backup_files(&part.root).unwrap();
+        let held = backup_files(&part.root, None).unwrap();
         assert!(held.iter().all(|(p, ..)| {
             p.starts_with(part.root.join("files").join("E2E"))
                 && p.extension().is_some_and(|e| e == "txt")
@@ -1242,14 +1244,14 @@ mod tests {
         let sh = |cmd: &str| shell(&serial, cmd).replace("\r\n", "\n");
         // Choosing files restores only those.
         let one = HashSet::from([first.root.join("files/E2E/many/f7.txt")]);
-        let (msg, _) = restore_files(&serial, &first.root, Some(&one), true, &quiet).unwrap();
+        let (msg, _) = restore_files(&serial, &first.root, Some(&one), None, true, &quiet).unwrap();
         assert!(msg.starts_with("Files: will copy 1 file ("), "{msg}");
-        let (msg, _) = restore_files(&serial, &first.root, None, true, &quiet).unwrap();
+        let (msg, _) = restore_files(&serial, &first.root, None, None, true, &quiet).unwrap();
         assert!(
             msg.starts_with(&format!("Files: will copy {} (", files(gone.len()))),
             "{msg}"
         );
-        let (msg, failed) = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
+        let (msg, failed) = restore_files(&serial, &first.root, None, None, false, &quiet).unwrap();
         println!("restore: {msg}");
         assert_eq!(failed, 0, "{msg}");
         assert!(
@@ -1264,7 +1266,7 @@ mod tests {
         assert_eq!(sh(&format!("cat {}", sh_quote(&deep_remote))), "deep\n");
         // Windows-safe names stay on the computer, never copied back as extra files.
         assert_eq!(sh("ls /sdcard/E2E/Docs | grep -c -e _CON -e 'dot_'"), "0\n");
-        let (msg, _) = restore_files(&serial, &first.root, None, false, &quiet).unwrap();
+        let (msg, _) = restore_files(&serial, &first.root, None, None, false, &quiet).unwrap();
         assert!(msg.starts_with("Copied 0 files back"), "{msg}");
         // Every saved app is still installed, so nothing is reinstalled.
         let (msg, _) = restore_apps(&serial, &first.root, None, true, &quiet).unwrap();
@@ -1382,6 +1384,79 @@ mod tests {
             again.errors.is_empty() && again.copied > 0,
             "{:?}",
             again.errors
+        );
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    /// Backs up three times with a file changed on the phone in between, then restores the
+    /// first version: its copy of the file comes back, and history holds each replaced copy.
+    #[test]
+    #[ignore]
+    fn e2e_history_keeps_every_version() {
+        let serial = std::env::var("PB_E2E_SERIAL").expect("PB_E2E_SERIAL");
+        let dest = std::env::temp_dir().join(format!("pb-e2e-history-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        let pick = Pick {
+            apps: false,
+            data: false,
+            folders: ["E2E".to_string()].into(),
+            ..Pick::default()
+        };
+        let quiet = |_: Msg| {};
+        let put = |text: &str| {
+            shell(
+                &serial,
+                &format!("echo {text} > /sdcard/E2E/Docs/history.txt"),
+            );
+            // Two seconds apart, so the phone's file time moves past the 2 s slack.
+            std::thread::sleep(Duration::from_secs(3));
+        };
+        put("first");
+        let one = adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
+        put("second");
+        adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
+        put("third");
+        adb_backup(&serial, "E2E", &dest, pick.clone(), &quiet).unwrap();
+        let root = one.root;
+        let runs = runs(&root);
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        let path = "files/E2E/Docs/history.txt";
+        let text =
+            |v: Option<&str>| fs::read_to_string(file_as_of(&root, v, path).unwrap()).unwrap();
+        assert_eq!(text(Some(&runs[0].name)), "first\n");
+        assert_eq!(text(Some(&runs[1].name)), "second\n");
+        assert_eq!(text(None), "third\n");
+        // Unchanged files are not copied into history.
+        let sizes: u64 = runs.iter().flat_map(|r| &r.replaced).map(|r| r.size).sum();
+        assert_eq!(sizes, 13);
+
+        shell(&serial, "rm /sdcard/E2E/Docs/history.txt");
+        let only: HashSet<PathBuf> = backup_files(&root, Some(&runs[0].name))
+            .unwrap()
+            .into_iter()
+            .map(|f| f.0)
+            .filter(|f| f.ends_with("history.txt"))
+            .collect();
+        assert_eq!(only.len(), 1);
+        let files_only = Pick {
+            apps: false,
+            ..Pick::default()
+        };
+        let (said, failed) = restore_version(
+            &serial,
+            "E2E",
+            &root,
+            files_only,
+            Some(&only),
+            Some(&runs[0].name),
+            false,
+            &quiet,
+        )
+        .unwrap();
+        assert_eq!(failed, 0, "{said}");
+        assert_eq!(
+            shell(&serial, "cat /sdcard/E2E/Docs/history.txt"),
+            "first\n"
         );
         let _ = fs::remove_dir_all(&dest);
     }

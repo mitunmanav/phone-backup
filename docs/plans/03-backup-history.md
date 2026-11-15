@@ -95,3 +95,29 @@ History goes beside it, reverse-incremental, like Time Machine's idea but with p
 ## Not in this group
 
 Search across versions (11), encrypting history (04), cloud copies (not planned).
+
+## As built
+
+Built on branch `ccr-31716feb-qup63m` (this work session's branch) rather than
+`plan/03-backup-history`.
+
+- `src/backup/history.rs` holds the run record (`run.json`), the reader (`runs`, `as_of`,
+  `file_as_of`), pruning and the history part of Verify. The adb and MTP copy loops move the
+  older copy aside only once the new copy is whole, so a stopped run never loses either.
+- Changed personal data (`data/*.json`, `*.txt`, `contacts.vcf`) is written to a side file
+  first, then the older copy moves into history. Unchanged data is not rewritten.
+  Picture-message attachments never change once saved, so they are not versioned.
+- "Gone from the phone" is listed only by runs that looked at everything (no folder, type or
+  size limits) and only once per file.
+- Restore: **Version: latest…** opens the list of runs with what each added and replaced, and a
+  link to each run's replaced copies. The chosen version applies to Restore, Choose files and
+  the Read tool. Apps always come from the latest. Files the phone already has are still
+  skipped, never replaced, so an older copy of a file the phone still has is reached through
+  "Show replaced copies".
+- Settings: **Older versions to keep**: all, the last 5, 10 or 30, or the last 3, 6 or 12
+  months. Pruning runs only after a backup with no errors.
+- **Change from the plan:** Copy into another backup copies the latest files only. The older
+  versions describe the source backup's files and would not match the target's, so they stay
+  in the source folder and the result says so. Delete says how many versions go with it.
+- Same-size edits: adb already compares file times as well as sizes. MTP still compares sizes
+  only (a same-size edit there is missed, as before).

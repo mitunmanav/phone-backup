@@ -450,9 +450,10 @@ impl App {
                     if primary(ui, t, "Open", can)
                         && let Some(f) = folder.clone()
                     {
+                        let version = self.version_of(&f);
                         self.run_tool(ui.ctx(), "read", move |say| {
                             say("Reading the backup…".into());
-                            tools::Done::Book(export::book(&f))
+                            tools::Done::Book(export::book_as_of(&f, version.as_deref()))
                         });
                     }
                 }

@@ -32,7 +32,7 @@ pub enum Done {
 /// Identical files in the backup's photos and files: same size first, then the same SHA-256.
 pub fn duplicates(folder: &Path, say: &dyn Fn(String)) -> Result<Vec<Vec<(PathBuf, u64)>>, String> {
     let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
-    for (path, n, _) in backup::backup_files(folder)? {
+    for (path, n, _) in backup::backup_files(folder, None)? {
         if n > 0 {
             by_size.entry(n).or_default().push(path);
         }
@@ -111,7 +111,7 @@ fn copies(n: usize) -> String {
 /// Saves a JPG of every HEIC photo in the backup under its `jpg` folder, keeping the photo's
 /// date and location (its Exif) and the file's time. JPGs already there are kept.
 pub fn heic_to_jpg(folder: &Path, say: &dyn Fn(String)) -> Result<String, String> {
-    let heic: Vec<PathBuf> = backup::backup_files(folder)?
+    let heic: Vec<PathBuf> = backup::backup_files(folder, None)?
         .into_iter()
         .map(|(p, ..)| p)
         .filter(|p| {
@@ -622,7 +622,7 @@ BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Dan\r\nEMAIL: \r\nEND:VCARD\r\n";
         assert!(pushed.status.success(), "{pushed:?}");
         // A backup copy of the same size but other contents: that phone file must stay.
         fs::write(free.join("-dash.txt"), "SAME\n").unwrap();
-        let chosen: std::collections::HashSet<PathBuf> = backup::backup_files(&dir)
+        let chosen: std::collections::HashSet<PathBuf> = backup::backup_files(&dir, None)
             .unwrap()
             .into_iter()
             .map(|(p, ..)| p)

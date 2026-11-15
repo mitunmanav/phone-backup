@@ -124,10 +124,14 @@ pub struct Book {
     pub events: Vec<[String; 2]>,
 }
 
-/// Reads a backup's messages, contacts, calls and calendar for the Read page. Newest come first,
-/// contacts by name. Only reads.
-pub fn book(root: &Path) -> Result<Book, String> {
-    let read = |name: &str| fs::read_to_string(root.join("data").join(name)).unwrap_or_default();
+/// Reads a backup's messages, contacts, calls and calendar for the Read page, as the backup was
+/// right after run `version` (None: the latest). Newest come first, contacts by name. Only reads.
+pub fn book_as_of(root: &Path, version: Option<&str>) -> Result<Book, String> {
+    let read = |name: &str| {
+        backup::file_as_of(root, version, &format!("data/{name}"))
+            .and_then(|p| fs::read_to_string(p).ok())
+            .unwrap_or_default()
+    };
     let people = people(&read("contacts.txt"));
     let names = names(&people);
 
@@ -783,7 +787,7 @@ const MEDIA: [&str; 14] = [
 /// gave the file. Uses hard links: no extra space, and the backup's own files stay as they are.
 /// Returns how many files are sorted.
 fn sort_photos(root: &Path, to: &Path, report: &dyn Fn(Msg)) -> Result<usize, String> {
-    let all = backup::backup_files(root).unwrap_or_default();
+    let all = backup::backup_files(root, None).unwrap_or_default();
     let media: Vec<_> = all
         .iter()
         .map(|(p, ..)| p)
@@ -1032,7 +1036,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let data = root.join("data");
         fs::create_dir_all(&data).unwrap();
-        assert!(book(&root).is_err());
+        assert!(book_as_of(&root, None).is_err());
         fs::write(
             data.join("contacts.txt"),
             "Row: 0 contact_id=1, mimetype=vnd.android.cursor.item/phone_v2, display_name=zed, data1=+91 98765 43210\n\
@@ -1060,7 +1064,7 @@ mod tests {
                      Row: 1 title=NULL, dtstart={start}, dtend=NULL, allDay=1, eventLocation=Home, description=Line\nmore, rrule=FREQ=YEARLY\n"),
         )
         .unwrap();
-        let b = book(&root).unwrap();
+        let b = book_as_of(&root, None).unwrap();
         // Senders with no digits stay apart, and the newest conversation comes first.
         let who: Vec<_> = b.threads.iter().map(|t| t.who.as_str()).collect();
         assert_eq!(who, ["VM-HDFCBK", "zed (+919876543210)", "AX-AMAZON"]);
@@ -1106,7 +1110,7 @@ mod tests {
                    Row: 0 msg_id=2, address=insert-address-token, type=137\n\
                    Row: 1 msg_id=2, address=+919876543210, type=151\n";
         fs::write(data.join("mms.txt"), mms.replace('\n', "\r\n")).unwrap();
-        let b = book(&root).unwrap();
+        let b = book_as_of(&root, None).unwrap();
         // Dates in seconds sort among text messages in ms, in one conversation with the texts.
         assert_eq!(b.threads.len(), 1);
         let chat = &b.threads[0].messages;
@@ -1142,7 +1146,7 @@ mod tests {
             .replace("_id=10, mid", "mid")
             .replace("_id=11, mid", "mid");
         fs::write(data.join("mms.txt"), old).unwrap();
-        let b = book(&root).unwrap();
+        let b = book_as_of(&root, None).unwrap();
         assert_eq!(
             b.threads[0].messages[0].files,
             [("pic.jpg".to_string(), None)]

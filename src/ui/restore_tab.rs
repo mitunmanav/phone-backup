@@ -155,6 +155,57 @@ fn backup_card(
 
 const ICON_FOLDER: &str = "\u{E8B7}";
 
+/// The Versions dialog: the latest and every older run, newest first, each with what it changed.
+/// A run that kept replaced copies offers to show them.
+fn history_list(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    root: &Path,
+    runs: &[backup::Run],
+    pick: &mut Option<String>,
+) {
+    let muted = |s: &str| RichText::new(s).color(t.muted);
+    ui.add(
+        egui::Label::new(muted(
+            "Each backup keeps the copies it replaced, so you can restore or read the backup as it was then. Files the phone already has are still never replaced.",
+        ))
+        .wrap(),
+    );
+    ui.add_space(6.0);
+    if ui
+        .radio(pick.is_none(), "Latest: everything in the backup now")
+        .clicked()
+    {
+        *pick = None;
+    }
+    if runs.is_empty() {
+        ui.label(muted(
+            "No older versions yet. Each backup from now on adds one.",
+        ));
+    }
+    // The newest run is the latest itself, so it is listed for what it did but not picked.
+    for (k, run) in runs.iter().rev().enumerate() {
+        ui.add_space(4.0);
+        let label = format!("{}, {}", run.title(), run.how);
+        if k == 0 {
+            ui.label(RichText::new(format!("{label} (latest)")).font(semibold(14.0)));
+        } else if ui
+            .radio(pick.as_deref() == Some(run.name.as_str()), label)
+            .clicked()
+        {
+            *pick = Some(run.name.clone());
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(24.0);
+            ui.label(muted(&run.said()));
+            if !run.replaced.is_empty() && ui.link("Show replaced copies").clicked() {
+                let dir = root.join(backup::HISTORY).join(&run.name);
+                let _ = backup::explorer().arg(dir).spawn();
+            }
+        });
+    }
+}
+
 impl App {
     /// How the running or last restore stands. A check is not a restore.
     pub(crate) fn restore_phase(&self) -> Phase {
@@ -443,6 +494,7 @@ impl App {
             .find(|b| Some(&b.path) == self.chosen.as_ref());
         let (has_files, has_apps) = chosen.map_or((false, false), |b| (b.files, b.apps));
         let path = chosen.map(|b| b.path.clone());
+        let folder = path.clone();
         let (files_line, label) = self.picked_words(path.as_ref());
 
         let w = ui.available_width();
@@ -473,6 +525,29 @@ impl App {
             && let Some(path) = path
         {
             self.open_picker(ui.ctx(), path, false);
+        }
+        if let Some(b) = folder {
+            let version = self.version_of(&b);
+            let words = match &version {
+                Some(name) => format!(
+                    "Version: {}…",
+                    backup::Run {
+                        name: name.clone(),
+                        ..Default::default()
+                    }
+                    .title()
+                ),
+                None => "Version: latest…".to_string(),
+            };
+            if quiet(ui, t, &words, !locked)
+                .on_hover_text("Restore or read the backup as it was after an earlier backup.")
+                .on_disabled_hover_text("Wait for the job to finish.")
+                .clicked()
+            {
+                let mut runs = backup::runs(&b);
+                runs.retain(|r| r.finished || !r.replaced.is_empty());
+                self.ask = Some(Ask::History(b, runs, version));
+            }
         }
         ui.add(
             egui::Label::new(txt(
@@ -652,7 +727,10 @@ impl App {
             Some((2, path)) => self.verify(ui.ctx(), path),
             Some((3, path)) => self.export(ui.ctx(), path),
             Some((4, path)) => self.ask = Some(Ask::Copy(path, None)),
-            Some((_, path)) => self.ask = Some(Ask::Delete(path)),
+            Some((_, path)) => {
+                let older = backup::runs(&path).len();
+                self.ask = Some(Ask::Delete(path, older));
+            }
             None => {}
         }
         row
@@ -880,7 +958,8 @@ impl App {
         };
         let muted = |s: &str| RichText::new(s).color(t.muted);
         let answer = match ask {
-            Ask::Delete(path) => {
+            Ask::Delete(path, older) => {
+                let older = *older;
                 let (name, bytes) = label_of(path);
                 let full = match bytes {
                     Some(n) => format!("{} ({})", path.display(), size(n)),
@@ -895,6 +974,13 @@ impl App {
                     |ui| {
                         ui.label("This moves the whole folder to the Recycle Bin:");
                         ui.label(RichText::new(full).font(semibold(14.0)));
+                        if older > 0 {
+                            ui.label(format!(
+                                "Its {} older {} go with it.",
+                                count(older),
+                                if older == 1 { "version" } else { "versions" }
+                            ));
+                        }
                         ui.label(muted("You can bring it back from the Recycle Bin. If the folder is too big for it, Windows asks before deleting it for good."));
                     },
                 )
@@ -910,6 +996,17 @@ impl App {
                         "The next backup of this phone starts a new folder with its usual name.",
                     ));
                 })
+            }
+            Ask::History(path, runs, pick) => {
+                let (name, _) = label_of(path);
+                confirm(
+                    ctx,
+                    &format!("Versions of {name}"),
+                    "Use this version",
+                    "Cancel",
+                    true,
+                    |ui| history_list(ui, t, path, runs, pick),
+                )
             }
             Ask::Copy(from, into) => {
                 let (name, _) = label_of(from);
@@ -950,7 +1047,8 @@ impl App {
         match answer {
             Some(false) => self.ask = None,
             Some(true) => match self.ask.take() {
-                Some(Ask::Delete(path)) => self.tidy(ctx, Job::Delete, path, None),
+                Some(Ask::Delete(path, _)) => self.tidy(ctx, Job::Delete, path, None),
+                Some(Ask::History(path, _, pick)) => self.use_version(path, pick),
                 Some(Ask::Copy(from, into)) => self.tidy(ctx, Job::Copy, from, into),
                 Some(Ask::Rename(path, name, _)) => match backup::rename_backup(&path, &name) {
                     Ok(new) => {

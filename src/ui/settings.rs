@@ -129,6 +129,35 @@ impl App {
             ui.horizontal(|ui| {
                 ui.set_min_height(36.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("keep")
+                        .selected_text(KEEP[self.keep].0)
+                        .show_ui(ui, |ui| {
+                            for (i, (name, ..)) in KEEP.iter().enumerate() {
+                                ui.selectable_value(&mut self.keep, i, *name);
+                            }
+                        });
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.label(txt("Older versions to keep", 13.0, 600.0, t.ink));
+                    });
+                });
+            });
+            ui.add(
+                egui::Label::new(txt(
+                    "Each backup keeps the copies it replaces, so you can go back to an earlier backup. Fewer versions use less space. The latest copy of every file always stays.",
+                    12.0,
+                    400.0,
+                    t.muted,
+                ))
+                .wrap(),
+            );
+        });
+        ui.add_space(6.0);
+
+        plate_frame(t).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.set_min_height(36.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let label = "Sound when a job ends";
                     if switch(ui, t, self.sound, label) {
                         self.sound = !self.sound;
