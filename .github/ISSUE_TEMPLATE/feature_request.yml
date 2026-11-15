@@ -1,0 +1,29 @@
+name: Feature idea
+description: Suggest something Phone Backup could do.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [roadmap](https://github.com/mitunmanav/phone-backup/issues?q=is%3Aissue+is%3Aopen+label%3Afeature) first. If your idea is already there, add a 👍 to that issue instead of opening a new one.
+
+        Phone Backup stays offline, with no account, no cloud and no ads. Ideas that need any of those won't be built.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the problem or the moment you needed this, not just the solution.
+      placeholder: When I get a new phone I have to set up my alarms again by hand.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      placeholder: Copy alarms along with the rest of the phone move.
+    validations:
+      required: true
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Seen this in another app?
+      description: Optional. Name the app and how it does it.

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: How do I…? (Guide and FAQ)
+    url: https://phonebackup.oddlybuilt.in/faq
+    about: Answers to common questions about connecting a phone, backing up and restoring.
+  - name: Report a security problem
+    url: https://github.com/mitunmanav/phone-backup/security/advisories/new
+    about: Please report security problems privately, not in a public issue.
