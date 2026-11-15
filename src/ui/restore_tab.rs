@@ -188,13 +188,16 @@ impl App {
         let files =
             self.restore_files && chosen.files && only.as_ref().is_none_or(|o| !o.is_empty());
         let apps = self.restore_apps && chosen.apps;
-        (files || apps).then(|| {
+        let personal: [bool; 4] =
+            std::array::from_fn(|k| self.restore_personal[k] && chosen.personal[k]);
+        (files || apps || personal.contains(&true)).then(|| {
             (
                 phone.0,
                 chosen.path.clone(),
                 files,
                 apps,
                 only.filter(|_| files),
+                personal,
             )
         })
     }
@@ -301,7 +304,7 @@ impl App {
         let w = ui.available_width();
         let narrow = w < 560.0;
         let (cols, each) = tile_grid(w, 0.0, 4);
-        let block = 4usize.div_ceil(cols) as f32 * (each.y + TILE_GAP);
+        let block = 6usize.div_ceil(cols) as f32 * (each.y + TILE_GAP);
         let rest = ui.clip_rect().bottom() - ui.cursor().top() - 14.0 - 8.0 - HIT;
         let hero = (rest - block).clamp(if narrow { 136.0 } else { 148.0 }, 300.0);
         let (rect, _) = ui.allocate_exact_size(vec2(w, hero), egui::Sense::hover());
@@ -442,6 +445,7 @@ impl App {
             .iter()
             .find(|b| Some(&b.path) == self.chosen.as_ref());
         let (has_files, has_apps) = chosen.map_or((false, false), |b| (b.files, b.apps));
+        let has_personal = chosen.map_or([false; 4], |b| b.personal);
         let path = chosen.map(|b| b.path.clone());
         let (files_line, label) = self.picked_words(path.as_ref());
 
@@ -457,7 +461,8 @@ impl App {
         );
 
         let has = (has_files, has_apps);
-        self.onto_tiles(ui, t, room, &files_line, has, locked, phase);
+        let personal = Some(has_personal);
+        self.onto_tiles(ui, t, room, &files_line, has, personal, locked, phase);
         ui.add_space(6.0);
         let can = !locked && has_files && self.restore_files;
         let why = if locked {
@@ -476,7 +481,7 @@ impl App {
         }
         ui.add(
             egui::Label::new(txt(
-                "Files the phone already has are skipped, never replaced. Apps come back without their logins and data.",
+                "Anything the phone already has is skipped, never replaced. Apps come back without their logins and data.",
                 12.0,
                 400.0,
                 t.muted,
@@ -500,7 +505,8 @@ impl App {
         }
     }
 
-    /// What can go onto a phone, as tiles. `has` says if there are (files, apps) to copy at all.
+    /// What can go onto a phone, as tiles. `has` says if there are (files, apps) to copy at all;
+    /// `personal`, which of `backup::PERSONAL` there are, or None where they cannot go yet.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn onto_tiles(
         &mut self,
@@ -509,6 +515,7 @@ impl App {
         room: f32,
         files_line: &str,
         (has_files, has_apps): (bool, bool),
+        personal: Option<[bool; 4]>,
         locked: bool,
         phase: Phase,
     ) {
@@ -524,7 +531,7 @@ impl App {
             self.restore_apps && has_apps,
         );
         let copied = line(has_files, files_on, "");
-        let items = [
+        let mut items = vec![
             (
                 "\u{E91B}",
                 "Photos, files",
@@ -543,9 +550,27 @@ impl App {
                 apps_on,
                 !has_apps,
             ),
-            ("\u{E77B}", "Contacts", NOT_YET, false, true),
-            ("\u{E8BD}", "Messages", NOT_YET, false, true),
         ];
+        match personal {
+            None => items.extend([
+                ("\u{E77B}", "Contacts", NOT_YET, false, true),
+                ("\u{E8BD}", "Messages", NOT_YET, false, true),
+            ]),
+            Some(has) => {
+                const GLYPHS: [&str; 4] = ["\u{E77B}", "\u{E717}", "\u{E787}", "\u{E8BD}"];
+                const LINES: [&str; 4] = [
+                    "Not doubled",
+                    "Not doubled",
+                    "Own calendar",
+                    "Asks on phone",
+                ];
+                for k in 0..4 {
+                    let on = self.restore_personal[k] && has[k];
+                    let said = line(has[k], on, LINES[k]);
+                    items.push((GLYPHS[k], backup::PERSONAL[k], said, on, !has[k]));
+                }
+            }
+        }
         let (cols, each) = tile_grid(ui.available_width(), room, items.len());
         for (row, chunk) in items.chunks(cols).enumerate() {
             ui.horizontal(|ui| {
@@ -554,7 +579,8 @@ impl App {
                     if tile(ui, t, (glyph, name, line), *on, locked, *dim, each) {
                         match row * cols + k {
                             0 => self.restore_files = !self.restore_files,
-                            _ => self.restore_apps = !self.restore_apps,
+                            1 => self.restore_apps = !self.restore_apps,
+                            n => self.restore_personal[n - 2] ^= true,
                         }
                     }
                 }

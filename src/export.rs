@@ -203,21 +203,15 @@ pub fn book(root: &Path) -> Result<Book, String> {
     })
 }
 
-/// Picture messages from mms.txt, which holds three lists. Attachments are saved as
-/// `data/mms/<part id>_<name>`; backups from before part ids were saved give names without files.
-fn picture_messages(
-    root: &Path,
-    text: &str,
-    names: &BTreeMap<String, String>,
-) -> Vec<(Message, Files)> {
+/// mms.txt as its three lists: messages (_id, date, msg_box, sub), parts (_id, mid, ct, cl,
+/// text; _id is "" in backups from before it was saved) and addresses (msg_id, address, type).
+pub(crate) type MmsTables = (Vec<Vec<String>>, Vec<Vec<String>>, Vec<Vec<String>>);
+
+pub(crate) fn mms_tables(text: &str) -> Option<MmsTables> {
     // adb on Windows ends each line with \r\n.
     let text = text.replace("\r\n", "\n");
-    let Some((list, rest)) = text.split_once("\nParts:\n") else {
-        return Vec::new();
-    };
-    let Some((parts, addresses)) = rest.rsplit_once("\nAddresses:\n") else {
-        return Vec::new();
-    };
+    let (list, rest) = text.split_once("\nParts:\n")?;
+    let (parts, addresses) = rest.rsplit_once("\nAddresses:\n")?;
     let mut part_rows = rows(parts.trim_end(), &["_id", "mid", "ct", "cl", "text"]);
     if part_rows.is_empty() {
         part_rows = rows(parts.trim_end(), &["mid", "ct", "cl", "text"]);
@@ -225,8 +219,16 @@ fn picture_messages(
             .iter_mut()
             .for_each(|p| p.insert(0, String::new()));
     }
-    let address_rows = rows(addresses, &["msg_id", "address", "type"]);
-    let saved: HashMap<String, PathBuf> = fs::read_dir(root.join("data").join("mms"))
+    Some((
+        rows(list.trim_end(), &["_id", "date", "msg_box", "sub"]),
+        part_rows,
+        rows(addresses, &["msg_id", "address", "type"]),
+    ))
+}
+
+/// The attachments saved in data/mms, by part id.
+pub(crate) fn mms_files(root: &Path) -> HashMap<String, PathBuf> {
+    fs::read_dir(root.join("data").join("mms"))
         .into_iter()
         .flatten()
         .flatten()
@@ -234,10 +236,22 @@ fn picture_messages(
             let name = e.file_name().to_string_lossy().into_owned();
             Some((name.split_once('_')?.0.to_string(), e.path()))
         })
-        .collect();
+        .collect()
+}
 
-    rows(list.trim_end(), &["_id", "date", "msg_box", "sub"])
-        .iter()
+/// Picture messages from mms.txt, which holds three lists. Attachments are saved as
+/// `data/mms/<part id>_<name>`; backups from before part ids were saved give names without files.
+fn picture_messages(
+    root: &Path,
+    text: &str,
+    names: &BTreeMap<String, String>,
+) -> Vec<(Message, Files)> {
+    let Some((list, part_rows, address_rows)) = mms_tables(text) else {
+        return Vec::new();
+    };
+    let saved = mms_files(root);
+
+    list.iter()
         .map(|m| {
             // Box 1 is received; the others are from the owner. These dates are in seconds.
             let me = m[2] != "1";
@@ -368,7 +382,7 @@ pub fn people(text: &str) -> Vec<Person> {
 
 /// The last ten digits, so "+91 98765-43210" and "09876543210" match. A sender with no digits,
 /// such as "VM-HDFCBK", is its own name: each stays a separate conversation.
-fn number_key(number: &str) -> String {
+pub(crate) fn number_key(number: &str) -> String {
     let digits: Vec<char> = number.chars().filter(char::is_ascii_digit).collect();
     if digits.is_empty() {
         return number.to_lowercase();
@@ -398,7 +412,7 @@ fn calls(text: &str, names: &BTreeMap<String, String>) -> Vec<Vec<String>> {
     calls
 }
 
-const EVENT_KEYS: [&str; 7] = [
+pub(crate) const EVENT_KEYS: [&str; 7] = [
     "title",
     "dtstart",
     "dtend",

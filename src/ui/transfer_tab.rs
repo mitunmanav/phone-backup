@@ -65,6 +65,7 @@ impl App {
                 self.restore_files,
                 self.restore_apps,
                 Some(ran),
+                [false; 4],
             )),
             _ => None,
         };
@@ -354,7 +355,7 @@ impl App {
             w,
         );
         let (files_line, label) = self.picked_words(folder.as_ref());
-        self.onto_tiles(ui, t, room, &files_line, (true, true), locked, phase);
+        self.onto_tiles(ui, t, room, &files_line, (true, true), None, locked, phase);
         ui.add_space(6.0);
         // The files to choose from exist once the check has backed up the first phone.
         let can = !locked && self.restore_files;
