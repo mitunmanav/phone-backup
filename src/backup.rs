@@ -723,6 +723,21 @@ mod tests {
     }
 
     #[test]
+    fn failed_safe_write_keeps_the_old_file() {
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-safefail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("sms.txt");
+        fs::write(&file, "old").unwrap();
+        // A folder where the temp file belongs keeps it from being created.
+        fs::create_dir(root.join("sms.txt.part")).unwrap();
+        assert!(write_safely(&file, "new").is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "old");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn makes_windows_safe_names() {
         assert_eq!(safe_name("photo.jpg"), "photo.jpg");
         assert_eq!(safe_name("a:b?c*.txt"), "a_b_c_.txt");
