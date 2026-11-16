@@ -59,6 +59,13 @@ pub fn sha256_bytes(path: &Path) -> std::io::Result<[u8; 32]> {
     }
 }
 
+/// The most threads hashing uses: 4, or the cores this machine has if fewer.
+fn hash_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(4)
+}
+
 /// Hashes `paths` on `threads` threads. Returns one entry per path in path order, or None for a
 /// file that was not hashed because the job was stopped. `got` runs on the calling thread as
 /// each result arrives, in whatever order the workers finish.
@@ -112,23 +119,32 @@ pub(crate) fn update_sums(
     for p in fresh {
         sums.remove(&rel(root, p));
     }
-    let todo: Vec<&PathBuf> = known
+    let todo: Vec<PathBuf> = known
         .iter()
         .filter(|p| !sums.contains_key(&rel(root, p)))
+        .cloned()
         .collect();
-    for (n, p) in todo.iter().enumerate() {
-        if stopped() {
-            break;
-        }
-        if n % 100 == 0 {
+    if !todo.is_empty() {
+        report(Msg::Status(format!(
+            "Saving checksums: {} of {}…",
+            count(0),
+            files(todo.len())
+        )));
+    }
+    let mut done = 0;
+    let hashed = hash_all(&todo, hash_threads(), |_, _| {
+        done += 1;
+        if done % 100 == 0 {
             report(Msg::Status(format!(
                 "Saving checksums: {} of {}…",
-                count(n),
+                count(done),
                 files(todo.len())
             )));
         }
+    });
+    for (p, hashed) in todo.iter().zip(hashed) {
         // A file that failed to copy is not there to hash; it gets its sum next time.
-        if let Ok(sum) = sha256(p) {
+        if let Some(Ok(sum)) = hashed {
             sums.insert(rel(root, p), sum);
         }
     }
@@ -153,20 +169,27 @@ pub fn verify(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
     if sums.is_empty() {
         return Err("This backup has no checksums yet. Back it up again to add them.".into());
     }
-    let (mut changed, mut missing) = (Vec::new(), Vec::new());
-    for (n, (path, sum)) in sums.iter().enumerate() {
-        if stopped() {
-            return Err("You stopped the check. The backup was not changed.".into());
-        }
+    let items: Vec<(&String, &String)> = sums.iter().collect();
+    let paths: Vec<PathBuf> = items.iter().map(|(path, _)| root.join(path)).collect();
+    let mut done = 0;
+    let hashed = hash_all(&paths, hash_threads(), |i, _| {
         report(Msg::Progress {
-            done: n,
+            done,
             total: sums.len(),
-            now: path.clone(),
+            now: items[i].0.clone(),
         });
-        match sha256(&root.join(path)) {
-            Ok(s) if s == *sum => {}
-            Ok(_) => changed.push(path.as_str()),
-            Err(_) => missing.push(path.as_str()),
+        done += 1;
+    });
+    if stopped() {
+        return Err("You stopped the check. The backup was not changed.".into());
+    }
+    let (mut changed, mut missing) = (Vec::new(), Vec::new());
+    for ((path, sum), hashed) in items.iter().zip(hashed) {
+        match hashed {
+            Some(Ok(s)) if s == **sum => {}
+            Some(Ok(_)) => changed.push(path.as_str()),
+            Some(Err(_)) => missing.push(path.as_str()),
+            None => {}
         }
     }
     if changed.is_empty() && missing.is_empty() {
@@ -193,6 +216,40 @@ pub fn verify(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn parallel_hash_matches_serial() {
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-hash-all-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut paths = Vec::new();
+        for (n, size) in [0, 1, 4096, 1 << 20].into_iter().enumerate() {
+            let path = root.join(format!("file-{n}.bin"));
+            fs::write(&path, vec![(n as u8).wrapping_mul(37); size]).unwrap();
+            paths.push(path);
+        }
+        let gone = root.join("gone.bin");
+        paths.push(gone);
+        let quiet = |_: usize, _: &std::io::Result<String>| {};
+        let one = hash_all(&paths, 1, quiet);
+        let four = hash_all(&paths, 4, quiet);
+        assert_eq!(one.len(), four.len());
+        for (i, path) in paths.iter().enumerate() {
+            match (&one[i], &four[i]) {
+                (Some(Ok(a)), Some(Ok(b))) => {
+                    assert_eq!(a, b, "{}", path.display());
+                    assert_eq!(b, &sha256(path).unwrap(), "{}", path.display());
+                }
+                (Some(Err(_)), Some(Err(_))) => {
+                    assert_eq!(i, paths.len() - 1, "only the gone file fails");
+                }
+                _ => panic!("hash_all differs for {}", path.display()),
+            }
+        }
+        assert!(four.last().unwrap().as_ref().unwrap().is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     #[ignore]
