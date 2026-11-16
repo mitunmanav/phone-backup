@@ -59,6 +59,44 @@ pub fn sha256_bytes(path: &Path) -> std::io::Result<[u8; 32]> {
     }
 }
 
+/// Hashes `paths` on `threads` threads. Returns one entry per path in path order, or None for a
+/// file that was not hashed because the job was stopped. `got` runs on the calling thread as
+/// each result arrives, in whatever order the workers finish.
+fn hash_all(
+    paths: &[PathBuf],
+    threads: usize,
+    mut got: impl FnMut(usize, &std::io::Result<String>),
+) -> Vec<Option<std::io::Result<String>>> {
+    let mut results: Vec<Option<std::io::Result<String>>> = paths.iter().map(|_| None).collect();
+    let threads = threads.clamp(1, paths.len().max(1));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let next = &next;
+            scope.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(path) = paths.get(i) else { break };
+                    if stopped() {
+                        break;
+                    }
+                    if tx.send((i, sha256(path))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        for (i, result) in rx {
+            got(i, &result);
+            results[i] = Some(result);
+        }
+    });
+    results
+}
+
 /// Drops the sums of `fresh` files (just rewritten) and of files gone from the folder, then
 /// hashes each `known` file that has no sum. Old sums of untouched files are kept, so a later
 /// backup hashes only what it copied. A failed write leaves the old checksum file whole.
@@ -149,4 +187,42 @@ pub fn verify(root: &Path, report: &dyn Fn(Msg)) -> Result<String, String> {
         }
     }
     Err(msg + "Back up again to copy them from the phone, if it still has them.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn checksum_speed() {
+        let root = std::env::temp_dir().join(format!(
+            "phone-backup-checksum-speed-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let block = vec![0x5a; 32 << 20];
+        let paths: Vec<PathBuf> = (0..64)
+            .map(|n| {
+                let path = root.join(format!("file-{n}.bin"));
+                fs::write(&path, &block).unwrap();
+                path
+            })
+            .collect();
+        // Read every file once so the disk cache holds them before the timed runs.
+        let quiet = |_: usize, _: &std::io::Result<String>| {};
+        hash_all(&paths, 4, quiet);
+        let one = Instant::now();
+        hash_all(&paths, 1, quiet);
+        let one = one.elapsed();
+        let four = Instant::now();
+        hash_all(&paths, 4, quiet);
+        let four = four.elapsed();
+        println!("1 thread: {one:?}");
+        println!("4 threads: {four:?}");
+        println!("speed-up: {:.2}x", one.as_secs_f64() / four.as_secs_f64());
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
