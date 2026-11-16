@@ -10,7 +10,14 @@ Your phone backup, as a plain folder: no account, no cloud, and every file check
 [![CI](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/github/license/mitunmanav/phone-backup)](LICENSE)
 
-[**Download**](https://phonebackup.oddlybuilt.in/download) | [Website](https://phonebackup.oddlybuilt.in) | [Guide](https://phonebackup.oddlybuilt.in/guide) | [FAQ](https://phonebackup.oddlybuilt.in/faq) | [Product Hunt](https://www.producthunt.com/posts/phone-backup)
+[**Download**](https://phonebackup.oddlybuilt.in/download) | [Website](https://phonebackup.oddlybuilt.in) | [Guide](https://phonebackup.oddlybuilt.in/guide) | [FAQ](https://phonebackup.oddlybuilt.in/faq)
+
+<a href="https://www.producthunt.com/posts/phone-backup">
+  <picture>
+    <source srcset="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1318826&theme=dark" media="(prefers-color-scheme: dark)">
+    <img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1318826&theme=light" width="250" height="54" alt="Phone Backup on Product Hunt">
+  </picture>
+</a>
 
 <picture>
   <source srcset="docs/app-dark.png" media="(prefers-color-scheme: dark)">
