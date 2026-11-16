@@ -3,14 +3,14 @@
 # Phone Backup
 
 **Back up, restore and move your Android phone with a free Windows app.**<br>
-No account, no cloud. Your backup is an ordinary folder on your PC.
+Your phone backup, as a plain folder: no account, no cloud, and every file checksummed so you can verify it later.
 
 [![Latest release](https://img.shields.io/github/v/release/mitunmanav/phone-backup?label=release)](https://github.com/mitunmanav/phone-backup/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mitunmanav/phone-backup/total)](https://github.com/mitunmanav/phone-backup/releases)
 [![CI](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mitunmanav/phone-backup/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/github/license/mitunmanav/phone-backup)](LICENSE)
 
-[**Download**](https://phonebackup.oddlybuilt.in/download) | [Website](https://phonebackup.oddlybuilt.in) | [Guide](https://phonebackup.oddlybuilt.in/guide) | [FAQ](https://phonebackup.oddlybuilt.in/faq)
+[**Download**](https://phonebackup.oddlybuilt.in/download) | [Website](https://phonebackup.oddlybuilt.in) | [Guide](https://phonebackup.oddlybuilt.in/guide) | [FAQ](https://phonebackup.oddlybuilt.in/faq) | [Product Hunt](https://www.producthunt.com/posts/phone-backup)
 
 <picture>
   <source srcset="docs/app-dark.png" media="(prefers-color-scheme: dark)">
