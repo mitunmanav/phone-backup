@@ -78,10 +78,23 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                     continue;
                 }
                 files += 1;
-                // shortcut: MTP compares size only (no file times); a same-size edit is missed.
-                if fs::metadata(&local).is_ok_and(|m| m.len() == obj.size) {
-                    kept.push(local);
-                    continue;
+                if let Ok(metadata) = fs::metadata(&local) {
+                    let backup_size = metadata.len();
+                    let (phone_time, backup_time) = if backup_size == obj.size {
+                        let phone_time = local_phone_time_seconds(obj.modified.as_ref());
+                        let backup_time = metadata
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                            .and_then(|time| i64::try_from(time.as_secs()).ok());
+                        (phone_time, backup_time)
+                    } else {
+                        (None, None)
+                    };
+                    if !should_copy(obj.size, backup_size, phone_time, backup_time) {
+                        kept.push(local);
+                        continue;
+                    }
                 }
                 // Pause waits between files, never inside a download.
                 if hold() {
@@ -145,4 +158,133 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     };
     write_report(&s, &copied);
     Ok(s)
+}
+
+fn should_copy(
+    phone_size: u64,
+    backup_size: u64,
+    phone_time: Option<i64>,
+    backup_time: Option<i64>,
+) -> bool {
+    phone_size != backup_size
+        || matches!((phone_time, backup_time), (Some(phone), Some(backup)) if phone > backup)
+}
+
+fn phone_time_seconds(
+    modified: Option<&mtp_rs::mtp::DateTime>,
+    offset: mtp_rs::mtp::UtcOffset,
+) -> Option<i64> {
+    modified?.to_unix_seconds_with_fallback(offset)
+}
+
+fn local_phone_time_seconds(modified: Option<&mtp_rs::mtp::DateTime>) -> Option<i64> {
+    use mtp_rs::mtp::UtcOffset;
+
+    let utc_seconds = phone_time_seconds(modified, UtcOffset::UTC)?;
+    let offset = pc_utc_offset_minutes_at(utc_seconds)?;
+    phone_time_seconds(modified, UtcOffset::from_minutes(offset)?)
+}
+
+#[cfg(windows)]
+fn pc_utc_offset_minutes_at(utc_seconds: i64) -> Option<i16> {
+    use mtp_rs::mtp::{DateTime, UtcOffset};
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+
+    let ticks = u64::try_from(
+        utc_seconds
+            .checked_add(11_644_473_600)?
+            .checked_mul(10_000_000)?,
+    )
+    .ok()?;
+    let file_time = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    // SAFETY: both calls only read and fill the structs they are given; null means the current time zone.
+    let local = unsafe {
+        let mut utc = std::mem::zeroed();
+        if FileTimeToSystemTime(&file_time, &mut utc) == 0 {
+            return None;
+        }
+        let mut local = utc;
+        if SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return None;
+        }
+        local
+    };
+    let local_as_utc = DateTime::new(
+        local.wYear,
+        u8::try_from(local.wMonth).ok()?,
+        u8::try_from(local.wDay).ok()?,
+        u8::try_from(local.wHour).ok()?,
+        u8::try_from(local.wMinute).ok()?,
+        u8::try_from(local.wSecond).ok()?,
+    )?
+    .to_unix_seconds_with_fallback(UtcOffset::UTC)?;
+    let offset_seconds = local_as_utc.checked_sub(utc_seconds)?;
+    i16::try_from(offset_seconds / 60).ok()
+}
+
+#[cfg(not(windows))]
+fn pc_utc_offset_minutes_at(_: i64) -> Option<i16> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{phone_time_seconds, should_copy};
+    use mtp_rs::mtp::{DateTime, UtcOffset};
+
+    #[cfg(windows)]
+    use super::pc_utc_offset_minutes_at;
+
+    #[test]
+    fn same_size_older_phone_time_is_skipped() {
+        assert!(!should_copy(10, 10, Some(100), Some(101)));
+    }
+
+    #[test]
+    fn same_size_equal_phone_time_is_skipped() {
+        assert!(!should_copy(10, 10, Some(100), Some(100)));
+    }
+
+    #[test]
+    fn same_size_newer_phone_time_is_copied() {
+        assert!(should_copy(10, 10, Some(101), Some(100)));
+    }
+
+    #[test]
+    fn different_sizes_are_copied_with_or_without_times() {
+        assert!(should_copy(11, 10, Some(100), Some(200)));
+        assert!(should_copy(11, 10, None, None));
+    }
+
+    #[test]
+    fn missing_phone_time_uses_size_only() {
+        assert!(!should_copy(10, 10, None, Some(100)));
+        assert!(should_copy(11, 10, None, Some(100)));
+    }
+
+    #[test]
+    fn missing_backup_time_uses_size_only() {
+        assert!(!should_copy(10, 10, Some(200), None));
+        assert!(should_copy(11, 10, Some(100), None));
+    }
+
+    #[test]
+    fn zoneless_phone_time_uses_the_supplied_offset() {
+        let phone_time = DateTime::new(2026, 10, 7, 14, 30, 0).unwrap();
+        assert_eq!(
+            phone_time_seconds(Some(&phone_time), UtcOffset::from_minutes(120).unwrap()),
+            Some(1_791_376_200)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pc_offset_for_fixed_date_is_within_fourteen_hours() {
+        let minutes = pc_utc_offset_minutes_at(1_791_376_200).unwrap();
+        assert!((-14 * 60..=14 * 60).contains(&minutes));
+    }
 }
