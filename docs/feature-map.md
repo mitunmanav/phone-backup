@@ -66,8 +66,8 @@ About 35 apps in nine groups. Codes are used in the catalog.
 
 | Code | App | Maker | Notes |
 |---|---|---|---|
-| MT | MobileTrans | Wondershare | Phone transfer, backup to PC, WhatsApp and chat apps, file transfer, iCloud transfer. ~$50/yr. |
-| DF | Dr.Fone | Wondershare | Toolkit of separately sold modules: Phone Backup, Phone Manager, Phone Transfer, WhatsApp Transfer, Data Recovery, Data Eraser, Screen Unlock, System Repair, Virtual Location. ~$100/yr bundle. |
+| MT | MobileTrans | Wondershare | Phone transfer, backup to PC, WhatsApp and chat apps, file transfer, iCloud transfer. $39.99/yr for all features, or $29.99/yr per feature (Windows, checked November 2026). The free trial cannot back up Android phones or restore to a phone. Backups are `.bak` files that only MobileTrans opens. |
+| DF | Dr.Fone | Wondershare | Toolkit of separately sold modules: Phone Backup, Phone Manager, Phone Transfer, WhatsApp Transfer, Data Recovery, Data Eraser, Screen Unlock, System Repair, Virtual Location. Full Toolkit $99.95/yr (checked November 2026). |
 | CM | Coolmuster Android Assistant / Android Backup Manager | Coolmuster | Manager plus one-click backup. ~$30. |
 | MK | MobiKin Assistant for Android / Backup Manager | MobiKin | Manager plus one-click backup. |
 | AD | AnyDroid / AnyTrans for Android | iMobie | Manager, transfers, iTunes and iCloud to Android, media downloader. |
