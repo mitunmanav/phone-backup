@@ -731,7 +731,7 @@ pub(super) fn adb_backup_run(
             .map(|(local, remote)| format!("{local}\t{remote}\n"))
             .collect();
         fs::create_dir_all(&root)
-            .and_then(|()| fs::write(root.join(RENAMED), text))
+            .and_then(|()| write_safely(&root.join(RENAMED), text))
             .map_err(|e| format!("Cannot write in {}: {e}", root.display()))?;
     }
     let files = jobs.len();
@@ -836,7 +836,7 @@ pub(super) fn adb_backup_run(
         let (mut saved, mut parts_saved) = (ok, true);
         if ok {
             let mut save = |path: PathBuf, text: String| {
-                if fs::write(&path, text).is_ok() {
+                if write_safely(&path, text).is_ok() {
                     written.push(path);
                 } else {
                     saved = false;
@@ -915,8 +915,7 @@ pub(super) fn mms_attachments(serial: &str, dir: &Path) -> bool {
             return all;
         }
         // A part cut short by a full disk would also be kept for good.
-        if !bytes.is_empty() && fs::write(&file, bytes).is_err() {
-            let _ = fs::remove_file(&file);
+        if !bytes.is_empty() && write_safely(&file, bytes).is_err() {
             all = false;
         }
     }

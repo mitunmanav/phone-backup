@@ -7,7 +7,7 @@ pub const RESTORE_REPORT: &str = "restore-report.txt";
 
 /// Saves a plain-text report the user can open, keep or share.
 pub fn save_report(path: &Path, title: &str, body: &str) -> std::io::Result<()> {
-    fs::write(
+    write_safely(
         path,
         format!(
             "Phone Backup {}\n{title}, {}\n\n{body}\n",

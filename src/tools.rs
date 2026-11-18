@@ -249,7 +249,7 @@ pub fn merge_contacts(folder: &Path) -> Result<String, String> {
         "This backup has no contacts.vcf. Back up with contacts ticked first.".to_string()
     })?;
     let (merged, before, after) = merge_vcards(&text);
-    fs::write(folder.join("data").join(MERGED), merged)
+    backup::write_safely(&folder.join("data").join(MERGED), merged)
         .map_err(|e| format!("Cannot save {MERGED}: {e}"))?;
     Ok(if before == after {
         format!(

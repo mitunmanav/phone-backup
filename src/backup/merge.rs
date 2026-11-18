@@ -207,8 +207,8 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             map.entry(local).or_insert(remote);
         }
     }
-    let names = fs::write(
-        into.join(RENAMED),
+    let names = write_safely(
+        &into.join(RENAMED),
         map.iter()
             .map(|(l, r)| format!("{l}\t{r}\n"))
             .collect::<String>(),

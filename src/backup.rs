@@ -393,6 +393,26 @@ fn safe_name(name: &str) -> String {
     s
 }
 
+/// Writes `bytes` to `<path>.part`, flushes it to disk, then renames it over `path`, so a
+/// crash or full disk never leaves a half-written file where the last good one was.
+/// On failure the `.part` file is removed and `path` is left as it was.
+pub(crate) fn write_safely(path: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".part");
+    let part = PathBuf::from(name);
+    let result = fs::File::create(&part)
+        .and_then(|mut f| {
+            f.write_all(bytes.as_ref())?;
+            f.sync_all()
+        })
+        .and_then(|()| fs::rename(&part, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +707,34 @@ mod tests {
                 .unwrap_err()
                 .contains("no checksums yet")
         );
+    }
+
+    #[test]
+    fn writes_safely_and_replaces_whole() {
+        let root = std::env::temp_dir().join(format!("phone-backup-safe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("sms.txt");
+        fs::write(&file, "old").unwrap();
+        assert!(write_safely(&file, "new").is_ok());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new");
+        assert!(!root.join("sms.txt.part").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn failed_safe_write_keeps_the_old_file() {
+        let root =
+            std::env::temp_dir().join(format!("phone-backup-safefail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("sms.txt");
+        fs::write(&file, "old").unwrap();
+        // A folder where the temp file belongs keeps it from being created.
+        fs::create_dir(root.join("sms.txt.part")).unwrap();
+        assert!(write_safely(&file, "new").is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "old");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
