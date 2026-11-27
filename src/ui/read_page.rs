@@ -31,6 +31,40 @@ pub(crate) struct Reading {
     previews_asked: HashSet<usize>,
     preview_tx: mpsc::Sender<(PathBuf, Option<egui::ColorImage>)>,
     preview_rx: mpsc::Receiver<(PathBuf, Option<egui::ColorImage>)>,
+    /// Everything search looks in, in lower case, made at the first search instead of on
+    /// every key press.
+    lower: Option<Lower>,
+}
+
+/// Lower-case copies of what search compares, in the same order as the book.
+struct Lower {
+    who: Vec<String>,
+    texts: Vec<Vec<String>>,
+    /// Contacts, calls and calendar: both columns of each row.
+    rows: [Vec<[String; 2]>; 3],
+}
+
+impl Lower {
+    fn of(book: &Book) -> Self {
+        let pairs = |rows: &[[String; 2]]| {
+            rows.iter()
+                .map(|r| [r[0].to_lowercase(), r[1].to_lowercase()])
+                .collect()
+        };
+        Lower {
+            who: book.threads.iter().map(|t| t.who.to_lowercase()).collect(),
+            texts: book
+                .threads
+                .iter()
+                .map(|t| t.messages.iter().map(|m| m.text.to_lowercase()).collect())
+                .collect(),
+            rows: [
+                pairs(&book.contacts),
+                pairs(&book.calls),
+                pairs(&book.events),
+            ],
+        }
+    }
 }
 
 impl Reading {
@@ -49,6 +83,7 @@ impl Reading {
             previews_asked: HashSet::new(),
             preview_tx,
             preview_rx,
+            lower: None,
         };
         r.refilter();
         r
@@ -70,34 +105,40 @@ impl Reading {
             .split_whitespace()
             .map(str::to_lowercase)
             .collect();
-        let hit = |parts: [&str; 2]| {
-            words.is_empty() || {
-                let text = parts.join(" ").to_lowercase();
-                words.iter().all(|w| text.contains(w))
+        if !words.is_empty() && self.lower.is_none() {
+            self.lower = Some(Lower::of(&self.book));
+        }
+        // Every word is in one of the two texts.
+        let hit = |a: &str, b: &str| words.iter().all(|w| a.contains(w) || b.contains(w));
+        let lower = self.lower.as_ref().filter(|_| !words.is_empty());
+        self.shown = match (self.part, lower) {
+            (Part::Messages, None) => (0..self.book.threads.len())
+                .filter(|&i| !self.book.threads[i].messages.is_empty())
+                .collect(),
+            (Part::Messages, Some(l)) => (0..self.book.threads.len())
+                .filter(|&i| l.texts[i].iter().any(|text| hit(&l.who[i], text)))
+                .collect(),
+            (_, None) => (0..self.rows().len()).collect(),
+            (part, Some(l)) => {
+                let rows = match part {
+                    Part::Contacts => &l.rows[0],
+                    Part::Calls => &l.rows[1],
+                    _ => &l.rows[2],
+                };
+                (0..rows.len())
+                    .filter(|&i| hit(&rows[i][0], &rows[i][1]))
+                    .collect()
             }
-        };
-        self.shown = if self.part == Part::Messages {
-            let threads = self.book.threads.iter().enumerate();
-            threads
-                .filter(|(_, t)| t.messages.iter().any(|m| hit([&t.who, &m.text])))
-                .map(|(i, _)| i)
-                .collect()
-        } else {
-            let rows = self.rows().iter().enumerate();
-            rows.filter(|(_, r)| hit([&r[0], &r[1]]))
-                .map(|(i, _)| i)
-                .collect()
         };
         // On the other parts `shown` holds rows, not conversations.
         if self.part == Part::Messages && self.open.is_some_and(|i| !self.shown.contains(&i)) {
             self.open = None;
         }
-        self.open_shown = self.open.map_or(Vec::new(), |i| {
-            let t = &self.book.threads[i];
-            let all = t.messages.iter().enumerate();
-            all.filter(|(_, m)| hit([&t.who, &m.text]))
-                .map(|(i, _)| i)
-                .collect()
+        self.open_shown = self.open.map_or(Vec::new(), |i| match lower {
+            None => (0..self.book.threads[i].messages.len()).collect(),
+            Some(l) => (0..l.texts[i].len())
+                .filter(|&m| hit(&l.who[i], &l.texts[i][m]))
+                .collect(),
         });
     }
 

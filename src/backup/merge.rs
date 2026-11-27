@@ -90,7 +90,7 @@ pub(super) fn recycle(_: &Path) -> Result<(), String> {
 }
 
 /// True when both files hold the same bytes.
-pub(super) fn same_file(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
     use std::io::BufReader;
     let (Ok(fa), Ok(fb)) = (fs::File::open(a), fs::File::open(b)) else {
         return false;
@@ -132,7 +132,8 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             .flatten()
         {
             let path = entry.path();
-            if path.is_dir() {
+            // A link to a folder is not followed: one pointing back up would never end.
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 stack.push(path);
             } else if !(dir == from
                 && [REPORT, RESTORE_REPORT, RENAMED, CHECKSUMS]
@@ -182,13 +183,19 @@ pub fn merge_backups(from: &Path, into: &Path, report: &dyn Fn(Msg)) -> Result<S
             same += 1;
             continue;
         }
-        if let Some(dir) = target.parent() {
-            fs::create_dir_all(dir)
-                .map_err(|e| format!("Cannot write in {}: {e}", dir.display()))?;
+        if let Some(dir) = target.parent()
+            && let Err(e) = fs::create_dir_all(dir)
+        {
+            let _ = sums(&targets);
+            return Err(format!("Cannot write in {}: {e}", dir.display()));
         }
-        if let Err(e) = fs::copy(src, &target) {
-            // A half-written copy would later read as "already there".
-            let _ = fs::remove_file(&target);
+        // Copied under a temporary name first: a crash leaves no half file under the real name,
+        // which a later merge would take for a different file.
+        let mut part = target.clone().into_os_string();
+        part.push(".part");
+        let part = PathBuf::from(part);
+        if let Err(e) = fs::copy(src, &part).and_then(|_| fs::rename(&part, &target)) {
+            let _ = fs::remove_file(&part);
             let _ = sums(&targets);
             return Err(format!("Could not copy {}: {e}", src.display()));
         }

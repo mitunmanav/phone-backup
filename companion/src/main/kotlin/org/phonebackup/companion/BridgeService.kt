@@ -180,6 +180,10 @@ class BridgeService : Service() {
             }
         } catch (_: SecurityException) {
             writer.send(error(id, "permission_denied"))
+        } catch (_: IllegalArgumentException) {
+            // A column this Android version lacks. Answering keeps the helper alive for the other
+            // lists; the PC reads this one the older way.
+            writer.send(error(id, "query_failed"))
         }
     }
 
@@ -196,7 +200,8 @@ class BridgeService : Service() {
                         item.put(rows.getColumnName(column), rows.getString(column))
                     }
                 }
-                writer.send(JSONObject().put("id", id).put("item", item))
+                // Sent together: the writer's buffer goes out when full and at the end.
+                writer.send(JSONObject().put("id", id).put("item", item), flush = false)
                 count++
             }
         }
@@ -206,9 +211,9 @@ class BridgeService : Service() {
     private val BuildConfigVersion: String
         get() = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 
-    private fun BufferedWriter.send(message: JSONObject) {
+    private fun BufferedWriter.send(message: JSONObject, flush: Boolean = true) {
         write(message.toString())
         newLine()
-        flush()
+        if (flush) flush()
     }
 }

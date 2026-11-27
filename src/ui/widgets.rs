@@ -720,7 +720,7 @@ pub(crate) fn info_cards(ui: &mut egui::Ui, t: &Tokens, parts: &[(&str, &str, &s
 /// How many tiles fit across, and how big each is. Three or more across never leave one tile
 /// alone on the last row.
 pub(crate) fn tile_grid(width: f32, room: f32, n: usize) -> (usize, egui::Vec2) {
-    let mut cols = (((width + TILE_GAP) / (140.0 + TILE_GAP)) as usize).clamp(1, n);
+    let mut cols = (((width + TILE_GAP) / (140.0 + TILE_GAP)) as usize).clamp(1, n.max(1));
     if cols > 2 && n % cols == 1 {
         cols -= 1;
     }

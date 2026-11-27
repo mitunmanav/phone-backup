@@ -61,8 +61,14 @@ impl App {
         // Messages stay in memory only while they are on screen.
         self.reading = None;
         if matches!(tab, Tab::Restore | Tab::Tools) {
-            let dest = self.dest.clone();
-            self.scan(&dest);
+            // The folder last looked in, which "Find another…" may have changed: going to another
+            // page and back must not lose it.
+            let folder = if self.scanned.as_os_str().is_empty() {
+                self.dest.clone()
+            } else {
+                self.scanned.clone()
+            };
+            self.scan(&folder);
         }
         if tab == Tab::Tools {
             self.scrcpy = tools::scrcpy_path();
@@ -266,7 +272,7 @@ impl App {
                 icon(ui, egui::pos2(second, y), b, size, ink);
                 let mid = (first + second) / 2.0;
                 // While this page's job runs, a file crosses between its two pictures.
-                if on && busy && self.motion {
+                if on && busy && self.motion && self.paused_at.is_none() {
                     let reach = (second - first) * 0.3;
                     let x = ((ui.input(|i| i.time) as f32 * 0.9).fract() * 2.0 - 1.0) * reach;
                     ui.painter().rect_filled(

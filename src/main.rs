@@ -114,6 +114,8 @@ enum Ask {
 }
 
 struct App {
+    /// Wakes the window when a worker has news for it.
+    ctx: egui::Context,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
     busy: Arc<AtomicBool>,
@@ -260,7 +262,8 @@ type Rows = Vec<(usize, Option<usize>)>;
 /// A delete that asks first.
 enum Confirm {
     /// Copies in the backup on this computer.
-    Copies(Vec<(PathBuf, u64)>),
+    /// Copies to delete: each with its size and a copy of the same file that stays.
+    Copies(Vec<(PathBuf, u64, PathBuf)>),
     /// Files on the phone (serial) whose backup copy matches, and how many chosen ones do not.
     Phone(String, Vec<tools::OnPhone>, usize),
 }
@@ -383,12 +386,21 @@ impl App {
             // Looks for phones every 2 seconds, except while a backup is using the phone.
             let (tx, ctx, busy) = (tx.clone(), ctx.clone(), busy.clone());
             thread::spawn(move || {
+                // The window hears only of changes, so it stays asleep while nothing happens.
+                let mut last = None;
                 loop {
                     if !busy.load(Ordering::Relaxed) {
-                        if tx.send(Msg::Phones(backup::detect())).is_err() {
-                            break;
+                        let seen = (backup::detect(), backup::adb_installed());
+                        if last.as_ref() != Some(&seen) {
+                            if tx.send(Msg::Phones(seen.0.clone())).is_err() {
+                                break;
+                            }
+                            last = Some(seen);
+                            ctx.request_repaint();
                         }
-                        ctx.request_repaint();
+                    } else {
+                        // A job may change what the phone list shows, such as the battery.
+                        last = None;
                     }
                     thread::sleep(Duration::from_secs(2));
                 }
@@ -428,6 +440,7 @@ impl App {
         };
 
         let mut app = Self {
+            ctx: ctx.clone(),
             tx,
             rx,
             busy,
@@ -840,10 +853,14 @@ impl eframe::App for App {
                         self.stopped_at = self.fraction;
                     }
                 },
-                Msg::Sizes(serial, list, apps) => {
+                // Sizes for a phone that was swapped for another while they were read are dropped.
+                Msg::Sizes(serial, list, apps)
+                    if self.sizes.as_ref().is_some_and(|(s, _)| *s == serial) =>
+                {
                     self.sizes = Some((serial, Some((list, apps))));
                     self.tally = None;
                 }
+                Msg::Sizes(..) => {}
                 Msg::Exported(folder, r) => {
                     self.finished(ui.ctx(), r.is_ok());
                     self.export_msg = Some((folder, r));

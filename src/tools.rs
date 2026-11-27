@@ -37,40 +37,63 @@ pub fn duplicates(folder: &Path, say: &dyn Fn(String)) -> Result<Vec<Vec<(PathBu
             by_size.entry(n).or_default().push(path);
         }
     }
-    let same: Vec<(u64, Vec<PathBuf>)> = by_size.into_iter().filter(|(_, p)| p.len() > 1).collect();
-    let total: usize = same.iter().map(|(_, p)| p.len()).sum();
-    let (mut groups, mut done) = (Vec::new(), 0);
-    for (n, paths) in same {
-        let mut by_hash: HashMap<[u8; 32], Vec<PathBuf>> = HashMap::new();
-        for path in paths {
-            if STOP.load(Ordering::Relaxed) {
-                return Err("You stopped the search. Nothing was changed.".into());
+    // Only files that share their size with another can have a twin, so only those are read.
+    let same: Vec<(PathBuf, u64)> = by_size
+        .into_iter()
+        .filter(|(_, p)| p.len() > 1)
+        .flat_map(|(n, paths)| paths.into_iter().map(move |p| (p, n)))
+        .collect();
+    let mut said = usize::MAX;
+    let sums = backup::par_map(
+        &same,
+        |(path, _)| {
+            (!STOP.load(Ordering::Relaxed))
+                .then(|| backup::sha256_bytes(path).ok())
+                .flatten()
+        },
+        &mut |done| {
+            if done / 50 != said / 50 {
+                said = done;
+                say(format!(
+                    "Comparing {} of {}…",
+                    backup::count(done),
+                    files(same.len())
+                ));
             }
-            say(format!(
-                "Comparing {} of {}…",
-                backup::count(done),
-                files(total)
-            ));
-            done += 1;
-            if let Ok(h) = backup::sha256_bytes(&path) {
-                by_hash.entry(h).or_default().push(path);
-            }
-        }
-        groups.extend(by_hash.into_values().filter(|g| g.len() > 1).map(|mut g| {
-            g.sort();
-            g.into_iter().map(|p| (p, n)).collect::<Vec<_>>()
-        }));
+        },
+    );
+    if STOP.load(Ordering::Relaxed) {
+        return Err("You stopped the search. Nothing was changed.".into());
     }
+    let mut by_hash: HashMap<(u64, [u8; 32]), Vec<PathBuf>> = HashMap::new();
+    for ((path, n), sum) in same.into_iter().zip(sums) {
+        if let Some(sum) = sum {
+            by_hash.entry((n, sum)).or_default().push(path);
+        }
+    }
+    let mut groups: Vec<Vec<(PathBuf, u64)>> = by_hash
+        .into_iter()
+        .filter(|(_, g)| g.len() > 1)
+        .map(|((n, _), mut g)| {
+            g.sort();
+            g.into_iter().map(|p| (p, n)).collect()
+        })
+        .collect();
     let waste = |g: &Vec<(PathBuf, u64)>| g[0].1 * (g.len() as u64 - 1);
     groups.sort_by(|a, b| waste(b).cmp(&waste(a)).then_with(|| a[0].0.cmp(&b[0].0)));
     Ok(groups)
 }
 
 /// Deletes the ticked copies from the backup on this computer, and their checksums, so
-/// Verify does not call them missing.
-pub fn delete_copies(folder: &Path, paths: &[(PathBuf, u64)]) -> Result<String, String> {
-    let (mut gone, mut bytes, mut failed) = (0, 0, 0);
-    for (path, n) in paths {
+/// Verify does not call them missing. Each comes with a copy that stays; a file whose bytes no
+/// longer match that copy (a backup ran since the search) is kept.
+pub fn delete_copies(folder: &Path, paths: &[(PathBuf, u64, PathBuf)]) -> Result<String, String> {
+    let (mut gone, mut bytes, mut failed, mut differ) = (0, 0, 0, 0);
+    for (path, n, keep) in paths {
+        if !backup::same_file(path, keep) {
+            differ += 1;
+            continue;
+        }
         match fs::remove_file(path) {
             Ok(()) => {
                 gone += 1;
@@ -90,6 +113,13 @@ pub fn delete_copies(folder: &Path, paths: &[(PathBuf, u64)]) -> Result<String, 
         msg += &format!(
             " {} could not be deleted; close any app that has them open.",
             copies(failed)
+        );
+    }
+    if differ > 0 {
+        msg += &format!(
+            " {} kept: {} no longer the same as the copy that stays. Search again to see.",
+            copies(differ),
+            if differ == 1 { "it is" } else { "they are" }
         );
     }
     if let Err(e) = sums {
@@ -507,6 +537,40 @@ pub fn scrcpy_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_twins_and_deletes_only_true_copies() {
+        let root = std::env::temp_dir().join(format!("pb-twins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("files/DCIM");
+        fs::create_dir_all(&dir).unwrap();
+        for (name, body) in [
+            ("a.jpg", "same"),
+            ("b.jpg", "same"),
+            ("c.jpg", "diff"),
+            ("d.jpg", "x"),
+        ] {
+            fs::write(dir.join(name), body).unwrap();
+        }
+        let groups = duplicates(&root, &|_| {}).unwrap();
+        assert_eq!(groups.len(), 1);
+        let names: Vec<_> = groups[0]
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap())
+            .collect();
+        assert_eq!(names, ["a.jpg", "b.jpg"]);
+        // b.jpg changed after the search: it is no longer a copy of a.jpg, so it stays.
+        fs::write(dir.join("b.jpg"), "new!").unwrap();
+        let msg = delete_copies(&root, &[(dir.join("b.jpg"), 4, dir.join("a.jpg"))]).unwrap();
+        let kept = dir.join("b.jpg").exists();
+        fs::write(dir.join("b.jpg"), "same").unwrap();
+        delete_copies(&root, &[(dir.join("b.jpg"), 4, dir.join("a.jpg"))]).unwrap();
+        let gone = !dir.join("b.jpg").exists() && dir.join("a.jpg").exists();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(kept, "{msg}");
+        assert!(msg.contains("1 copy kept"), "{msg}");
+        assert!(gone);
+    }
 
     #[test]
     fn deletes_only_same_size_files_in_shared_storage() {

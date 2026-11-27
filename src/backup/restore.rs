@@ -414,6 +414,9 @@ pub fn restore_files(
 
     let tmp = std::env::temp_dir().join(format!("phone-backup-push-{}", std::process::id()));
     let mut tried: Vec<&Job> = Vec::new();
+    // Files found on the phone only just before their push, and files not sent because the
+    // phone could not say whether they were there.
+    let (mut late, mut unchecked): (usize, Vec<&Job>) = (0, Vec::new());
     'dirs: for (dir, group) in &by_dir {
         // Pushing into a folder keeps the local name, so renamed files go one by one to their full path.
         let alone = |j: &Job| {
@@ -430,6 +433,22 @@ pub fn restore_files(
             });
             if hold() {
                 break 'dirs;
+            }
+            // The list read before may have missed a folder the phone would not show; a file
+            // there now is never replaced. When the phone cannot say, the batch is not sent.
+            let there = present(serial, batch.iter().map(|j| j.remote.as_str()));
+            if stopped() {
+                break 'dirs;
+            }
+            let Some(there) = there else {
+                unchecked.extend(batch);
+                continue;
+            };
+            let (now_there, batch): (Vec<&Job>, Vec<&Job>) =
+                batch.iter().partition(|j| there.contains(&j.remote));
+            late += now_there.len();
+            if batch.is_empty() {
+                continue;
             }
             let mut c = adb();
             c.args(["-s", serial, "push"]);
@@ -473,7 +492,7 @@ pub fn restore_files(
                     .and_then(|(s, p)| Some((p.to_string(), s.parse().ok()?)))
             })
             .collect();
-    let broken: Vec<&Job> = tried
+    let mut broken: Vec<&Job> = tried
         .iter()
         .copied()
         .filter(|j| sizes.get(&j.remote) != Some(&j.size))
@@ -488,6 +507,8 @@ pub fn restore_files(
             .collect::<Vec<_>>(),
     );
     let copied = tried.len() - broken.len();
+    broken.extend(unchecked);
+    let skipped = skipped + late;
 
     // Android 10+ rescans on request so the Gallery shows the files; older phones do it on restart.
     let sdk: u32 = shell_each(serial, "getprop", &["ro.build.version.sdk"])
@@ -537,6 +558,23 @@ pub fn restore_files(
 
 pub(super) const DISCONNECTED_RESTORE: &str = "The phone was disconnected. Files copied so far stay on the phone; plug it back in and restore again to continue.";
 const DISCONNECTED_APPS: &str = "The phone was disconnected. Apps installed so far stay on the phone; plug it back in and restore again to continue.";
+
+/// Which of `remotes` exist on the phone now, or None when the phone did not answer in full.
+fn present<'a>(serial: &str, remotes: impl Iterator<Item = &'a str>) -> Option<HashSet<String>> {
+    let quoted: Vec<String> = remotes.map(sh_quote).collect();
+    // The last line proves the whole check ran; a cut-off answer could miss a file.
+    let out = shell(
+        serial,
+        &format!(
+            r#"for f in {}; do [ -e "$f" ] && echo "$f"; done; echo {END}"#,
+            quoted.join(" ")
+        ),
+    );
+    let mut lines: Vec<&str> = out.lines().map(|l| l.trim_end_matches('\r')).collect();
+    (lines.pop() == Some(END)).then(|| lines.into_iter().map(String::from).collect())
+}
+
+const END: &str = "phone-backup-checked";
 
 /// Restores photos and files first, then apps, from one backup folder. With `check`, changes
 /// nothing on the phone and says what a restore would do; otherwise saves the restore report

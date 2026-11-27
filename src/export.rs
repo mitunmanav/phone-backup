@@ -225,7 +225,11 @@ fn picture_messages(
             .iter_mut()
             .for_each(|p| p.insert(0, String::new()));
     }
-    let address_rows = rows(addresses, &["msg_id", "address", "type"]);
+    // One query for each message, each numbering its rows from 0.
+    let address_rows: Vec<Vec<String>> = queries(addresses)
+        .into_iter()
+        .flat_map(|q| rows(q, &["msg_id", "address", "type"]))
+        .collect();
     let saved: HashMap<String, PathBuf> = fs::read_dir(root.join("data").join("mms"))
         .into_iter()
         .flatten()
@@ -236,13 +240,24 @@ fn picture_messages(
         })
         .collect();
 
+    // Parts and addresses by message, so each message finds its own at once.
+    let mut parts_of: HashMap<&str, Vec<&Vec<String>>> = HashMap::new();
+    for p in &part_rows {
+        parts_of.entry(p[1].as_str()).or_default().push(p);
+    }
+    let mut people_of: HashMap<&str, Vec<&Vec<String>>> = HashMap::new();
+    for a in &address_rows {
+        if !a[1].is_empty() && a[1] != "insert-address-token" {
+            people_of.entry(a[0].as_str()).or_default().push(a);
+        }
+    }
     rows(list.trim_end(), &["_id", "date", "msg_box", "sub"])
         .iter()
         .map(|m| {
             // Box 1 is received; the others are from the owner. These dates are in seconds.
             let me = m[2] != "1";
             let ms = m[1].parse::<i64>().unwrap_or(0).saturating_mul(1000);
-            let parts: Vec<_> = part_rows.iter().filter(|p| p[1] == m[0]).collect();
+            let parts = parts_of.get(m[0].as_str()).map_or(&[][..], Vec::as_slice);
             let text: Vec<&str> = parts
                 .iter()
                 .filter(|p| p[2] == "text/plain")
@@ -263,14 +278,11 @@ fn picture_messages(
             // Address type 137 is the sender, 151 a recipient; "No result found." can follow it.
             // shortcut: a group message files under one person, until the page shows group chats.
             let want = if me { "151" } else { "137" };
-            let people = || {
-                address_rows
-                    .iter()
-                    .filter(|a| a[0] == m[0] && !a[1].is_empty() && a[1] != "insert-address-token")
-            };
-            let number = people()
+            let people = people_of.get(m[0].as_str()).map_or(&[][..], Vec::as_slice);
+            let number = people
+                .iter()
                 .find(|a| a[2].starts_with(want))
-                .or(people().next())
+                .or(people.first())
                 .map_or(String::new(), |a| a[1].clone());
             let name = names.get(&number_key(&number)).cloned().unwrap_or_default();
             ((ms, number, name, me, text), files)
@@ -305,11 +317,17 @@ fn event_row(e: &[String]) -> [String; 2] {
 
 /// `content query` output as one list of values per row, in `keys` order. "Row: 0 a=1, b=x, y"
 /// with keys a, b gives ["1", "x, y"]. The last value may run over several lines. NULL is "".
+/// Rows are numbered 0, 1, 2...: a message whose text has a line like "Row: 1 ..." in it is
+/// still one message, not a second, made-up one.
 pub fn rows(text: &str, keys: &[&str]) -> Vec<Vec<String>> {
     let mut records: Vec<String> = Vec::new();
     for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("Row: ") {
-            records.push(rest.split_once(' ').map_or("", |r| r.1).to_string());
+        let next = line
+            .strip_prefix("Row: ")
+            .and_then(|rest| rest.split_once(' '))
+            .filter(|(n, _)| n.parse() == Ok(records.len()));
+        if let Some((_, rest)) = next {
+            records.push(rest.to_string());
         } else if let Some(last) = records.last_mut() {
             last.push('\n');
             last.push_str(line);
@@ -334,6 +352,19 @@ pub fn rows(text: &str, keys: &[&str]) -> Vec<Vec<String>> {
             )
         })
         .collect()
+}
+
+/// Output of several `content query` runs one after another, split into one text per run. Each
+/// starts at its "Row: 0" line, or at "No result found." for a run that found nothing.
+fn queries(text: &str) -> Vec<&str> {
+    let mut starts: Vec<usize> = text
+        .match_indices('\n')
+        .map(|(i, _)| i + 1)
+        .filter(|&i| text[i..].starts_with("Row: 0 ") || text[i..].starts_with("No result"))
+        .collect();
+    starts.insert(0, 0);
+    starts.push(text.len());
+    starts.windows(2).map(|w| &text[w[0]..w[1]]).collect()
 }
 
 /// A contact: (name, [("TEL" or "EMAIL", value)]), each value once.
@@ -859,6 +890,16 @@ mod tests {
             ]
         );
         assert!(rows("No result found.", &["a"]).is_empty());
+        // A line in a message that looks like the next row stays part of the message.
+        let sneaky = "Row: 0 address=+1, date=5, type=1, body=Hi\nRow: 7 address=+2, date=6, type=1, body=fake\n\
+                      Row: 1 address=+3, date=7, type=2, body=ok";
+        let found = rows(sneaky, &["address", "date", "type", "body"]);
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            found[0][3],
+            "Hi\nRow: 7 address=+2, date=6, type=1, body=fake"
+        );
+        assert_eq!(found[1][0], "+3");
     }
 
     #[test]

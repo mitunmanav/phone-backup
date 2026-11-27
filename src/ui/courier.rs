@@ -368,9 +368,18 @@ impl App {
             }
         }
 
-        let moving = motion && (copying || s.react.is_some() || s.since < 2.0);
-        if moving {
-            ctx.request_repaint();
+        // `since` counts only once a job is done; before that it stays 0, and an idle courier
+        // standing by the phone must not keep the window drawing.
+        let celebrating = matches!(phase, Phase::Done(_)) && s.since < 2.0;
+        let moving = motion && (copying || s.react.is_some() || celebrating);
+        if paused && motion && !moving {
+            // The tapping foot changes three times a second: wake just for the next change.
+            let next = (1.0 - (now * 3.0).fract()) / 3.0;
+            ctx.request_repaint_after(Duration::from_secs_f64(next + 0.002));
+        } else if moving {
+            // About 60 frames a second: pixel art gains nothing from a faster screen, and a
+            // backup can run for hours.
+            ctx.request_repaint_after(Duration::from_millis(16));
         } else if running {
             ctx.request_repaint_after(Duration::from_millis(500));
         }

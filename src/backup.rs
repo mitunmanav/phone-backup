@@ -1,7 +1,7 @@
 //! Copies an Android phone to this computer over ADB (USB or Wi-Fi) or MTP.
 //! Everything runs locally; nothing is sent to any server.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,53 @@ fn hold() -> bool {
         std::thread::sleep(Duration::from_millis(200));
     }
     stopped()
+}
+
+/// Runs `work` on every item across a few threads and returns the results in item order.
+/// `tick` runs on the calling thread about 20 times a second with how many items are done, so
+/// progress can be shown by code that is not thread-safe. Four threads at most: more gain little
+/// on one disk, and a spinning disk slows down when many files are read at once.
+pub(crate) fn par_map<T: Sync, R: Send>(
+    items: &[T],
+    work: impl Fn(&T) -> R + Sync,
+    tick: &mut dyn FnMut(usize),
+) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map_or(2, |n| n.get())
+        .clamp(1, 4)
+        .min(items.len().max(1));
+    let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let mut out: Vec<Option<R>> = std::iter::repeat_with(|| None).take(items.len()).collect();
+    std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(i) else { break };
+                        mine.push((i, work(item)));
+                        done.fetch_add(1, Ordering::Relaxed);
+                    }
+                    mine
+                })
+            })
+            .collect();
+        let mut nap = Duration::from_millis(1);
+        while !workers.iter().all(|w| w.is_finished()) {
+            tick(done.load(Ordering::Relaxed));
+            std::thread::sleep(nap);
+            nap = (nap * 2).min(Duration::from_millis(50));
+        }
+        for w in workers {
+            // A panic in `work` is passed on, as it would be without threads.
+            for (i, r) in w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)) {
+                out[i] = Some(r);
+            }
+        }
+    });
+    tick(items.len());
+    out.into_iter().flatten().collect()
 }
 
 const STOPPED: &str =
@@ -283,6 +330,7 @@ fn is_junk(path: &str) -> bool {
 }
 
 /// Keeps Windows from sleeping while this thread runs a job; `false` lets it sleep again.
+#[cfg_attr(not(windows), allow(unused_variables))]
 pub fn keep_awake(on: bool) {
     // SAFETY: only sets a flag for the calling thread; no pointers involved.
     #[cfg(windows)]
@@ -1435,6 +1483,73 @@ mod tests {
         );
         assert_eq!(mms_part("Row: 1 _id=2, ct=text/plain, cl=NULL"), None);
         assert_eq!(mms_part("Row: 0 _id=1, ct=NULL, cl=NULL"), None);
+    }
+
+    #[test]
+    fn par_map_keeps_order_and_counts_to_the_end() {
+        let items: Vec<u32> = (0..1000).collect();
+        let mut last = 0;
+        let out = par_map(&items, |n| n * 2, &mut |done| last = done);
+        assert_eq!(out, items.iter().map(|n| n * 2).collect::<Vec<_>>());
+        assert_eq!(last, 1000);
+        assert!(par_map(&[] as &[u32], |n| *n, &mut |_| {}).is_empty());
+    }
+
+    #[test]
+    fn folder_listing_answers_like_asking_each_file() {
+        let root = std::env::temp_dir().join(format!("pb-stamps-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("a/b/x.jpg"), "12345").unwrap();
+        fs::write(root.join("top.txt"), "").unwrap();
+        let known = stamps(&root);
+        let job = |local: &str, size: u64| {
+            let local = root.join(local);
+            let mtime = fs::metadata(&local)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            Job {
+                remote: String::new(),
+                size,
+                mtime,
+                local,
+            }
+        };
+        let checks = [
+            job("a/b/x.jpg", 5),
+            job("a/b/x.jpg", 6),
+            job("top.txt", 0),
+            job("gone.txt", 0),
+        ];
+        let answers: Vec<_> = checks.iter().map(|j| needs_copy_in(j, &known)).collect();
+        let direct: Vec<_> = checks.iter().map(needs_copy).collect();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(known.len(), 2);
+        assert_eq!(answers, [false, true, false, true]);
+        assert_eq!(answers, direct);
+    }
+
+    #[test]
+    fn hashes_while_copying_and_keeps_those_sums() {
+        let root = std::env::temp_dir().join(format!("pb-hasher-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("files")).unwrap();
+        let (a, b) = (root.join("files/a.jpg"), root.join("files/b.jpg"));
+        fs::write(&a, "abc").unwrap();
+        fs::write(&b, "xyz").unwrap();
+        let hasher = Hasher::new();
+        hasher.add(a.clone());
+        let mut ready = hasher.finish();
+        assert_eq!(ready[&a], sha256(&a).unwrap());
+        // A sum made while copying is used as it is: this one is not read again.
+        ready.insert(a.clone(), "made-earlier".into());
+        update_sums_with(&root, &[], &[a.clone(), b.clone()], ready, &|_| {}).unwrap();
+        let sums = read_sums(&root);
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(sums["files/a.jpg"], "made-earlier");
+        assert_eq!(sums["files/b.jpg"].len(), 64);
     }
 
     #[test]

@@ -358,12 +358,12 @@ impl App {
         }
         self.backups = backup::saved_backups(folder);
         self.scanned = folder.to_path_buf();
-        let (tx, paths): (_, Vec<PathBuf>) = (
+        let (tx, ctx, paths): (_, _, Vec<PathBuf>) = (
             self.tx.clone(),
+            self.ctx.clone(),
             self.backups.iter().map(|b| b.path.clone()).collect(),
         );
-        // Adding up 100,000 files takes seconds, so off the window's thread. The phone check
-        // repaints every 2 seconds, which shows the sizes.
+        // Adding up 100,000 files takes seconds, so off the window's thread.
         thread::spawn(move || {
             let sizes = paths
                 .into_iter()
@@ -373,6 +373,7 @@ impl App {
                 })
                 .collect();
             let _ = tx.send(Msg::FolderSizes(sizes));
+            ctx.request_repaint();
         });
         if !self
             .backups

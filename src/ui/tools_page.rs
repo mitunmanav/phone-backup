@@ -241,7 +241,8 @@ impl App {
                     t.accent,
                 );
             }
-            ctx.request_repaint();
+            // About 60 frames a second, however fast the screen: a search can run for minutes.
+            ctx.request_repaint_after(Duration::from_millis(16));
         } else {
             icon(ui, pos2((x0 + x1) / 2.0, y), "\u{E76C}", 14.0, out);
         }
@@ -662,14 +663,21 @@ impl App {
         }
     }
 
-    fn dupes_buttons(&mut self, ui: &mut egui::Ui, t: &Tokens, folder: Option<PathBuf>, can: bool) {
-        let found: Vec<(PathBuf, u64)> = self
-            .dupes
+    /// Each ticked copy with a copy of the same file that stays, checked again before delete.
+    fn ticked_copies(&self) -> Vec<(PathBuf, u64, PathBuf)> {
+        self.dupes
             .iter()
-            .flat_map(|(groups, _)| groups.iter().flatten())
-            .filter(|(p, _)| self.ticked.contains(p))
-            .cloned()
-            .collect();
+            .flat_map(|(groups, _)| groups)
+            .flat_map(|g| {
+                let keep = g.iter().find(|(p, _)| !self.ticked.contains(p));
+                g.iter()
+                    .filter(|(p, _)| self.ticked.contains(p))
+                    .filter_map(move |(p, n)| Some((p.clone(), *n, keep?.0.clone())))
+            })
+            .collect()
+    }
+
+    fn dupes_buttons(&mut self, ui: &mut egui::Ui, t: &Tokens, folder: Option<PathBuf>, can: bool) {
         let any = self.dupes.as_ref().is_some_and(|d| !d.0.is_empty());
         let start = if any {
             let all_gone = self.dupes.iter().any(|(groups, _)| {
@@ -681,9 +689,9 @@ impl App {
                 ui,
                 t,
                 "Delete ticked copies…",
-                can && !found.is_empty() && !all_gone,
+                can && !self.ticked.is_empty() && !all_gone,
             ) {
-                self.confirm = Some(Confirm::Copies(found));
+                self.confirm = Some(Confirm::Copies(self.ticked_copies()));
             }
             quiet(ui, t, "Find again", can).clicked()
         } else {
@@ -733,7 +741,7 @@ impl App {
                 format!("Delete {} from the backup?", files(list.len())),
                 format!(
                     "This frees {} on this computer. One copy of each file stays in the backup. While the phone still has these files, the next backup copies them again.",
-                    size(list.iter().map(|(_, n)| n).sum())
+                    size(list.iter().map(|(_, n, _)| n).sum())
                 ),
                 format!("Delete {}", files(list.len())),
             ),

@@ -15,6 +15,8 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     let root = dest.join(safe_name(&format!("{}_{}", info.model, info.serial_number)));
     let (mut files, mut copied, mut errors) = (0, Vec::new(), Vec::new());
     let mut kept = Vec::new();
+    // Files whose Windows name differs from the phone's: (path in the backup, phone path).
+    let mut renames = Vec::new();
     // Windows ignores letter case, so IMG.jpg and img.jpg would overwrite each other.
     let mut seen = HashSet::new();
 
@@ -31,7 +33,7 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
             )
         };
         // The folder's path inside the storage goes along, for the folder and type choices.
-        let mut stack = vec![(None, base, String::new())];
+        let mut stack = vec![(None, base.clone(), String::new())];
         while let Some((parent, dir, rel)) = stack.pop() {
             if hold() {
                 // Copied files may replace older ones whose sums no longer match.
@@ -78,6 +80,10 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
                     continue;
                 }
                 files += 1;
+                // Names changed for Windows go back to the phone under their real names.
+                if n == 0 && super::rel(&base, &local) != path {
+                    renames.push((super::rel(&root, &local), format!("/sdcard/{path}")));
+                }
                 // shortcut: MTP compares size only (no file times); a same-size edit is missed.
                 if fs::metadata(&local).is_ok_and(|m| m.len() == obj.size) {
                     kept.push(local);
@@ -123,10 +129,15 @@ pub async fn mtp_backup(dest: &Path, pick: &Pick, report: &dyn Fn(Msg)) -> Resul
     }
     let _ = fs::create_dir_all(&root);
     kept.extend(copied.iter().cloned());
-    let notes = match update_sums(&root, &copied, &kept, report) {
+    let mut notes = match update_sums(&root, &copied, &kept, report) {
         Ok(()) => Vec::new(),
         Err(e) => vec![super::adb::sums_lost(&e)],
     };
+    if let Err(e) = save_renamed(&root, renames) {
+        notes.push(format!(
+            "The list of renamed files could not be saved ({e}), so a restore would put some files back under their Windows names."
+        ));
+    }
     let s = Summary {
         name,
         root,

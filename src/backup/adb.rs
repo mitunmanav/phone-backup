@@ -1,10 +1,21 @@
 use super::*;
 use std::process::Output;
+use std::sync::Mutex;
 use std::time::Instant;
 
 /// adb.exe next to this app, then on PATH, then in the default Android SDK folder.
 /// Most people never install the SDK, so shipping adb.exe beside the app is the normal case.
 pub(crate) fn adb_path() -> Option<PathBuf> {
+    // Every adb command asks, so the last answer is kept while that file is still there.
+    static FOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    if found.as_ref().is_none_or(|p| !p.is_file()) {
+        *found = find_adb();
+    }
+    found.clone()
+}
+
+fn find_adb() -> Option<PathBuf> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(Path::to_path_buf));
@@ -28,6 +39,7 @@ pub fn adb_installed() -> bool {
 
 /// adb without a console window flashing up on every call.
 pub(crate) fn adb() -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut c = Command::new(adb_path().unwrap_or_else(|| "adb".into()));
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
@@ -50,7 +62,7 @@ pub fn detect() -> Vec<Phone> {
         phones.sort_by_key(|p| matches!(p, Phone::Adb { wifi: true, .. }));
         let mut seen = std::collections::HashSet::new();
         phones.retain(|p| match p {
-            Phone::Adb { serial, .. } => seen.insert(phone_id(serial)),
+            Phone::Adb { serial, .. } => seen.insert(listed_id(serial)),
             _ => true,
         });
     }
@@ -63,16 +75,7 @@ pub fn detect() -> Vec<Phone> {
             ..
         } = p
         {
-            // Not stoppable like `shell`, for the same reason as phone_id.
-            let out = logged(adb().args([
-                "-s",
-                serial,
-                "shell",
-                "dumpsys battery; getprop ro.build.characteristics",
-            ]))
-            .map(|o| o.stdout)
-            .unwrap_or_default();
-            let out = String::from_utf8_lossy(&out);
+            let out = phone_state(serial);
             *battery = low_battery(&out);
             *level = battery_level(&out);
             *form = device_form(out.lines().last().unwrap_or(""));
@@ -95,15 +98,72 @@ pub fn detect() -> Vec<Phone> {
     if !mtp.is_empty() {
         return mtp;
     }
-    let problems =
-        logged(windows_tool("pnputil.exe").args(["/enum-devices", "/connected", "/problem"]))
-            .map(|o| o.stdout)
-            .unwrap_or_default();
-    if usb_failed(&String::from_utf8_lossy(&problems)) {
+    if usb_problem() {
         vec![Phone::UsbFailed]
     } else {
         Vec::new()
     }
+}
+
+/// Answers that change slowly, kept for a while so the phone list, which looks every 2 seconds,
+/// does not start a program on the phone or computer each time.
+struct Kept<T> {
+    at: Instant,
+    value: T,
+}
+
+fn kept<K: Ord + Clone, T: Clone>(
+    store: &Mutex<BTreeMap<K, Kept<T>>>,
+    key: &K,
+    for_secs: u64,
+    fetch: impl FnOnce() -> T,
+) -> T {
+    if let Some(k) = store.lock().unwrap_or_else(|e| e.into_inner()).get(key)
+        && k.at.elapsed().as_secs() < for_secs
+    {
+        return k.value.clone();
+    }
+    let value = fetch();
+    let at = Instant::now();
+    store.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        key.clone(),
+        Kept {
+            at,
+            value: value.clone(),
+        },
+    );
+    value
+}
+
+/// The battery and the kind of device, as `dumpsys battery` and getprop print them. Read again
+/// every 20 seconds: the battery warning does not need to be quicker than that.
+fn phone_state(serial: &str) -> String {
+    static STATE: Mutex<BTreeMap<String, Kept<String>>> = Mutex::new(BTreeMap::new());
+    kept(&STATE, &serial.to_string(), 20, || {
+        // Not stoppable like `shell`, for the same reason as phone_id.
+        let out = logged(adb().args([
+            "-s",
+            serial,
+            "shell",
+            "dumpsys battery; getprop ro.build.characteristics",
+        ]))
+        .map(|o| o.stdout)
+        .unwrap_or_default();
+        String::from_utf8_lossy(&out).into_owned()
+    })
+}
+
+/// Whether Windows could not use some USB device, asked every 10 seconds at most: pnputil is
+/// slow to start, and it only matters while no phone shows up at all.
+fn usb_problem() -> bool {
+    static SEEN: Mutex<BTreeMap<(), Kept<bool>>> = Mutex::new(BTreeMap::new());
+    kept(&SEEN, &(), 10, || {
+        let problems =
+            logged(windows_tool("pnputil.exe").args(["/enum-devices", "/connected", "/problem"]))
+                .map(|o| o.stdout)
+                .unwrap_or_default();
+        usb_failed(&String::from_utf8_lossy(&problems))
+    })
 }
 
 /// In pnputil's list of devices with a problem: a USB device Windows could not read (it gets a
@@ -213,6 +273,7 @@ pub fn explorer() -> Command {
 /// curl or tar from Windows itself. Never searched for: this app's folder may hold anything,
 /// such as a Downloads folder with a file of the same name.
 pub(super) fn windows_tool(name: &str) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut c = Command::new(system_root().join("System32").join(name));
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000); // CREATE_NO_WINDOW
@@ -472,6 +533,9 @@ pub(super) fn run(mut c: Command) -> Vec<u8> {
     });
     let started = Instant::now();
     let mut code = None;
+    // Most adb commands end within milliseconds: check often at first, then less often, so a
+    // quick command is not held up and a long pull does not keep a core busy.
+    let mut nap = Duration::from_millis(1);
     loop {
         match child.try_wait() {
             Ok(None) if stopped() => {
@@ -479,7 +543,10 @@ pub(super) fn run(mut c: Command) -> Vec<u8> {
                 let _ = child.wait();
                 break;
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                std::thread::sleep(nap);
+                nap = (nap * 2).min(Duration::from_millis(50));
+            }
             Ok(Some(status)) => {
                 code = status.code();
                 break;
@@ -544,6 +611,13 @@ pub(super) fn phone_id(serial: &str) -> String {
         "" => serial.to_string(),
         s => s.to_string(),
     }
+}
+
+/// `phone_id` for the phone list, kept for a minute; a Wi-Fi address can later belong to another
+/// phone. A backup asks `phone_id` itself, since its folder is named after the answer.
+fn listed_id(serial: &str) -> String {
+    static IDS: Mutex<BTreeMap<String, Kept<String>>> = Mutex::new(BTreeMap::new());
+    kept(&IDS, &serial.to_string(), 60, || phone_id(serial))
 }
 
 /// One file to copy: remote path, its size and mtime (Unix seconds), and where it goes locally.
@@ -710,34 +784,32 @@ pub(super) fn adb_backup_run(
     unclash(&mut jobs);
     if pick.files {
         // Names changed for Windows go back to the phone under their real names; see saved_files.
-        let mut map = renamed(&root);
-        map.extend(jobs.iter().filter_map(|j| {
-            let (rel, local_rel) = storages.iter().find_map(|(r, l)| {
-                Some((
-                    j.remote.strip_prefix(&format!("{r}/"))?,
-                    j.local.strip_prefix(l).ok()?,
-                ))
-            })?;
-            let local = j
-                .local
-                .strip_prefix(&root)
-                .ok()?
-                .to_string_lossy()
-                .replace('\\', "/");
-            (local_rel != Path::new(rel)).then(|| (local, j.remote.clone()))
-        }));
-        let text: String = map
-            .iter()
-            .map(|(local, remote)| format!("{local}\t{remote}\n"))
-            .collect();
-        fs::create_dir_all(&root)
-            .and_then(|()| fs::write(root.join(RENAMED), text))
-            .map_err(|e| format!("Cannot write in {}: {e}", root.display()))?;
+        save_renamed(
+            &root,
+            jobs.iter().filter_map(|j| {
+                let (rel, local_rel) = storages.iter().find_map(|(r, l)| {
+                    Some((
+                        j.remote.strip_prefix(&format!("{r}/"))?,
+                        j.local.strip_prefix(l).ok()?,
+                    ))
+                })?;
+                let local = j
+                    .local
+                    .strip_prefix(&root)
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (local_rel != Path::new(rel)).then(|| (local, j.remote.clone()))
+            }),
+        )
+        .map_err(|e| format!("Cannot write in {}: {e}", root.display()))?;
     }
     let files = jobs.len();
     let mut listed: Vec<PathBuf> = jobs.iter().map(|j| j.local.clone()).collect();
     let ran: HashSet<PathBuf> = listed.iter().cloned().collect();
-    jobs.retain(needs_copy);
+    let known = stamps(&root);
+    jobs.retain(|j| needs_copy_in(j, &known));
+    drop(known);
     let to_copy = jobs.len();
     let needed: u64 = jobs.iter().map(|j| j.size).sum();
     if let Some(free) = free_space(dest) {
@@ -770,10 +842,15 @@ pub(super) fn adb_backup_run(
     }
     report(Msg::Tiles([0; 6], total));
     let copied = std::cell::Cell::new([0; 6]);
+    let hasher = Hasher::new();
     let each = |batch: &[Job]| {
         let mut done = copied.get();
         for j in batch {
             done[tile(j)] += j.size;
+            // Hashed now, while the file is fresh in memory; one cut short is left for next time.
+            if !needs_copy(j) {
+                hasher.add(j.local.clone());
+            }
         }
         copied.set(done);
         report(Msg::Tiles(done, total));
@@ -785,6 +862,11 @@ pub(super) fn adb_backup_run(
     if !connected(serial) {
         return Err(DISCONNECTED.into());
     }
+    // A file that did not arrive whole (a full disk, say) must not get a checksum: Verify would
+    // then call the broken copy good. It is copied again next time.
+    let (copied, failed): (Vec<Job>, Vec<Job>) = tried.into_iter().partition(|j| !needs_copy(j));
+    let failed: HashSet<PathBuf> = failed.into_iter().map(|j| j.local).collect();
+    listed.retain(|p| !failed.contains(p));
 
     let helper = pick.data.then(|| {
         status("Starting the helper on the phone. Allow it if the phone asks…".into());
@@ -863,15 +945,13 @@ pub(super) fn adb_backup_run(
         return Err(e.into());
     }
     listed.extend(written.iter().cloned());
-    if let Err(e) = update_sums(&root, &written, &listed, report) {
+    status("Saving checksums…".into());
+    let ready = hasher.finish();
+    if let Err(e) = update_sums_with(&root, &written, &listed, ready, report) {
         notes.push(sums_lost(&e));
     }
 
-    let copied: Vec<PathBuf> = tried
-        .into_iter()
-        .filter(|j| !needs_copy(j))
-        .map(|j| j.local)
-        .collect();
+    let copied: Vec<PathBuf> = copied.into_iter().map(|j| j.local).collect();
     let s = Summary {
         name: model.to_string(),
         root,
@@ -1016,16 +1096,53 @@ pub(crate) fn shell_each(serial: &str, cmd: &str, paths: &[&str]) -> String {
 
 /// True when the local copy is missing or differs in size or time.
 pub(super) fn needs_copy(job: &Job) -> bool {
-    let Ok(meta) = fs::metadata(&job.local) else {
-        return true;
-    };
-    let local_mtime = meta
+    fs::metadata(&job.local).map_or(true, |meta| differs(job, &stamp(&meta)))
+}
+
+/// Size and modified time (Unix seconds) of a file on this computer.
+type Stamp = (u64, i64);
+
+fn stamp(meta: &fs::Metadata) -> Stamp {
+    let mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs() as i64);
+    (meta.len(), mtime)
+}
+
+fn differs(job: &Job, (len, mtime): &Stamp) -> bool {
     // 2 s slack: exFAT/FAT drives store times in 2-second steps.
-    meta.len() != job.size || (local_mtime - job.mtime).abs() > 2
+    *len != job.size || (mtime - job.mtime).abs() > 2
+}
+
+/// Every file under `dir` with its size and time, read from the folder listings. On Windows a
+/// listing already holds both, so this is many times faster than asking for each file.
+pub(super) fn stamps(dir: &Path) -> HashMap<PathBuf, Stamp> {
+    let mut found = HashMap::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => todo.push(entry.path()),
+                Ok(t) if t.is_file() => {
+                    if let Ok(meta) = entry.metadata() {
+                        found.insert(entry.path(), stamp(&meta));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// `needs_copy`, answered from `stamps` when it lists the file. A file it does not list is
+/// asked about directly: its name may differ from the listing only in letter case.
+pub(super) fn needs_copy_in(job: &Job, known: &HashMap<PathBuf, Stamp>) -> bool {
+    known
+        .get(&job.local)
+        .map_or_else(|| needs_copy(job), |s| differs(job, s))
 }
 
 /// Copies jobs with one `adb pull` per folder (one per file is far slower), then checks each

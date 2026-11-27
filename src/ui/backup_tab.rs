@@ -277,7 +277,10 @@ impl App {
             // Files riding the cable; across all of it while the amount is not known yet.
             let reach = if known { reach } else { total };
             let gap = 64.0;
-            let mut d = (ctx.input(|i| i.time) as f32 * 120.0).rem_euclid(gap);
+            // Paused, they stand still where they were.
+            let paused_for = self.paused_at.map_or(0.0, |at| at.elapsed().as_secs_f64());
+            let now = ctx.input(|i| i.time) - paused_for;
+            let mut d = (now as f32 * 120.0).rem_euclid(gap);
             while d < reach {
                 let fade = (d / 24.0).min(1.0) * ((reach - d) / 24.0).min(1.0);
                 p.rect(
@@ -308,7 +311,8 @@ impl App {
             p.circle_stroke(head, 5.0, Stroke::new(1.5, t.bg));
         }
         if running {
-            ctx.request_repaint_after(Duration::from_millis(if self.motion { 16 } else { 500 }));
+            let still = !self.motion || self.paused_at.is_some();
+            ctx.request_repaint_after(Duration::from_millis(if still { 500 } else { 16 }));
         }
 
         // The tick lands only when nothing went wrong.
