@@ -75,6 +75,22 @@ fn tile_progress(done: u64, total: u64, stopped: bool) -> String {
     }
 }
 
+/// The time left: by bytes when a backup reports them, else by the share of files done.
+fn time_left_guess(
+    tiles: Option<([u64; 6], [u64; 6])>,
+    file_fraction: Option<f32>,
+    spent: f32,
+) -> Option<String> {
+    let bytes = tiles.and_then(|(done, total)| {
+        let (done, total): (u64, u64) = (done.iter().sum(), total.iter().sum());
+        (total > 0).then(|| done as f32 / total as f32)
+    });
+    bytes
+        .or(file_fraction)
+        .filter(|f| *f > 0.0 && spent > 5.0)
+        .map(|f| time_left((spent * (1.0 - f) / f) as u64))
+}
+
 /// Switches one type of file. With files off altogether, turning one on means only that one.
 fn toggle_kind(pick: &mut Pick, k: usize) {
     if !pick.files {
@@ -91,10 +107,7 @@ impl App {
             return Some("Paused".into());
         }
         let spent = self.progress_from.elapsed().as_secs_f32();
-        // shortcut: estimate by file count, not bytes; switch to bytes if users see bad estimates
-        self.fraction
-            .filter(|f| *f > 0.0 && spent > 5.0)
-            .map(|f| time_left((spent * (1.0 - f) / f) as u64))
+        time_left_guess(self.tiles, self.fraction, spent)
     }
 
     /// How the running or last backup stands.
@@ -1166,5 +1179,47 @@ mod tests {
         assert_eq!(pick.kinds, [false, true, false, false, false]);
         toggle_kind(&mut pick, 1);
         assert!(pick.files && !pick.kinds.contains(&true));
+    }
+
+    #[test]
+    fn time_left_goes_by_bytes_when_known() {
+        // 99 small photos done, one 4 GB video left: 99% of files but about 7% of bytes.
+        let done = 99 * 3_000_000;
+        let tiles = Some(([done, 0, 0, 0, 0, 0], [done + 4_000_000_000, 0, 0, 0, 0, 0]));
+        // The file count alone would say the backup is nearly there.
+        assert_eq!(
+            time_left_guess(None, Some(0.99), 60.0).as_deref(),
+            Some("less than a minute left")
+        );
+        assert_eq!(
+            time_left_guess(tiles, Some(0.99), 60.0).as_deref(),
+            Some("about 14 min left")
+        );
+    }
+
+    #[test]
+    fn time_left_falls_back_to_file_count() {
+        // MTP backups, restore and verify send no tiles; a zero total means none are known yet.
+        for tiles in [None, Some(([0; 6], [0; 6]))] {
+            assert_eq!(
+                time_left_guess(tiles, Some(0.5), 300.0).as_deref(),
+                Some("about 5 min left")
+            );
+        }
+    }
+
+    #[test]
+    fn time_left_waits_for_a_real_guess() {
+        // No guess at fraction 0, by files or by bytes, and none in the first five seconds.
+        assert_eq!(time_left_guess(None, Some(0.0), 60.0), None);
+        assert_eq!(
+            time_left_guess(Some(([0; 6], [2_000; 6])), None, 60.0),
+            None
+        );
+        assert_eq!(time_left_guess(None, Some(0.5), 5.0), None);
+        assert_eq!(
+            time_left_guess(Some(([1_000; 6], [2_000; 6])), None, 5.0),
+            None
+        );
     }
 }
